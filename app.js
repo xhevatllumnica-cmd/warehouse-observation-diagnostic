@@ -3251,6 +3251,16 @@ function wmsLog(box){
 function boot(){
   Store.load();
   if(!Store.db.validations) Store.db.validations=[];
+  // If opened as a local file (file://) but the agent is running, show a clear link to the
+  // correct localhost app — that origin has the live WMS sync and is the canonical instance.
+  if(location.protocol==='file:'){
+    try{ fetch('http://localhost:8790/wms/health',{cache:'no-store'}).then(r=>{ if(r&&r.ok){
+      const b=document.createElement('div');
+      b.style.cssText='position:sticky;top:0;z-index:9999;background:#123527;color:#7fe3b6;padding:10px 16px;font-size:14px;text-align:center;border-bottom:1px solid #1e4a34';
+      b.innerHTML='🟢 Agjenti është aktiv. Ky është versioni <b>file://</b> (pa sync). Për të dhëna live, hape këtu: <a href="http://localhost:8790/app.html" style="color:#b6f0d3;font-weight:700">http://localhost:8790/app.html</a>';
+      document.body.insertBefore(b, document.body.firstChild);
+    }}).catch(()=>{}); }catch(e){}
+  }
   buildNav();
   $('#hamburger').onclick=()=>{ $('#sidebar').classList.toggle('open'); $('#scrim').classList.toggle('on'); };
   $('#scrim').onclick=closeSidebar;
