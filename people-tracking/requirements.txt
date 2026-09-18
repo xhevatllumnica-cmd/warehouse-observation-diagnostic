@@ -1,0 +1,38 @@
+# Faza 1 — Detektim + tracking personash (pilot)
+# Verifikuar me Python 3.14.3 / Windows 11 x64 / Quadro T1000 (CUDA 12.6).
+#
+# INSTALIM (GPU — i rekomanduar):
+#   python -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r requirements.txt
+#   pip install torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cu126
+#
+# Rreshti i fundit eshte i DOMOSDOSHEM per GPU: wheel-i standard i torch-it nga
+# PyPI per Windows eshte CPU-only. Pa te, pipeline-i punon por ~9x me ngadale.
+#
+# Verifikimi qe GPU-ja u aktivizua:
+#   python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
+#   -> duhet te printoje: True 12.6
+
+# --- Detektimi ---------------------------------------------------------------
+ultralytics==8.4.155          # YOLOv8 / YOLO11 (modele pretrained, COCO)
+torch==2.14.0                 # backend-i i inference-it (shih shenimin per cu126)
+torchvision==0.29.0           # kerkohet nga ultralytics; edhe ReID-i 'cnn'
+
+# --- Tracking ----------------------------------------------------------------
+supervision==0.30.4           # Detections, anotatoret, InferenceSlicer
+trackers==2.6.0               # ByteTrackTracker / BoTSORT / OC-SORT / SORT.
+                              # Zevendesuesi zyrtar i sv.ByteTrack, i cili hiqet
+                              # ne supervision 0.31.
+
+# --- Video / numerike --------------------------------------------------------
+opencv-python==5.0.0.93       # lexim/shkrim video, homografi, vizatim
+numpy==2.5.3
+scipy==1.18.1                 # kerkohet nga algoritmi i asociimit (Hungarian)
+
+# -----------------------------------------------------------------------------
+# SHENIM per versionin e CUDA-s
+# -----------------------------------------------------------------------------
+# cu126 u zgjodh sepse drejtuesi i instaluar (573.57) mbeshtet CUDA 12.8.
+# Wheel-et cu130 kerkojne drejtues >= 580 dhe do te deshtonin ne kete makine.
+# Kontrollo perputhshmerine me: nvidia-smi  (rreshti "CUDA Version")

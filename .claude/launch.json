@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "warehouse-schedule",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "warehouse-schedule", "run", "dev"],
+      "port": 3000
+    }
+  ]
+}

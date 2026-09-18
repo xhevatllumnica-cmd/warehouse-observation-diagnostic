@@ -1,0 +1,74 @@
+// Skema e databazës për Orarin e Warehouse.
+//
+// Zhvillimi lokal përdor SQLite (pa asnjë konfigurim). Për prodhim (Vercel)
+// ndrysho `provider` në "postgresql" dhe vendos DATABASE_URL në Postgres
+// (Supabase / Neon). Skema është e shkruar që të punojë njësoj në të dyja.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Operator i warehouse-it.
+model Employee {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  /// Ngjyra e personalizuar (hex) që shfaqet pranë emrit në orar.
+  color     String   @default("#64748b")
+  isActive  Boolean  @default(true)
+  /// Renditja në grid (më e vogla del e para).
+  sortOrder Int      @default(0)
+  /// Emra alternativë të përdorur në Excel, të ndarë me presje (p.sh. "Erik,Eriku").
+  aliases   String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries ScheduleEntry[]
+}
+
+/// Shift i paracaktuar, p.sh. "07:00-15:00".
+model Shift {
+  id        String   @id @default(cuid())
+  /// Kodi unik, i njëjtë me tekstin në Excel ("07:00-15:00").
+  code      String   @unique
+  label     String
+  /// "HH:MM"
+  startTime String
+  /// "HH:MM" — nëse është <= startTime, shift-i përfundon ditën tjetër.
+  endTime   String
+  /// morning | afternoon | night — llogaritet automatikisht nga ora e fillimit.
+  category  String
+  /// Ngjyrë opsionale; nëse është null përdoret ngjyra e kategorisë.
+  color     String?
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries ScheduleEntry[]
+}
+
+/// Një qelizë e orarit: një punonjës, një ditë.
+model ScheduleEntry {
+  id         String   @id @default(cuid())
+  employeeId String
+  /// Data në formatin "YYYY-MM-DD" (pa zonë kohore, si në Excel).
+  date       String
+  /// working | weekly_off | off | sick_leave | annual_leave
+  status     String
+  /// I detyrueshëm kur status = "working".
+  shiftId    String?
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shift    Shift?   @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+
+  @@unique([employeeId, date])
+  @@index([date])
+}

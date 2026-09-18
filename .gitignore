@@ -1,0 +1,66 @@
+# ── Sekrete / konfigurime lokale ─────────────────────────────
+# local-only WMS session cookie — never commit
+wms-agent.config.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.claude/settings.local.json
+
+# ── Të dhëna reale të Gjirafës (eksporte, backup, dokumente) ──
+*.csv
+*.xlsx
+*.xls
+*.docx
+*.doc
+*.pdf
+~$*
+warehouse-backup-*.json
+Claude outputs/
+analysis-tools/last-run.json
+warehouse-schedule/prisma/data/
+warehouse-schedule/name-aliases.local.json
+*.db
+*.db-journal
+*.sqlite
+
+# people-tracking: video, rezultate, kalibrim real, modele
+people-tracking/output/
+people-tracking/calibration.json
+*.mp4
+*.avi
+*.mov
+*.pt
+*.onnx
+
+# ── Projekt jo-i-lidhur (asistent blerje veture) ─────────────
+carvago-live/
+
+# ── Build / varësi ───────────────────────────────────────────
+node_modules/
+.next/
+out/
+build/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+bin/
+obj/
+.vs/
+.vscode/
+.idea/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Log / OS
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,17 @@
+{
+  "unit": "m",
+  "notes": "SHEMBULL — VLERAT E world_points JANE TE SAJUARA, JO TE MATURA. Sherben vetem per te provuar qe pipeline-i punon. Para se te perdoret per matje reale: (1) zgjidh pikat me `python calibration.py pick`, (2) mat me shirit metrik distancat REALE midis tyre mbi dysheme, (3) vendos ato vlera ketu, (4) kontrollo me `python calibration.py validate`.",
+  "image_points": [
+    [556.0, 646.0],
+    [1180.0, 384.0],
+    [1010.0, 268.0],
+    [598.0, 344.0]
+  ],
+  "world_points": [
+    [0.0, 0.0],
+    [4.0, 0.0],
+    [4.0, 3.0],
+    [0.0, 3.0]
+  ],
+  "lens": null
+}
