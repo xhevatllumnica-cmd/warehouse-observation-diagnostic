@@ -64,3 +64,8 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ── WODS shared database + archived daily reports (local runtime data) ──
+wods-db.json
+wods-db.json.tmp
+reports/

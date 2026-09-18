@@ -228,7 +228,82 @@ const Store = {
     if(migrated) this.persist();
     return this.db;
   },
-  persist(){ localStorage.setItem(DB_KEY, JSON.stringify(this.db)); },
+  persist(){ localStorage.setItem(DB_KEY, JSON.stringify(this.db)); this.schedulePush(); },
+  /* ---- shared server copy (wods-db.json via the local agent) ------------------------------
+     Every browser on this machine (Chrome, Edge, the Claude pane…) has its own localStorage, so
+     the agent keeps ONE canonical copy. Boot pulls it, every persist pushes it (debounced), and a
+     60 s poll pulls changes made elsewhere (another tab, or the agent's 21:30 report job). */
+  serverSavedAt:null, pushTimer:null, pushing:false,
+  onAgent(){ return typeof wmsOnAgent==='function' && wmsOnAgent(); },
+  stamp(){ this.db.meta=this.db.meta||{}; this.db.meta.savedAt=nowISO(); return this.db.meta.savedAt; },
+  schedulePush(){ if(!this.onAgent()) return; clearTimeout(this.pushTimer); this.pushTimer=setTimeout(()=>this.pushToServer(),600); },
+  async pushToServer(){
+    if(!this.onAgent() || this.pushing) { if(this.pushing) this.schedulePush(); return; }
+    this.pushing=true;
+    try{
+      const savedAt=this.stamp(); localStorage.setItem(DB_KEY, JSON.stringify(this.db));
+      const r=await fetch('/db',{method:'PUT',headers:{'Content-Type':'application/json','X-Base-Saved-At':this.serverSavedAt||''},body:JSON.stringify(this.db)});
+      if(r.status===409){ const j=await r.json(); if(j&&j.db){ this.mergeFrom(j.db); this.serverSavedAt=j.db.meta&&j.db.meta.savedAt; this.pushing=false; return this.pushToServer(); } }
+      else if(r.ok){ this.serverSavedAt=savedAt; }
+    }catch(e){ /* agent offline — local copy stays authoritative until it is back */ }
+    this.pushing=false;
+  },
+  async pullFromServer(opts){
+    opts=opts||{}; if(!this.onAgent()) return false;
+    try{
+      const r=await fetch('/db'+(this.serverSavedAt?'?since='+encodeURIComponent(this.serverSavedAt):''),{cache:'no-store'});
+      if(r.status===404){ await this.pushToServer(); return false; }         // first browser on this machine seeds the server copy
+      if(r.status===304 || !r.ok) return false;
+      const srv=await r.json(); if(!srv||!srv.config) return false;
+      const srvAt=(srv.meta&&srv.meta.savedAt)||''; const locAt=(this.db.meta&&this.db.meta.savedAt)||'';
+      this.serverSavedAt=srvAt;
+      // a browser that never joined the shared copy: adopt it outright when this browser holds nothing of its own,
+      // otherwise union the two (natural keys — nothing is lost, nothing double-counted) and push the result
+      if(opts.initial && !locAt){
+        const own=['observations','measurements','problems','staffObs','kpiRecords','validations'].reduce((a,c)=>a+((this.db[c]||[]).length),0);
+        if(!own){ this.db=srv; localStorage.setItem(DB_KEY, JSON.stringify(this.db)); this.load(); return true; }
+        this.mergeFrom(srv); localStorage.setItem(DB_KEY, JSON.stringify(this.db)); this.load(); await this.pushToServer(); return true;
+      }
+      if(srvAt && srvAt!==locAt){ const changed=this.mergeFrom(srv); if(changed){ localStorage.setItem(DB_KEY, JSON.stringify(this.db)); } return changed; }
+    }catch(e){}
+    return false;
+  },
+  /* union per collection (natural keys for WMS rows so two browsers' separate syncs never double-count),
+     newest record wins; config/meta/wms objects: newer side wins */
+  natKey(k,r){
+    if(k==='wmsPrepared'||k==='wmsCheckin') return 'nk|'+r.date+'|'+r.operator;
+    if(k==='wmsFlow') return 'nk|'+r.date;
+    if(k==='wmsStats') return 'nk|'+r.at;
+    if(k==='wmsSyncLog') return 'nk|'+r.at+'|'+r.operation;
+    if(k==='dailyReports') return 'nk|'+r.date;
+    if(k==='observations' && r.analysisKey) return 'ak|'+r.analysisKey;
+    return 'id|'+r.id;
+  },
+  mergeFrom(other){
+    const ts=r=>r.updatedAt||r.importedAt||r.generatedAt||r.createdAt||r.at||'';
+    let changed=false; const mine=this.db;
+    const srvNewer=((other.meta&&other.meta.savedAt)||'') > ((mine.meta&&mine.meta.savedAt)||'');
+    Object.keys(other).forEach(k=>{
+      const ov=other[k];
+      if(Array.isArray(ov)){
+        const mv=Array.isArray(mine[k])?mine[k]:(mine[k]=[]);
+        if(!ov.length) return;
+        if(!ov[0] || typeof ov[0]!=='object' || !('id' in ov[0])){ if(srvNewer && JSON.stringify(mv)!==JSON.stringify(ov)){ mine[k]=ov; changed=true; } return; }
+        const byKey=new Map(mv.map(r=>[this.natKey(k,r),r]));
+        ov.forEach(r=>{ const key=this.natKey(k,r); const m=byKey.get(key); if(!m){ mv.push(r); byKey.set(key,r); changed=true; } else if(ts(r)>ts(m) || (srvNewer && ts(r)===ts(m) && JSON.stringify(r)!==JSON.stringify(m))){ Object.assign(m,r); changed=true; } });
+        // keep newest-first ordering the UI expects
+        mv.sort((a,b)=>ts(b)<ts(a)?-1:(ts(b)>ts(a)?1:0));
+      } else if(ov && typeof ov==='object'){
+        if(k==='meta') return;
+        if(srvNewer && JSON.stringify(mine[k])!==JSON.stringify(ov)){ mine[k]=ov; changed=true; }
+      }
+    });
+    if(srvNewer){ mine.meta=Object.assign({},mine.meta,other.meta); }
+    return changed;
+  },
+  startPolling(){ if(!this.onAgent() || this._poll) return;
+    this._poll=setInterval(async()=>{ if($('#modalRoot') && $('#modalRoot').children.length) return;   // never re-render under an open form
+      const changed=await this.pullFromServer(); if(changed){ go(); toast('Të dhënat u rifreskuan'); } }, 60000); },
   col(name){ return this.db[name] || (this.db[name]=[]); },
   get(name,id){ return this.col(name).find(r=>r.id===id); },
   insert(name,rec){
@@ -255,7 +330,7 @@ const Store = {
 };
 const seedCollections = ['config','employees','departments','processes','observations','measurements',
   'orders','products','staffSkills','staffObs','problems','kpiRecords','hqInteractions','quickWins','briefings','validations',
-  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','audit'];
+  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','audit'];
 
 function audit(entity,recId,action,before,after){
   const changes=[];
@@ -846,107 +921,87 @@ function priorBaseline(d){
     negRate: days.reduce((a,m)=>a+m.negRate,0)/days.length,
     waitShare: ws.length? ws.reduce((a,m)=>a+m.waitShare,0)/ws.length : null };
 }
-/* Auto-generated Albanian expert summary of the observation journal for one day, with a trend read. */
+/* Daily narrative summary. The narrative itself is built by shared.js (WODS.buildDailyNarrative — the very same
+   code the agent runs for the 21:30 report), so browser and archive never disagree on wording. If the agent has
+   archived a report for the day, that snapshot is shown by default (WMS figures keep drifting after the shift);
+   "Shiko live" recomputes from current data. Counters, charts and lists sit under a fold. */
+function storedReport(d){ return Store.col('dailyReports').find(r=>r.date===d)||null; }
+let obsSumLive=false;
 function drawObsSummary(date){
-  if(date) obsSumDate=date;
+  if(date){ obsSumDate=date; obsSumLive=false; }
   const d=obsSumDate||todayStr();
   const box=$('#obsSummary'); if(!box) return;
   const rows=Store.col('observations').filter(o=>o.date===d);
-  if(!rows.length){ box.innerHTML=`<div class="empty">Ende s'ka vëzhgime të regjistruara për ${h(fmtDateAl(d))}. Sapo t'i futësh, kjo përmbledhje ndërtohet vetë.</div>`; return; }
+  const stored=storedReport(d);
+  const live=WODS.buildDailyNarrative(Store.db,d);
+  if(live.empty && !stored){ box.innerHTML=`<div class="empty">Ende s'ka vëzhgime as të dhëna WMS për ${h(fmtDateAl(d))}. Sapo t'i futësh, kjo përmbledhje ndërtohet vetë.</div>`; return; }
+  const useStored=!!stored && !obsSumLive;
+  const narrative=useStored? stored.html : live.html;
+
+  // ---- detail figures (journal only) ----
   const byType={}, byProc={}, bySev={}, byVal={};
-  let interruptions=0,rework=0,errors=0,waiting=0,processing=0,withHyp=0,validated=0,pending=0,attCount=0;
+  let withHyp=0,validated=0,pending=0,attCount=0;
   rows.forEach(o=>{
     byType[o.type||'—']=(byType[o.type||'—']||0)+1;
     const pn=procName(o.processId)||'I pacaktuar'; byProc[pn]=(byProc[pn]||0)+1;
     if(o.severity) bySev[o.severity]=(bySev[o.severity]||0)+1;
     if(o.validationStatus && o.validationStatus!=='Not required') byVal[o.validationStatus]=(byVal[o.validationStatus]||0)+1;
-    if(o.interruption) interruptions++; if(o.rework) rework++; if(o.error) errors++;
-    waiting+=num(o.waitingMin,0); processing+=num(o.processingMin,0);
-    if(o.cause) withHyp++;
-    if(o.validationStatus==='Validated') validated++;
-    if(o.validationStatus==='Pending validation') pending++;
+    if(o.cause) withHyp++; if(o.validationStatus==='Validated') validated++; if(o.validationStatus==='Pending validation') pending++;
     attCount+=(o.attachments||[]).length;
   });
   const topType=Object.entries(byType).sort((a,b)=>b[1]-a[1]);
   const topProc=Object.entries(byProc).sort((a,b)=>b[1]-a[1]);
-  const maxT=Math.max(...topType.map(x=>x[1])), maxP=Math.max(...topProc.map(x=>x[1]));
-  const nProc=Object.keys(byProc).length;
-  const repAl=[...topType.filter(x=>x[1]>=2).map(x=>`tipi “${x[0]}” ×${x[1]}`), ...topProc.filter(x=>x[1]>=2).map(x=>`procesi “${x[0]}” ×${x[1]}`)];
+  const maxT=Math.max(1,...topType.map(x=>x[1])), maxP=Math.max(1,...topProc.map(x=>x[1]));
   const openHyp=rows.filter(o=>o.cause && (!o.validationStatus || o.validationStatus==='Pending validation'));
   const dueFollow=Store.col('observations').filter(o=>o.followUpDate && o.followUpDate<=d && !['Validated','Not confirmed','Partially validated'].includes(o.validationStatus||''));
+  const M=dayMetrics(d); const W=WODS.wmsDayFacts(Store.db,d);
 
-  // ---- expert Albanian narrative with trend analysis (observations + measurements) ----
-  const M=dayMetrics(d), B=priorBaseline(d);
-  const P1=[];
-  P1.push(`Më <b>${h(fmtDateAl(d))}</b>, u regjistruan <b>${M.obsN}</b> vëzhgime dhe <b>${M.measN}</b> matje në ${nProc} proces${nProc!==1?'e':''}.`);
-  if(topType.length) P1.push(`Tipi më i shpeshtë i vëzhgimit ishte “${h(topType[0][0])}” (${topType[0][1]})${topType.length>1?`, krahas ${slAl(topType.slice(1,3).map(([k,c])=>`“${h(k)}” (${c})`))}`:''}.`);
-  if(M.waitMin||M.procMin){ let s=`Koha e regjistruar: <b>${Math.round(M.procMin)} min</b> procesim aktiv dhe <b>${Math.round(M.waitMin)} min</b> pritje`;
-    if(M.waitShare!=null) s+=` (pritja zë <b>${Math.round(M.waitShare)}%</b> të kohës së ciklit të vëzhguar)`;
-    s+='.'; if(M.waitShare!=null && M.waitShare>=50) s+=' Kjo tregon se koha humbet kryesisht në pritje, jo në punë aktive.'; P1.push(s); }
-  const fb=[]; if(M.interruptions)fb.push(`${M.interruptions} ndërprerje`); if(M.rework)fb.push(`${M.rework} ${M.rework===1?'ripërpunim':'ripërpunime'}`); if(M.errors)fb.push(`${M.errors} ${M.errors===1?'gabim':'gabime'}`);
-  if(fb.length){ let s=`U regjistruan ${slAl(fb)}.`; if(M.neg>=Math.max(3,M.activity)) s+=' Këta tregues sinjalizojnë paqëndrueshmëri në rrjedhën e proceseve.'; P1.push(s); }
-  if(M.withHyp) P1.push(`Janë ngritur ${M.withHyp} shkaqe të mundshme (hipoteza); ${M.pending} ${M.pending===1?'pret':'presin'} validim dhe ${M.validated} ${M.validated===1?'është':'janë'} validuar.${M.pending>M.validated?' Diagnoza është ende në fazë hipotezash — nevojitet validim para çdo veprimi.':''}`);
-  else P1.push('Nuk u ngritën hipoteza — hyrjet janë thjesht vëzhgime faktike.');
-  if(repAl.length) P1.push(`Bie në sy përsëritja: ${slAl(repAl)} — sinjal për t'u validuar, jo ende përfundim.`);
-
-  // trend verdict
-  let trendSentence, overall;
-  if(!B){ overall='baseline'; trendSentence=`Kjo është ndër ditët e para me të dhëna të mjaftueshme — baza krahasuese (baseline) po ndërtohet, ndaj ende nuk mund të përcaktohet një trend i qartë përmirësimi apo keqësimi të gjendjes në depo.`; }
-  else {
-    let score=0; const cmp=[];
-    if(B.negRate>0 || M.negRate>0){ if(M.negRate<=B.negRate*0.85) score++; else if(M.negRate>=B.negRate*1.15) score--;
-      cmp.push(`tregues negativë për njësi aktiviteti: ${M.negRate.toFixed(2)} sot kundrejt ${B.negRate.toFixed(2)} mesatarja e mëparshme`); }
-    if(M.waitShare!=null && B.waitShare!=null){ if(M.waitShare<=B.waitShare-5) score++; else if(M.waitShare>=B.waitShare+5) score--;
-      cmp.push(`pesha e pritjes ${Math.round(M.waitShare)}% sot kundrejt ${Math.round(B.waitShare)}% më parë`); }
-    overall = score>0?'improve':(score<0?'worsen':'stable');
-    const verd = overall==='improve' ? 'Vërehet një <b>trend përmirësimi</b> të gjendjes në depo.'
-      : overall==='worsen' ? 'Vërehet një <b>trend keqësimi</b> të gjendjes në depo — kërkon vëmendje.'
-      : 'Nuk vërehet ndonjë trend i qartë përmirësimi të proceseve në depo; gjendja është kryesisht <b>e qëndrueshme</b>.';
-    trendSentence = `Krahasuar me mesataren e ${B.n} ditë${B.n!==1?'ve':''} të mëparshme me të dhëna${cmp.length?` (${slAl(cmp)})`:''}: ${verd}`;
-  }
-  // expert recommendation
-  let rec;
-  if(M.waitShare!=null && M.waitShare>=50 && topProc.length) rec=`Përqendrohu te reduktimi i kohës së pritjes, veçanërisht te procesi “${h(topProc[0][0])}”, ku duket humbja kryesore e kohës.`;
-  else if((M.errors+M.rework)>=Math.max(2,Math.round(M.activity/2)) && topProc.length) rec=`Fut kontrolle cilësie te procesi “${h(topProc[0][0])}” për të ulur gabimet dhe ripërpunimet.`;
-  else if(M.pending>0) rec=`Validoji hipotezat e hapura (${M.pending}) para se të ndërmarrësh ndryshime operacionale.`;
-  else rec=`Vazhdo mbledhjen sistematike të matjeve dhe vëzhgimeve për të forcuar bazën krahasuese.`;
-
-  const narrative=`<div class="report" style="padding:14px 16px;margin-bottom:12px;line-height:1.75">
-      <div style="font-weight:700;color:var(--accent);font-size:12px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">Raport ditor · analizë profesionale</div>
-      <p style="margin:0">${P1.join(' ')}</p>
-      <p style="margin:10px 0 0"><b>Trendi i gjendjes:</b> ${trendSentence}</p>
-      <p style="margin:10px 0 0"><span class="etag et-rec">rekomandim</span> ${rec}</p>
-      <p class="meta" style="margin:10px 0 0">Ky raport bazohet vetëm në të dhënat e futura (vëzhgime + matje) dhe ruan ndarjen fakt–hipotezë; përfundimet kërkojnë validim.</p></div>`;
+  const genAt=stored? new Date(stored.generatedAt) : null;
+  const toolbar=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      ${stored?`<span class="badge ${useStored?'b-ok':'b-muted'}" title="Gjeneruar nga agjenti">${useStored?'📌 Raport i arkivuar':'Raport i arkivuar'} · ${h(genAt.toLocaleDateString())} ${h(genAt.toTimeString().slice(0,5))}</span>
+                <button class="btn sm" id="obsSumToggle">${useStored?'Shiko live':'Shiko të arkivuarin'}</button>`
+              :`<span class="badge b-muted">Live · nga të dhënat aktuale</span>`}
+      ${Store.onAgent()?`<button class="btn sm" id="obsSumRun" title="Sinkronizon WMS, shton gjetjet automatike dhe arkivon raportin për këtë datë">⚙ Gjenero raportin tani</button>`:''}
+      <span class="hint" style="margin:0 0 0 auto">Raporti automatik gjenerohet nga agjenti çdo ditë pas orës ${h((Store.db.wms&&Store.db.wms.dailyReportTime)||'21:30')}.</span>
+    </div>`;
 
   const kpi=(val,lbl,cls)=>`<div style="flex:1;min-width:120px"><div style="font-size:22px;font-weight:800" class="${cls||''}">${val}</div><div class="muted small">${lbl}</div></div>`;
-  box.innerHTML=narrative+`
-    <div class="meta muted small" style="margin-bottom:8px">Gjeneruar ${h(new Date().toLocaleString())} · ${rows.length} vëzhgime më ${h(fmtDateAl(d))}</div>
-    <div style="display:flex;gap:14px;flex-wrap:wrap;padding:10px;background:var(--bg2);border-radius:10px;border:1px solid var(--line)">
+  box.innerHTML=toolbar+narrative+`
+    <div class="meta muted small" style="margin-bottom:8px">${useStored?'Arkivuar':'Gjeneruar'} ${h((genAt||new Date()).toLocaleString())} · ${rows.length} vëzhgime më ${h(fmtDateAl(d))}</div>
+    <details>
+      <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">Detajet dhe shifrat</summary>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;padding:10px;background:var(--bg2);border-radius:10px;border:1px solid var(--line);margin-top:8px">
       ${kpi(rows.length,'Vëzhgime')}
       ${kpi(withHyp,'Me hipotezë','')}
       ${kpi(pending,'Presin validim', pending?'warn':'')}
       ${kpi(validated,'Të validuara', validated?'ok':'')}
       ${kpi(M.interruptions+'/'+M.rework+'/'+M.errors,'Ndërprerje / ripërpunim / gabim', (M.errors?'crit':''))}
       ${kpi(Math.round(M.procMin)+'m / '+Math.round(M.waitMin)+'m','Procesim / pritje (obs+matje)')}
+      ${W&&W.prep?kpi(W.prep,'Porosi të përgatitura (WMS)'):''}
+      ${W&&W.outRate!=null?kpi(W.outRate+'%','Check-out / check-in (WMS)', W.outRate<75?'warn':'ok'):''}
     </div>
-
-    <div class="grid g-2" style="margin-top:12px">
+    ${rows.length?`<div class="grid g-2" style="margin-top:12px">
       <div><h3 style="font-size:12.5px;margin:0 0 6px">Sipas tipit të vëzhgimit</h3>${topType.map(([k,c])=>barRow(k,c,maxT,'var(--accent)')).join('')}</div>
       <div><h3 style="font-size:12.5px;margin:0 0 6px">Sipas procesit</h3>${topProc.map(([k,c])=>barRow(k,c,maxP,'var(--imp)')).join('')}</div>
-    </div>
-
+    </div>`:''}
     ${Object.keys(bySev).length?`<div style="margin-top:10px"><b class="small">Rëndësia:</b> ${SEVERITIES.filter(s=>bySev[s.k]).map(s=>`${sevBadge(s.k)} ${bySev[s.k]}`).join(' &nbsp; ')}</div>`:''}
     ${Object.keys(byVal).length?`<div style="margin-top:6px"><b class="small">Validimi:</b> ${Object.entries(byVal).map(([k,c])=>`<span class="badge b-muted">${h(k)}: ${c}</span>`).join(' ')}</div>`:''}
-
-    <h3 style="font-size:12.5px;margin:14px 0 6px">Faktet e vëzhguara <span class="faint">(çka u pa realisht)</span></h3>
-    <ul style="margin:0;padding-left:18px">${rows.map(o=>`<li style="margin:3px 0"><span class="etag et-obs">e vëzhguar</span>${h(o.time||'')} ${h(o.what||'')}${o.type?` <span class="faint small">[${h(o.type)}]</span>`:''}</li>`).join('')}</ul>
-
+    ${rows.length?`<h3 style="font-size:12.5px;margin:14px 0 6px">Faktet e vëzhguara <span class="faint">(çka u pa realisht)</span></h3>
+    <ul style="margin:0;padding-left:18px">${rows.map(o=>`<li style="margin:3px 0"><span class="etag et-obs">e vëzhguar</span>${h(o.time||'')} ${h(o.what||'')}${o.type?` <span class="faint small">[${h(o.type)}]</span>`:''}${o.auto?` <span class="faint small">· auto</span>`:''}</li>`).join('')}</ul>`:''}
     ${openHyp.length?`<h3 style="font-size:12.5px;margin:14px 0 6px">Hipotezat e hapura <span class="faint">(kërkojnë validim)</span></h3>
       <ul style="margin:0;padding-left:18px">${openHyp.map(o=>`<li style="margin:3px 0"><span class="etag et-hyp">hipotezë</span>${h(o.cause)}${o.validationAction?` <span class="faint small">→ ${h(o.validationAction)}</span>`:''}</li>`).join('')}</ul>`:''}
-
     ${dueFollow.length?`<div class="note warn" style="margin-top:12px"><b>Follow-up që duhen bërë (deri më ${h(fmtDateAl(d))}):</b><ul style="margin:6px 0 0;padding-left:18px">${dueFollow.map(o=>`<li>${h(fmtDateAl(o.followUpDate))} — ${h((o.what||o.cause||'').slice(0,70))} <span class="faint small">(${h(o.validationStatus||'pending')})</span></li>`).join('')}</ul></div>`:''}
-
-    ${attCount?`<div class="hint" style="margin-top:8px">📎 ${attCount} fajll(a) evidencë bashkëngjitur vëzhgimeve të kësaj dite.</div>`:''}`;
+    ${attCount?`<div class="hint" style="margin-top:8px">📎 ${attCount} fajll(a) evidencë bashkëngjitur vëzhgimeve të kësaj dite.</div>`:''}
+    </details>`;
+  const tg=$('#obsSumToggle'); if(tg) tg.onclick=()=>{ obsSumLive=!obsSumLive; drawObsSummary(); };
+  const run=$('#obsSumRun'); if(run) run.onclick=async()=>{
+    run.disabled=true; run.textContent='⏳ Po gjenerohet…';
+    try{ const r=await fetch('/report/run?date='+encodeURIComponent(d),{method:'POST'}); const j=await r.json();
+      if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+      await Store.pullFromServer(); obsSumLive=false; drawObsTable();
+      toast(`Raporti u arkivua · ${j.autoObservations||0} gjetje automatike${j.synced?' · WMS sync ✓':''}`); }
+    catch(e){ toast('Gjenerimi dështoi: '+e.message); run.disabled=false; run.textContent='⚙ Gjenero raportin tani'; }
+  };
 }
 let obsFilter={q:'',type:'',status:'',proc:''};
 function observationsFilters(){
@@ -2611,14 +2666,8 @@ function wmsImportLogs(rawRows, meta){
   Store.persist();
   return {inserted,dups,warn,warnings:[...wset]};
 }
-function wmsImportStats(obj, meta){
-  meta=meta||{};
-  const rec={ id:uid('wst'), at:nowISO(), date:(meta.date||todayStr()),
-    invoiceProductsCheckedIn:num(obj.invoiceProductsCheckedIn), invoiceProductsProcessed:num(obj.invoiceProductsProcessed),
-    invoiceProductsToCheckIn:num(obj.invoiceProductsToCheckIn), ordersReadyToUnmap:num(obj.ordersReadyToUnmap),
-    ordersInProcessing:num(obj.ordersInProcessing), source:'WMS', sourceRef:meta.sourceRef||'', importedAt:nowISO() };
-  Store.col('wmsStats').unshift(rec); Store.persist(); return rec;
-}
+/* WMS imports live in shared.js (same code runs in the agent's 21:30 job); these wrappers persist. */
+function wmsImportStats(obj, meta){ const rec=WODS.importStats(Store.db,obj,meta); Store.persist(); return rec; }
 function wmsOperatorAgg(fromDate,toDate,shiftFilter){
   const logs=Store.col('wmsLogs').filter(l=>{ if(fromDate&&l.date<fromDate)return false; if(toDate&&l.date>toDate)return false; if(shiftFilter&&l.shift!==shiftFilter)return false; return true; });
   const map={};
@@ -2987,52 +3036,9 @@ function wmsImportOrders(rows, meta){
   return {inserted:ins,dups};
 }
 /* Prepared orders by operator (from /Order/GetPreparedOrders) — rows: {date, operator, preparedOrders} */
-function wmsImportPrepared(rows, meta){
-  meta=meta||{}; const t0=Date.now(); const col=Store.col('wmsPrepared');
-  const key=r=>['WMS',r.date,r.operator].join('|');
-  const existing=new Set(col.map(key)); let ins=0,upd=0,dups=0;
-  rows.forEach(raw=>{
-    const rec={ date:(raw.date||'').slice(0,10), operator:(raw.operator||raw.Name||'').toString().trim(),
-      preparedOrders:num(raw.preparedOrders!=null?raw.preparedOrders:raw.PreparedOrders), source:'WMS', sourceRef:meta.sourceRef||'', importedAt:nowISO() };
-    if(!rec.date||!rec.operator) return;
-    const k=key(rec); const ex=col.find(x=>key(x)===k);
-    if(ex){ if(ex.preparedOrders!==rec.preparedOrders){ ex.preparedOrders=rec.preparedOrders; ex.importedAt=rec.importedAt; upd++; } else dups++; }
-    else { rec.id=uid('wp'); col.unshift(rec); existing.add(k); ins++; }
-  });
-  Store.col('wmsSyncLog').unshift({ id:uid('slog'), at:nowISO(), operation:'Prepared orders import', dateRange:meta.dateRange||'',
-    retrieved:rows.length, inserted:ins, updated:upd, duplicates:dups, warnings:0, errors:0, durationMs:Date.now()-t0, status:'VALID' });
-  wmsCfg().lastSuccess=nowISO(); Store.persist();
-  return {inserted:ins,updated:upd,dups};
-}
-function wmsImportCheckin(rows, meta){
-  meta=meta||{}; const t0=Date.now(); const col=Store.col('wmsCheckin');
-  const key=r=>['WMS',r.date,r.operator].join('|');
-  let ins=0,upd=0,dups=0;
-  rows.forEach(raw=>{
-    const rec={ date:(raw.date||'').slice(0,10), operator:(raw.operator||'').toString().trim(),
-      checkedIn:num(raw.checkedIn!=null?raw.checkedIn:raw.CheckedIn), checkedOut:num(raw.checkedOut!=null?raw.checkedOut:raw.CheckedOut),
-      source:'WMS', sourceRef:meta.sourceRef||'', importedAt:nowISO() };
-    if(!rec.date||!rec.operator) return;
-    const k=key(rec); const ex=col.find(x=>key(x)===k);
-    if(ex){ if(ex.checkedIn!==rec.checkedIn || ex.checkedOut!==rec.checkedOut){ ex.checkedIn=rec.checkedIn; ex.checkedOut=rec.checkedOut; ex.importedAt=rec.importedAt; upd++; } else dups++; }
-    else { rec.id=uid('wc'); col.unshift(rec); ins++; }
-  });
-  Store.col('wmsSyncLog').unshift({ id:uid('slog'), at:nowISO(), operation:'Products checked in import', dateRange:meta.dateRange||'',
-    retrieved:rows.length, inserted:ins, updated:upd, duplicates:dups, warnings:0, errors:0, durationMs:Date.now()-t0, status:'VALID' });
-  wmsCfg().lastSuccess=nowISO(); Store.persist();
-  return {inserted:ins,updated:upd,dups};
-}
-function wmsImportFlow(daily, meta){
-  meta=meta||{}; const col=Store.col('wmsFlow');
-  (daily||[]).forEach(raw=>{
-    const date=(raw.date||'').slice(0,10); if(!date) return;
-    const rec={ date, checkedIn:num(raw.checkedIn), checkedOut:num(raw.checkedOut), source:'WMS', sourceRef:meta.sourceRef||'', importedAt:nowISO() };
-    const ex=col.find(x=>x.date===date);
-    if(ex){ ex.checkedIn=rec.checkedIn; ex.checkedOut=rec.checkedOut; ex.importedAt=rec.importedAt; }
-    else { rec.id=uid('wf'); col.unshift(rec); }
-  });
-  Store.persist();
-}
+function wmsImportPrepared(rows, meta){ const r=WODS.importPrepared(Store.db,rows,meta); wmsCfg().lastSuccess=nowISO(); Store.persist(); return r; }
+function wmsImportCheckin(rows, meta){ const r=WODS.importCheckin(Store.db,rows,meta); wmsCfg().lastSuccess=nowISO(); Store.persist(); return r; }
+function wmsImportFlow(daily, meta){ WODS.importFlow(Store.db,daily,meta); Store.persist(); }
 function wmsSameDayHTML(){
   const flow=Store.col('wmsFlow'); if(!flow.length) return '';
   const days=flow.slice().sort((a,b)=>a.date<b.date?1:-1).slice(0,14); // newest first
@@ -3248,9 +3254,12 @@ function wmsLog(box){
 /* =========================================================================
    BOOT
    =======================================================================*/
-function boot(){
+async function boot(){
   Store.load();
   if(!Store.db.validations) Store.db.validations=[];
+  // Shared copy first: on the agent, adopt/merge the machine-wide database BEFORE anything (incl. the
+  // boot WMS sync) persists — otherwise a stale tab could overwrite newer data with its own.
+  if(Store.onAgent()){ await Store.pullFromServer({initial:true}); Store.startPolling(); }
   // If opened as a local file (file://) but the agent is running, show a clear link to the
   // correct localhost app — that origin has the live WMS sync and is the canonical instance.
   if(location.protocol==='file:'){

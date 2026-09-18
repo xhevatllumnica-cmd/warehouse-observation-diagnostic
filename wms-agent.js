@@ -10,6 +10,10 @@
      2) paste your WMS "cookie" header value into it (see the README notes)
      3) run:  node wms-agent.js   (or double-click start-wms-agent.bat)
      4) open http://localhost:8790/app.html  and turn Auto-Sync ON
+
+   Also: keeps the SHARED app database (wods-db.json — one copy for every browser
+   on this PC) and generates the narrative daily report after shift close
+   (cfg.dailyReportTime, default "21:30"). See shared.js.
    ==========================================================================*/
 'use strict';
 const http=require('http'), https=require('https'), fs=require('fs'), path=require('path'), url=require('url');
@@ -143,12 +147,103 @@ async function getCheckins(start,end){
   return {data:out, daily};
 }
 
+/* --- shared database (wods-db.json) ------------------------------------------
+   One canonical copy of the app database for every browser on this machine. The
+   app pulls it at boot, pushes on every save (with an optimistic-concurrency
+   check on meta.savedAt) and polls it for changes made elsewhere. The 21:30
+   report job below writes to the same file. */
+const WODS=require('./shared.js');
+const DB_FILE=path.join(APPDIR,'wods-db.json');
+function loadDb(){ try{ return JSON.parse(fs.readFileSync(DB_FILE,'utf8')); }catch(e){ return null; } }
+function saveDb(db){ db.meta=db.meta||{}; db.meta.savedAt=new Date().toISOString();
+  fs.writeFileSync(DB_FILE+'.tmp', JSON.stringify(db)); fs.renameSync(DB_FILE+'.tmp', DB_FILE); return db.meta.savedAt; }
+function readBody(req){ return new Promise((res,rej)=>{ let d=''; req.setEncoding('utf8'); req.on('data',c=>{ d+=c; if(d.length>50e6){ rej(new Error('too large')); req.destroy(); } }); req.on('end',()=>res(d)); req.on('error',rej); }); }
+
+/* --- daily report job ---------------------------------------------------------
+   Runs once a day after cfg.dailyReportTime (default 21:30, after shift N2 closes):
+   1) syncs the day's WMS figures, 2) turns them into rule-based Daily Observation
+   records (fact / hypothesis / validation step — deduped by analysisKey),
+   3) builds the narrative report and archives it in db.dailyReports + /reports/*.html.
+   A run is also triggered on startup when the time has passed and today's report
+   is missing (agent was off at 21:30), and on demand via POST /report/run. */
+const REPORT_TIME=String(cfg.dailyReportTime||'21:30');
+const REPORTS_DIR=path.join(APPDIR,'reports');
+let jobRunning=false;
+function dmy(iso){ const p=iso.split('-'); return p[2]+'/'+p[1]+'/'+p[0]; }
+function addDays(iso,n){ const d=new Date(iso+'T12:00:00'); d.setDate(d.getDate()+n); return WODS.localDate(d); }
+async function runDailyJob(date, scheduled, opts){
+  if(jobRunning) return {error:'busy'};
+  opts=opts||{}; jobRunning=true; const started=Date.now(); const out={date, synced:false, autoObservations:0};
+  try{
+    date=date||isoToday();
+    // 1) fetch from WMS first (network), then load → mutate → save the db synchronously (no await in between)
+    let stats=null, prepared=null, checkins=null;
+    try{
+      if(date===isoToday()){ const s=await getStats(); if(!s.error) stats=s.data; }
+      const pr=await getPrepared(dmy(addDays(date,-6)), dmy(date)); if(!pr.error) prepared=pr.data;
+      const ci=await getCheckins(dmy(date), dmy(date)); if(!ci.error) checkins=ci;
+      out.synced=!!(prepared||checkins||stats);
+    }catch(e){ out.syncError=String(e&&e.message||e); }
+    const db=loadDb(); if(!db){ out.error='no shared database yet — open the app once via http://localhost:'+PORT+'/app.html'; return out; }
+    if(stats) WODS.importStats(db, stats, {date, sourceRef:'agent-job'});
+    if(prepared) WODS.importPrepared(db, prepared, {dateRange:dmy(addDays(date,-6))+' - '+dmy(date), sourceRef:'agent-job'});
+    if(checkins){ WODS.importCheckin(db, checkins.data||[], {dateRange:dmy(date)+' - '+dmy(date), sourceRef:'agent-job'}); if(checkins.daily) WODS.importFlow(db, checkins.daily, {sourceRef:'agent-job'}); }
+    if(out.synced){ db.wms=db.wms||{}; db.wms.lastSuccess=new Date().toISOString(); }
+    // 2) rule-based findings → observations (never duplicates: analysisKey)
+    const obs=db.observations||(db.observations=[]);
+    const have=new Set(obs.map(o=>o.analysisKey).filter(Boolean));
+    (opts.skipAuto?[]:WODS.wmsAutoObservations(db, date, REPORT_TIME)).forEach(o=>{ if(have.has(o.analysisKey)) return;
+      const now=new Date().toISOString();
+      obs.unshift(Object.assign({id:WODS.uid('obs'), createdAt:now, createdBy:'WMS auto-analysis', updatedAt:now, updatedBy:'WMS auto-analysis'}, o)); out.autoObservations++; });
+    // 3) narrative → archive
+    const generatedAt=new Date().toISOString();
+    const rep=WODS.buildDailyNarrative(db, date, {closing:true, generatedAt, title:'Raport ditor automatik · mbyllja e turnit'});
+    if(!rep.empty){
+      const reps=db.dailyReports||(db.dailyReports=[]);
+      const i=reps.findIndex(r=>r.date===date); const rec={id:(i>=0?reps[i].id:WODS.uid('rep')), date, generatedAt, auto:true, scheduled:!!scheduled, html:rep.html, text:rep.text, stats:rep.stats, updatedAt:generatedAt};
+      if(i>=0) reps[i]=rec; else reps.unshift(rec);
+      try{ fs.mkdirSync(REPORTS_DIR,{recursive:true}); fs.writeFileSync(path.join(REPORTS_DIR,'daily-'+date+'.html'), WODS.standaloneReportPage('Raport ditor '+WODS.fmtDateAl(date), rep.html)); out.file='reports/daily-'+date+'.html'; }catch(e){ out.fileError=String(e.message||e); }
+      out.stats=rep.stats;
+    } else out.note='no data for this date';
+    if(scheduled){ db.meta=db.meta||{}; db.meta.lastAutoReportDate=date; }
+    out.savedAt=saveDb(db); out.ms=Date.now()-started;
+    console.log('[wms-agent] '+new Date().toLocaleTimeString()+' daily report '+date+(scheduled?' (scheduled)':' (manual)')+': '+(out.synced?'WMS sync ✓':'no sync')+', +'+out.autoObservations+' auto observations, '+(out.file||'no file'));
+  }catch(e){ out.error=String(e&&e.message||e); console.log('[wms-agent] daily report failed: '+out.error); }
+  finally{ jobRunning=false; }
+  return out;
+}
+function hhmmNow(){ const t=new Date(); return p2(t.getHours())+':'+p2(t.getMinutes()); }
+async function reportTick(){
+  const today=isoToday(); if(hhmmNow()<REPORT_TIME) return;
+  const db=loadDb(); if(!db) return;
+  if(db.meta && db.meta.lastAutoReportDate===today) return;
+  await runDailyJob(today, true);
+}
+setInterval(reportTick, 30*1000);
+setTimeout(reportTick, 8000); // catch-up shortly after start (agent was off at report time)
+
 const CT={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.md':'text/markdown; charset=utf-8','.csv':'text/csv'};
 http.createServer(async (req,resp)=>{
   const q=url.parse(req.url,true);
-  const json=(code,obj)=>{ resp.writeHead(code,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Cache-Control':'no-store'}); resp.end(JSON.stringify(obj)); };
+  const json=(code,obj,extra)=>{ resp.writeHead(code,Object.assign({'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Cache-Control':'no-store'},extra||{})); resp.end(JSON.stringify(obj)); };
   try{
-    if(q.pathname==='/wms/health') return json(200,{ok:true, wms:WMS});
+    if(q.pathname==='/wms/health') return json(200,{ok:true, wms:WMS, reportTime:REPORT_TIME, sharedDb:fs.existsSync(DB_FILE)});
+    // ---- shared database ----
+    if(q.pathname==='/db' && req.method==='GET'){
+      const db=loadDb(); if(!db) return json(404,{error:'no shared db yet'});
+      const since=q.query.since||''; const at=(db.meta&&db.meta.savedAt)||'';
+      if(since && at && since===at){ resp.writeHead(304,{'Cache-Control':'no-store'}); return resp.end(); }
+      resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store','X-Saved-At':at}); return resp.end(JSON.stringify(db));
+    }
+    if(q.pathname==='/db' && req.method==='PUT'){
+      let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
+      if(!body || !body.config) return json(400,{error:'not a WODS database'});
+      const cur=loadDb(); const curAt=(cur&&cur.meta&&cur.meta.savedAt)||''; const base=String(req.headers['x-base-saved-at']||'');
+      if(cur && curAt && base!==curAt) return json(409,{conflict:true, db:cur});     // someone else saved since this tab last pulled
+      const savedAt=saveDb(body); return json(200,{ok:true, savedAt});
+    }
+    if(q.pathname==='/report/run' && req.method==='POST'){ const r=await runDailyJob(q.query.date||isoToday(), false, {skipAuto:q.query.auto==='0'}); return json(r.error?(r.error==='busy'?429:500):200, r); }
+    if(q.pathname==='/report/list'){ const db=loadDb(); return json(200,{reports:((db&&db.dailyReports)||[]).map(r=>({date:r.date,generatedAt:r.generatedAt,scheduled:!!r.scheduled,stats:r.stats}))}); }
     if(q.pathname==='/wms/stats'){ const r=await getStats(); return json(r.error?502:200, r.error?{error:r.error}:r.data); }
     if(q.pathname==='/wms/prepared'){ const r=await getPrepared(q.query.start||today(), q.query.end||q.query.start||today()); return json(r.error?502:200, r.error?{error:r.error}:{kind:'preparedOrders',rows:r.data}); }
     if(q.pathname==='/wms/checkin'){ const r=await getCheckins(q.query.start||today(), q.query.end||q.query.start||today()); return json(r.error?502:200, r.error?{error:r.error}:{kind:'checkedIn',rows:r.data,daily:r.daily}); }
@@ -164,7 +259,9 @@ http.createServer(async (req,resp)=>{
   console.log('  App:    http://localhost:'+PORT+'/app.html');
   console.log('  Proxy:  /wms/stats  /wms/prepared  /wms/checkin?start=DD/MM/YYYY&end=DD/MM/YYYY  /wms/health');
   console.log('  WMS:    '+WMS+'   (cookie loaded, '+cookieHeader().length+' chars)');
-  console.log('  Keep-alive: pinging WMS every '+KEEPALIVE_MIN+' min to renew the session cookie automatically.\n');
+  console.log('  Keep-alive: pinging WMS every '+KEEPALIVE_MIN+' min to renew the session cookie automatically.');
+  console.log('  Shared DB: '+DB_FILE+(fs.existsSync(DB_FILE)?'':'  (created by the first browser that opens the app)'));
+  console.log('  Daily report: every day after '+REPORT_TIME+' → db.dailyReports + reports/daily-YYYY-MM-DD.html  (manual: POST /report/run)\n');
 });
 
 /* Keep-alive: a light request on a timer renews the sliding session cookie
