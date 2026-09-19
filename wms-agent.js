@@ -44,9 +44,38 @@ function applySetCookie(arr){ let changed=false; (arr||[]).forEach(sc=>{ const f
   if(expired){ if(cookieJar[n]!==undefined){ delete cookieJar[n]; changed=true; } }
   else if(cookieJar[n]!==v){ cookieJar[n]=v; changed=true; } });
   return changed; }
-let lastPersist=0;
-function persistCookie(force){ const now=Date.now(); if(!force && now-lastPersist<8000) return; lastPersist=now;
-  try{ cfg.cookie=cookieHeader(); fs.writeFileSync(path.join(__dirname,'wms-agent.config.json'), JSON.stringify(cfg,null,2)); }catch(e){} }
+let lastPersist=0, lastWrittenCookie=cfg.cookie||'', sessionExpired=false;
+const CFG_FILE=path.join(__dirname,'wms-agent.config.json');
+function normalizeCookie(str){ const j={}; String(str||'').split(/;\s*/).forEach(p=>{ const i=p.indexOf('='); if(i>0){ const n=p.slice(0,i).trim(); if(n) j[n]=p.slice(i+1); } }); return j; }
+function jarHeader(j){ return Object.keys(j).map(n=>n+'='+j[n]).join('; '); }
+/* Load a cookie the user pasted into the config file (replaces the jar, resets the expired flag). */
+function adoptExternalCookie(fresh){
+  cookieJar=normalizeCookie(fresh.cookie); Object.assign(cfg, fresh); lastWrittenCookie=fresh.cookie; sessionExpired=false;
+  console.log('[wms-agent] '+new Date().toLocaleTimeString()+' config changed — new WMS cookie loaded ('+cookieHeader().length+' chars), no restart needed.');
+}
+/* Persist the rotated jar — but NEVER over a cookie someone else wrote into the file, and never while the
+   session is known to be expired (an expired jar must not clobber the fresh cookie the user is about to paste). */
+function persistCookie(force){
+  const now=Date.now(); if(!force && now-lastPersist<8000) return; if(sessionExpired) return;
+  try{
+    let onDisk=null; try{ onDisk=JSON.parse(fs.readFileSync(CFG_FILE,'utf8')); }catch(e){}
+    if(onDisk && onDisk.cookie && onDisk.cookie!==lastWrittenCookie && jarHeader(normalizeCookie(onDisk.cookie))!==cookieHeader()){
+      adoptExternalCookie(onDisk); return;                       // external edit wins — do not overwrite it
+    }
+    lastPersist=now; cfg.cookie=cookieHeader(); lastWrittenCookie=cfg.cookie;
+    fs.writeFileSync(CFG_FILE, JSON.stringify(cfg,null,2));
+  }catch(e){}
+}
+/* Hot-reload: when the session has expired the user pastes a fresh cookie into wms-agent.config.json.
+   Pick it up without a restart. Our own writes are recognised by lastWrittenCookie and skipped. */
+fs.watchFile(CFG_FILE, {interval:3000}, ()=>{
+  try{
+    const fresh=JSON.parse(fs.readFileSync(CFG_FILE,'utf8'));
+    if(!fresh.cookie || fresh.cookie===lastWrittenCookie || jarHeader(normalizeCookie(fresh.cookie))===cookieHeader()) return;
+    adoptExternalCookie(fresh);
+    keepAlive();   // verify immediately and log the result
+  }catch(e){ /* half-written file or bad JSON — next change will retry */ }
+});
 
 function wmsFetch(pathname, opts){
   opts=opts||{};
@@ -62,7 +91,9 @@ function wmsFetch(pathname, opts){
     req.on('error',rej); if(opts.body) req.write(opts.body); req.end();
   });
 }
-function looksLoggedOut(r){ return r.status===302 || r.status===401 || /Account\/Log(in|On)|name="Password"|id="loginForm"/i.test(r.body||''); }
+function looksLoggedOut(r){ const out = r.status===302 || r.status===401 || /Account\/Log(in|On)|name="Password"|id="loginForm"/i.test(r.body||'');
+  sessionExpired=out;   // remembered so an expired jar is never persisted over a freshly pasted cookie
+  return out; }
 function enc(o,pfx,a){ a=a||[]; pfx=pfx||'';
   if(Array.isArray(o)) o.forEach((v,i)=>enc(v,pfx+'['+i+']',a));
   else if(o&&typeof o==='object') Object.keys(o).forEach(k=>enc(o[k],pfx?pfx+'['+k+']':k,a));
@@ -188,7 +219,7 @@ async function runDailyJob(date, scheduled, opts){
     if(stats) WODS.importStats(db, stats, {date, sourceRef:'agent-job'});
     if(prepared) WODS.importPrepared(db, prepared, {dateRange:dmy(addDays(date,-6))+' - '+dmy(date), sourceRef:'agent-job'});
     if(checkins){ WODS.importCheckin(db, checkins.data||[], {dateRange:dmy(date)+' - '+dmy(date), sourceRef:'agent-job'}); if(checkins.daily) WODS.importFlow(db, checkins.daily, {sourceRef:'agent-job'}); }
-    if(out.synced){ db.wms=db.wms||{}; db.wms.lastSuccess=new Date().toISOString(); }
+    if(out.synced){ db.wms=db.wms||{}; db.wms.lastSuccess=new Date().toISOString(); db.wms.lastError=''; }   // a successful sync clears the "cookie expired" banner
     // 2) rule-based findings → observations (never duplicates: analysisKey)
     const obs=db.observations||(db.observations=[]);
     const have=new Set(obs.map(o=>o.analysisKey).filter(Boolean));
@@ -247,7 +278,7 @@ async function runWeeklyJob(anyDate, scheduled, opts){
     if(prepared) WODS.importPrepared(db, prepared, {dateRange:dmy(ws)+' - '+dmy(weEff), sourceRef:'agent-weekly'});
     if(checkins){ WODS.importCheckin(db, checkins.data||[], {dateRange:dmy(ws)+' - '+dmy(weEff), sourceRef:'agent-weekly'}); if(checkins.daily) WODS.importFlow(db, checkins.daily, {sourceRef:'agent-weekly'}); }
     if(stats) WODS.importStats(db, stats, {date:isoToday(), sourceRef:'agent-weekly'});
-    if(out.synced){ db.wms=db.wms||{}; db.wms.lastSuccess=new Date().toISOString(); }
+    if(out.synced){ db.wms=db.wms||{}; db.wms.lastSuccess=new Date().toISOString(); db.wms.lastError=''; }   // a successful sync clears the "cookie expired" banner
     const generatedAt=new Date().toISOString();
     const rep=WODS.buildWeeklyNarrative(db, ws, {generatedAt});
     if(!rep.empty){
