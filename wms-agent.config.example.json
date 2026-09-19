@@ -2,5 +2,7 @@
   "wmsBase": "https://wms.gjirafamall.com",
   "port": 8790,
   "dailyReportTime": "21:30",
+  "weeklyReportDay": 5,
+  "weeklyReportTime": "21:35",
   "cookie": "PASTE_YOUR_WMS_COOKIE_HEADER_HERE"
 }

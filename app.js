@@ -276,6 +276,7 @@ const Store = {
     if(k==='wmsStats') return 'nk|'+r.at;
     if(k==='wmsSyncLog') return 'nk|'+r.at+'|'+r.operation;
     if(k==='dailyReports') return 'nk|'+r.date;
+    if(k==='weeklyReports') return 'nk|'+r.weekStart;
     if(k==='observations' && r.analysisKey) return 'ak|'+r.analysisKey;
     return 'id|'+r.id;
   },
@@ -283,14 +284,20 @@ const Store = {
     const ts=r=>r.updatedAt||r.importedAt||r.generatedAt||r.createdAt||r.at||'';
     let changed=false; const mine=this.db;
     const srvNewer=((other.meta&&other.meta.savedAt)||'') > ((mine.meta&&mine.meta.savedAt)||'');
+    // tombstones from both sides: a record deleted anywhere stays deleted everywhere
+    const dead=Object.assign({}, other.deleted||{}, mine.deleted||{});
+    if(JSON.stringify(dead)!==JSON.stringify(mine.deleted||{})){ mine.deleted=dead; changed=true; }
     Object.keys(other).forEach(k=>{
       const ov=other[k];
+      if(k==='deleted') return;
       if(Array.isArray(ov)){
         const mv=Array.isArray(mine[k])?mine[k]:(mine[k]=[]);
+        // drop anything the other side has deleted since
+        for(let i=mv.length-1;i>=0;i--){ if(mv[i]&&typeof mv[i]==='object'&&('id' in mv[i])&&dead[k+'|'+this.natKey(k,mv[i])]){ mv.splice(i,1); changed=true; } }
         if(!ov.length) return;
         if(!ov[0] || typeof ov[0]!=='object' || !('id' in ov[0])){ if(srvNewer && JSON.stringify(mv)!==JSON.stringify(ov)){ mine[k]=ov; changed=true; } return; }
         const byKey=new Map(mv.map(r=>[this.natKey(k,r),r]));
-        ov.forEach(r=>{ const key=this.natKey(k,r); const m=byKey.get(key); if(!m){ mv.push(r); byKey.set(key,r); changed=true; } else if(ts(r)>ts(m) || (srvNewer && ts(r)===ts(m) && JSON.stringify(r)!==JSON.stringify(m))){ Object.assign(m,r); changed=true; } });
+        ov.forEach(r=>{ const key=this.natKey(k,r); if(dead[k+'|'+key]) return; const m=byKey.get(key); if(!m){ mv.push(r); byKey.set(key,r); changed=true; } else if(ts(r)>ts(m) || (srvNewer && ts(r)===ts(m) && JSON.stringify(r)!==JSON.stringify(m))){ Object.assign(m,r); changed=true; } });
         // keep newest-first ordering the UI expects
         mv.sort((a,b)=>ts(b)<ts(a)?-1:(ts(b)>ts(a)?1:0));
       } else if(ov && typeof ov==='object'){
@@ -325,12 +332,14 @@ const Store = {
     const i=this.col(name).findIndex(r=>r.id===id); if(i<0) return;
     const before=this.col(name)[i];
     audit(name, id, 'delete', before, null);
+    // tombstone: a union merge with another browser would otherwise resurrect the record
+    this.db.deleted=this.db.deleted||{}; this.db.deleted[name+'|'+this.natKey(name,before)]=nowISO();
     this.col(name).splice(i,1); this.persist();
   },
 };
 const seedCollections = ['config','employees','departments','processes','observations','measurements',
   'orders','products','staffSkills','staffObs','problems','kpiRecords','hqInteractions','quickWins','briefings','validations',
-  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','audit'];
+  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit'];
 
 function audit(entity,recId,action,before,after){
   const changes=[];
@@ -424,6 +433,7 @@ const ROUTES = [
   {id:'dashboard', title:'Dashboard', ic:'▤', render:renderDashboard},
   {id:'observations', title:'Daily Observation', ic:'👁', render:renderObservations},
   {id:'timer', title:'Process Measurement', ic:'⏱', render:renderTimer},
+  {id:'raportet', title:'Raportet', ic:'📑', render:renderRaportet},
   {sec:'Flows'},
   {id:'orders', title:'Order Flow', ic:'➜', render:renderOrders},
   {id:'inbound', title:'Product / Inbound Flow', ic:'⇩', render:renderInbound},
@@ -3278,5 +3288,87 @@ async function boot(){
   // WMS auto-sync: whenever the app is served by the local agent, sync now + on schedule.
   // Boot sync always runs on the agent (so it "just works"); the toggle only gates the recurring timer.
   try{ if(wmsOnAgent() && wmsCfg().autoSync!==false){ wmsAgentSync(7).then(()=>{ if((location.hash||'')==='#wms') renderWMS($('#view')); }); wmsScheduleAuto(); } }catch(e){}
+}
+/* =========================================================================
+   RAPORTET — archive of the agent's daily (21:30) and weekly (Friday 21:35)
+   narrative reports, plus live previews and manual (re)generation.
+   =======================================================================*/
+let rapTab='weekly', rapOpen=null;   // rapOpen = {kind:'daily'|'weekly', key}
+function renderRaportet(v){
+  const onAgent=Store.onAgent();
+  const wcfg=Store.db.wms||{};
+  const dayT=wcfg.dailyReportTime||'21:30', wkT=wcfg.weeklyReportTime||'21:35';
+  v.innerHTML = pagehead('Raportet',
+    `Raporte narrative të gjeneruara automatikisht nga agjenti: <b>ditore</b> çdo ditë pas orës ${h(dayT)} (mbyllja e turnit) dhe <b>javore</b> çdo të premte pas orës ${h(wkT)}. Bazohen në shifrat WMS dhe në ditar; ruajnë ndarjen fakt–hipotezë.`,
+    `<button class="btn" id="rapPrint">🖨 Print / PDF</button>`)
+    + `<div class="filters" id="rapTabs"><button class="btn ${rapTab==='weekly'?'primary':''}" data-t="weekly">Javore</button><button class="btn ${rapTab==='daily'?'primary':''}" data-t="daily">Ditore</button></div>`
+    + `<div id="rapBody"></div>`;
+  $('#rapPrint').onclick=()=>window.print();
+  $$('#rapTabs [data-t]').forEach(b=>b.onclick=()=>{ rapTab=b.dataset.t; rapOpen=null; renderRaportet(v); });
+  (rapTab==='weekly'?rapWeekly:rapDaily)($('#rapBody'), onAgent);
+}
+function rapMeta(r){ const g=new Date(r.generatedAt); return `${g.toLocaleDateString()} ${g.toTimeString().slice(0,5)}${r.scheduled?' · automatik':' · manual'}`; }
+function rapStat(label,val,cls){ return val==null||val===''?'':`<span class="badge ${cls||'b-muted'}" style="margin-right:4px">${h(label)}: ${h(String(val))}</span>`; }
+async function rapRun(url, btn, after){
+  if(!btn) return; const old=btn.textContent; btn.disabled=true; btn.textContent='⏳ Po gjenerohet… (sync WMS, mund të zgjasë deri 2 min)';
+  try{ const r=await fetch(url,{method:'POST'}); const j=await r.json(); if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+    await Store.pullFromServer(); toast('Raporti u arkivua'+(j.synced?' · WMS sync ✓':'')); after&&after(j); }
+  catch(e){ toast('Gjenerimi dështoi: '+e.message); btn.disabled=false; btn.textContent=old; }
+}
+function rapWeekly(box, onAgent){
+  const reps=Store.col('weeklyReports').slice().sort((a,b)=>a.weekStart<b.weekStart?1:-1);
+  const cur=WODS.weekBounds(todayStr());
+  const wkNo=ws=>WODS.weekNumber(Store.db,ws);
+  const dateVal=(rapOpen&&rapOpen.kind==='weekly'&&rapOpen.key)||cur.start;
+  box.innerHTML=`<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b>Java aktuale:</b> <span class="badge b-muted">Java ${h(String(wkNo(cur.start)))} · ${h(fmtDateAl(cur.start))} – ${h(fmtDateAl(cur.end))}</span>
+        <button class="btn sm" id="rapWeekLive">👁 Shiko live</button>
+        ${onAgent?`<span style="margin-left:auto;display:flex;gap:6px;align-items:center"><span class="small muted">Gjenero për javën e datës</span><input type="date" id="rapWeekDate" value="${h(dateVal)}" style="width:auto;min-height:34px"><button class="btn sm primary" id="rapWeekRun">⚙ Gjenero / rigjenero</button></span>`:`<span class="hint" style="margin:0 0 0 auto">Gjenerimi bëhet nga agjenti (hape app-in te http://localhost:8790).</span>`}
+      </div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Java</th><th>Periudha</th><th>Gjeneruar</th><th class="wrap">Shifra kyçe</th><th></th></tr></thead>
+      <tbody>${reps.length?reps.map(r=>`<tr>
+        <td><b>Java ${h(String(r.weekNo!=null?r.weekNo:wkNo(r.weekStart)))}</b></td>
+        <td>${h(fmtDateAl(r.weekStart))} – ${h(fmtDateAl(r.weekEnd))}</td>
+        <td class="small">${h(rapMeta(r))}</td>
+        <td class="wrap">${r.stats?rapStat('Porosi',r.stats.prepTotal)+rapStat('Mes./ditë pune',r.stats.avgWork)+rapStat('Out/In',r.stats.outRate!=null?r.stats.outRate+'%':null,r.stats.outRate!=null&&r.stats.outRate<75?'b-warn':'b-ok')+rapStat('Vëzhgime',r.stats.obs)+rapStat('Kritike',r.stats.critical,r.stats.critical?'b-crit':'b-muted')+rapStat('Matje',r.stats.meas):''}</td>
+        <td><button class="btn sm ${rapOpen&&rapOpen.kind==='weekly'&&rapOpen.key===r.weekStart?'primary':''}" data-open="${h(r.weekStart)}">Shiko</button> ${onAgent?`<a class="btn sm ghost" href="/reports/weekly-${h(r.weekStart)}.html" target="_blank" rel="noopener" title="Hap si faqe të veçantë për print/dërgim">↗</a>`:''}</td>
+      </tr>`).join(''):emptyRow(5,'Ende s\'ka raporte javore të arkivuara. Gjenero një me butonin lart — agjenti sinkronizon shifrat WMS të javës dhe e përpilon.')}</tbody></table></div>
+    <div id="rapView" style="margin-top:14px"></div>`;
+  const view=$('#rapView');
+  const show=(html,label)=>{ view.innerHTML=`<div class="meta muted small" style="margin-bottom:6px">${label}</div>`+html; view.scrollIntoView({behavior:'smooth',block:'start'}); };
+  $$('#rapBody [data-open]').forEach(b=>b.onclick=()=>{ rapOpen={kind:'weekly',key:b.dataset.open}; const r=reps.find(x=>x.weekStart===b.dataset.open); rapWeekly(box,onAgent); if(r) $('#rapView').innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; });
+  $('#rapWeekLive').onclick=()=>{ const n=WODS.buildWeeklyNarrative(Store.db, todayStr()); show(n.empty?'<div class="empty">S\'ka të dhëna për këtë javë.</div>':n.html, 'Pamje live nga të dhënat aktuale (jo e arkivuar)'); };
+  const run=$('#rapWeekRun'); if(run) run.onclick=()=>{ const d=$('#rapWeekDate').value||todayStr(); rapRun('/report/week?date='+encodeURIComponent(d), run, ()=>{ rapOpen={kind:'weekly',key:WODS.weekBounds(d).start}; renderRaportet($('#view')); const r=Store.col('weeklyReports').find(x=>x.weekStart===rapOpen.key); if(r&&$('#rapView')) $('#rapView').innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; }); };
+  if(rapOpen&&rapOpen.kind==='weekly'){ const r=reps.find(x=>x.weekStart===rapOpen.key); if(r) view.innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; }
+}
+function rapDaily(box, onAgent){
+  const reps=Store.col('dailyReports').slice().sort((a,b)=>a.date<b.date?1:-1);
+  const dateVal=(rapOpen&&rapOpen.kind==='daily'&&rapOpen.key)||todayStr();
+  box.innerHTML=`<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b>Dita:</b> <input type="date" id="rapDayDate" value="${h(dateVal)}" style="width:auto;min-height:34px">
+        <button class="btn sm" id="rapDayLive">👁 Shiko live</button>
+        ${onAgent?`<button class="btn sm primary" id="rapDayRun" style="margin-left:auto">⚙ Gjenero / rigjenero për këtë datë</button>`:''}
+      </div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Data</th><th>Gjeneruar</th><th class="wrap">Shifra kyçe</th><th></th></tr></thead>
+      <tbody>${reps.length?reps.map(r=>`<tr>
+        <td><b>${h(fmtDateAl(r.date))}</b></td>
+        <td class="small">${h(rapMeta(r))}</td>
+        <td class="wrap">${r.stats?rapStat('Porosi',r.stats.prep)+rapStat('Out/In',r.stats.outRate!=null?r.stats.outRate+'%':null,r.stats.outRate!=null&&r.stats.outRate<75?'b-warn':'b-ok')+rapStat('Vëzhgime',r.stats.obs)+rapStat('Auto',r.stats.auto)+rapStat('Kritike',r.stats.critical,r.stats.critical?'b-crit':'b-muted')+rapStat('Presin validim',r.stats.pending):''}</td>
+        <td><button class="btn sm ${rapOpen&&rapOpen.kind==='daily'&&rapOpen.key===r.date?'primary':''}" data-open="${h(r.date)}">Shiko</button> ${onAgent?`<a class="btn sm ghost" href="/reports/daily-${h(r.date)}.html" target="_blank" rel="noopener" title="Hap si faqe të veçantë për print/dërgim">↗</a>`:''}</td>
+      </tr>`).join(''):emptyRow(4,'Ende s\'ka raporte ditore të arkivuara. Gjenerohen vetë çdo mbrëmje; ose gjenero një me butonin lart.')}</tbody></table></div>
+    <div id="rapView" style="margin-top:14px"></div>`;
+  const view=$('#rapView');
+  const showRep=r=>{ view.innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; };
+  $$('#rapBody [data-open]').forEach(b=>b.onclick=()=>{ rapOpen={kind:'daily',key:b.dataset.open}; rapDaily(box,onAgent); const r=Store.col('dailyReports').find(x=>x.date===b.dataset.open); if(r) showRep(r); $('#rapView').scrollIntoView({behavior:'smooth',block:'start'}); });
+  $('#rapDayLive').onclick=()=>{ const d=$('#rapDayDate').value||todayStr(); const n=WODS.buildDailyNarrative(Store.db,d); view.innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Pamje live për ${h(fmtDateAl(d))} nga të dhënat aktuale (jo e arkivuar)</div>`+(n.empty?'<div class="empty">S\'ka të dhëna për këtë datë.</div>':n.html); };
+  const run=$('#rapDayRun'); if(run) run.onclick=()=>{ const d=$('#rapDayDate').value||todayStr(); const skipAuto=Store.col('observations').some(o=>o.date===d&&!o.auto&&/WMS/i.test(o.source||''));
+    rapRun('/report/run?date='+encodeURIComponent(d)+(skipAuto?'&auto=0':''), run, ()=>{ rapOpen={kind:'daily',key:d}; renderRaportet($('#view')); const r=Store.col('dailyReports').find(x=>x.date===d); if(r&&$('#rapView')) $('#rapView').innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; }); };
+  if(rapOpen&&rapOpen.kind==='daily'){ const r=reps.find(x=>x.date===rapOpen.key); if(r) showRep(r); }
 }
 document.addEventListener('DOMContentLoaded',boot);

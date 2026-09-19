@@ -192,7 +192,12 @@ async function runDailyJob(date, scheduled, opts){
     // 2) rule-based findings → observations (never duplicates: analysisKey)
     const obs=db.observations||(db.observations=[]);
     const have=new Set(obs.map(o=>o.analysisKey).filter(Boolean));
-    (opts.skipAuto?[]:WODS.wmsAutoObservations(db, date, REPORT_TIME)).forEach(o=>{ if(have.has(o.analysisKey)) return;
+    // rule findings are skipped when the day already carries a manual WMS analysis (source "WMS analysis")
+    // — the analyst's entries cover the same ground with more context; both would only duplicate the day.
+    const manualWms=obs.some(o=>o.date===date && !o.auto && /wms/i.test(o.source||''));
+    if(manualWms) out.autoSkipped='manual WMS analysis present for this date';
+    const dead=db.deleted||{};   // tombstones written by the app on delete — a finding the analyst removed must not come back
+    (opts.skipAuto||manualWms?[]:WODS.wmsAutoObservations(db, date, REPORT_TIME)).forEach(o=>{ if(have.has(o.analysisKey) || dead['observations|ak|'+o.analysisKey]) return;
       const now=new Date().toISOString();
       obs.unshift(Object.assign({id:WODS.uid('obs'), createdAt:now, createdBy:'WMS auto-analysis', updatedAt:now, updatedBy:'WMS auto-analysis'}, o)); out.autoObservations++; });
     // 3) narrative → archive
@@ -213,11 +218,61 @@ async function runDailyJob(date, scheduled, opts){
   return out;
 }
 function hhmmNow(){ const t=new Date(); return p2(t.getHours())+':'+p2(t.getMinutes()); }
+
+/* --- weekly report job -------------------------------------------------------
+   Every week on cfg.weeklyReportDay (0=Sun … 6=Sat, default 5 = Friday) after
+   cfg.weeklyReportTime (default 21:35, i.e. right after the daily report):
+   syncs the whole week's WMS figures (prepared per day + check-in/out per day),
+   builds the narrative weekly report and archives it in db.weeklyReports +
+   /reports/weekly-<monday>.html. Catch-up: if the agent was off, it runs the
+   missing report the next time it is up later that week (Sat/Sun included).
+   Manual / retroactive: POST /report/week?date=YYYY-MM-DD (any day of the week). */
+const WEEKLY_DAY=Number(cfg.weeklyReportDay!=null?cfg.weeklyReportDay:5);
+const WEEKLY_TIME=String(cfg.weeklyReportTime||'21:35');
+async function runWeeklyJob(anyDate, scheduled, opts){
+  if(jobRunning) return {error:'busy'};
+  opts=opts||{}; jobRunning=true; const started=Date.now();
+  const {start:ws, end:we}=WODS.weekBounds(anyDate||isoToday());
+  const weEff = we<isoToday()? we : isoToday();       // never ask WMS for the future
+  const out={weekStart:ws, weekEnd:we, synced:false};
+  try{
+    let prepared=null, checkins=null, stats=null;
+    if(!opts.noSync){ try{
+      const pr=await getPrepared(dmy(ws), dmy(weEff)); if(!pr.error) prepared=pr.data;
+      const ci=await getCheckins(dmy(ws), dmy(weEff)); if(!ci.error) checkins=ci;
+      if(weEff===isoToday()){ const s=await getStats(); if(!s.error) stats=s.data; }
+      out.synced=!!(prepared||checkins);
+    }catch(e){ out.syncError=String(e&&e.message||e); } }
+    const db=loadDb(); if(!db){ out.error='no shared database yet — open the app once via http://localhost:'+PORT+'/app.html'; return out; }
+    if(prepared) WODS.importPrepared(db, prepared, {dateRange:dmy(ws)+' - '+dmy(weEff), sourceRef:'agent-weekly'});
+    if(checkins){ WODS.importCheckin(db, checkins.data||[], {dateRange:dmy(ws)+' - '+dmy(weEff), sourceRef:'agent-weekly'}); if(checkins.daily) WODS.importFlow(db, checkins.daily, {sourceRef:'agent-weekly'}); }
+    if(stats) WODS.importStats(db, stats, {date:isoToday(), sourceRef:'agent-weekly'});
+    if(out.synced){ db.wms=db.wms||{}; db.wms.lastSuccess=new Date().toISOString(); }
+    const generatedAt=new Date().toISOString();
+    const rep=WODS.buildWeeklyNarrative(db, ws, {generatedAt});
+    if(!rep.empty){
+      const reps=db.weeklyReports||(db.weeklyReports=[]);
+      const i=reps.findIndex(r=>r.weekStart===ws);
+      const rec={id:(i>=0?reps[i].id:WODS.uid('wrep')), weekStart:ws, weekEnd:we, weekNo:rep.weekNo, generatedAt, auto:true, scheduled:!!scheduled, html:rep.html, text:rep.text, stats:rep.stats, updatedAt:generatedAt};
+      if(i>=0) reps[i]=rec; else reps.unshift(rec);
+      try{ fs.mkdirSync(REPORTS_DIR,{recursive:true}); fs.writeFileSync(path.join(REPORTS_DIR,'weekly-'+ws+'.html'), WODS.standaloneReportPage('Raport javor '+WODS.fmtDateAl(ws)+' – '+WODS.fmtDateAl(we), rep.html)); out.file='reports/weekly-'+ws+'.html'; }catch(e){ out.fileError=String(e.message||e); }
+      out.weekNo=rep.weekNo; out.stats=rep.stats;
+    } else out.note='no data for this week';
+    if(scheduled){ db.meta=db.meta||{}; db.meta.lastWeeklyReportWeek=ws; }
+    out.savedAt=saveDb(db); out.ms=Date.now()-started;
+    console.log('[wms-agent] '+new Date().toLocaleTimeString()+' weekly report '+ws+' – '+we+(scheduled?' (scheduled)':' (manual)')+': '+(out.synced?'WMS sync ✓':'no sync')+', '+(out.file||'no file')+', '+out.ms+' ms');
+  }catch(e){ out.error=String(e&&e.message||e); console.log('[wms-agent] weekly report failed: '+out.error); }
+  finally{ jobRunning=false; }
+  return out;
+}
 async function reportTick(){
-  const today=isoToday(); if(hhmmNow()<REPORT_TIME) return;
-  const db=loadDb(); if(!db) return;
-  if(db.meta && db.meta.lastAutoReportDate===today) return;
-  await runDailyJob(today, true);
+  const today=isoToday(); const db=loadDb(); if(!db) return;
+  // daily
+  if(hhmmNow()>=REPORT_TIME && !(db.meta && db.meta.lastAutoReportDate===today)){ await runDailyJob(today, true); return; }
+  // weekly: due once the configured weekday+time of the current week has passed
+  const t=new Date(); const dowMon=(t.getDay()+6)%7, targetMon=(WEEKLY_DAY+6)%7;
+  const due = dowMon>targetMon || (dowMon===targetMon && hhmmNow()>=WEEKLY_TIME);
+  if(due){ const ws=WODS.weekBounds(today).start; if(!(db.meta && db.meta.lastWeeklyReportWeek===ws)) await runWeeklyJob(today, true); }
 }
 setInterval(reportTick, 30*1000);
 setTimeout(reportTick, 8000); // catch-up shortly after start (agent was off at report time)
@@ -243,7 +298,10 @@ http.createServer(async (req,resp)=>{
       const savedAt=saveDb(body); return json(200,{ok:true, savedAt});
     }
     if(q.pathname==='/report/run' && req.method==='POST'){ const r=await runDailyJob(q.query.date||isoToday(), false, {skipAuto:q.query.auto==='0'}); return json(r.error?(r.error==='busy'?429:500):200, r); }
-    if(q.pathname==='/report/list'){ const db=loadDb(); return json(200,{reports:((db&&db.dailyReports)||[]).map(r=>({date:r.date,generatedAt:r.generatedAt,scheduled:!!r.scheduled,stats:r.stats}))}); }
+    if(q.pathname==='/report/week' && req.method==='POST'){ const r=await runWeeklyJob(q.query.date||isoToday(), false, {noSync:q.query.sync==='0'}); return json(r.error?(r.error==='busy'?429:500):200, r); }
+    if(q.pathname==='/report/list'){ const db=loadDb(); return json(200,{
+      daily:((db&&db.dailyReports)||[]).map(r=>({date:r.date,generatedAt:r.generatedAt,scheduled:!!r.scheduled,stats:r.stats})),
+      weekly:((db&&db.weeklyReports)||[]).map(r=>({weekStart:r.weekStart,weekEnd:r.weekEnd,weekNo:r.weekNo,generatedAt:r.generatedAt,scheduled:!!r.scheduled,stats:r.stats})) }); }
     if(q.pathname==='/wms/stats'){ const r=await getStats(); return json(r.error?502:200, r.error?{error:r.error}:r.data); }
     if(q.pathname==='/wms/prepared'){ const r=await getPrepared(q.query.start||today(), q.query.end||q.query.start||today()); return json(r.error?502:200, r.error?{error:r.error}:{kind:'preparedOrders',rows:r.data}); }
     if(q.pathname==='/wms/checkin'){ const r=await getCheckins(q.query.start||today(), q.query.end||q.query.start||today()); return json(r.error?502:200, r.error?{error:r.error}:{kind:'checkedIn',rows:r.data,daily:r.daily}); }
@@ -261,7 +319,8 @@ http.createServer(async (req,resp)=>{
   console.log('  WMS:    '+WMS+'   (cookie loaded, '+cookieHeader().length+' chars)');
   console.log('  Keep-alive: pinging WMS every '+KEEPALIVE_MIN+' min to renew the session cookie automatically.');
   console.log('  Shared DB: '+DB_FILE+(fs.existsSync(DB_FILE)?'':'  (created by the first browser that opens the app)'));
-  console.log('  Daily report: every day after '+REPORT_TIME+' → db.dailyReports + reports/daily-YYYY-MM-DD.html  (manual: POST /report/run)\n');
+  console.log('  Daily report: every day after '+REPORT_TIME+' → db.dailyReports + reports/daily-YYYY-MM-DD.html  (manual: POST /report/run)');
+  console.log('  Weekly report: weekday '+WEEKLY_DAY+' after '+WEEKLY_TIME+' → db.weeklyReports + reports/weekly-<monday>.html  (manual: POST /report/week?date=YYYY-MM-DD)\n');
 });
 
 /* Keep-alive: a light request on a timer renews the sliding session cookie

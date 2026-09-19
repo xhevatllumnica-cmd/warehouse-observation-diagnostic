@@ -351,6 +351,166 @@ function buildDailyNarrative(db, d, opts){
     stats:{obs:rows.length, auto:nAuto, pending, validated, critical:bySev.Critical||0, prep:W?W.prep:null, outRate:W?W.outRate:null} };
 }
 
+/* ------------------------------------------------------------ weekly report */
+const AL_DAYS_SHORT=['Die','Hën','Mar','Mër','Enj','Pre','Sht'];
+function addDaysIso(iso,n){ const d=dobj(iso); d.setDate(d.getDate()+n); return localDate(d); }
+/* Monday-based week containing `date` */
+function weekBounds(date){ const d=dobj(date); const dow=(d.getDay()+6)%7; const ws=addDaysIso(localDate(d),-dow); return {start:ws, end:addDaysIso(ws,6)}; }
+/* week 1 = the week that contains config.startDate */
+function weekNumber(db, weekStart){ const s=cfg(db).startDate; if(!s) return null; const w0=weekBounds(s).start; return Math.round((dobj(weekStart)-dobj(w0))/(7*86400000))+1; }
+function datesBetween(a,b){ const out=[]; for(let d=a; d<=b; d=addDaysIso(d,1)) out.push(d); return out; }
+function wmsWeekFacts(db, ws, we){
+  const days=datesBetween(ws,we).map(d=>({d, W:wmsDayFacts(db,d)}));
+  const withData=days.filter(x=>x.W);
+  if(!withData.length) return null;
+  const prepDays=withData.filter(x=>x.W.prep>0);
+  const prepTotal=prepDays.reduce((a,x)=>a+x.W.prep,0);
+  const prepWork=prepDays.filter(x=>x.W.isWorkDay);
+  const avgWork=prepWork.length? Math.round(prepWork.reduce((a,x)=>a+x.W.prep,0)/prepWork.length) : null;
+  const best=prepDays.slice().sort((a,b)=>b.W.prep-a.W.prep)[0]||null;
+  const worst=prepWork.slice().sort((a,b)=>a.W.prep-b.W.prep)[0]||null;
+  const flowDays=withData.filter(x=>x.W.checkedIn!=null);
+  const ci=flowDays.reduce((a,x)=>a+x.W.checkedIn,0), co=flowDays.reduce((a,x)=>a+x.W.checkedOut,0);
+  const outRate=ci>0? Math.round(co/ci*100) : null;
+  const worstFlow=flowDays.filter(x=>x.W.checkedIn>=100).sort((a,b)=>(a.W.outRate||0)-(b.W.outRate||0))[0]||null;
+  // operators over the week
+  const byOp={}; col(db,'wmsPrepared').forEach(r=>{ if(r.date>=ws&&r.date<=we) byOp[r.operator]=(byOp[r.operator]||0)+num(r.preparedOrders); });
+  const ops=Object.entries(byOp).sort((a,b)=>b[1]-a[1]);
+  const ciByOp={}; col(db,'wmsCheckin').forEach(r=>{ if(r.date>=ws&&r.date<=we) ciByOp[r.operator]=(ciByOp[r.operator]||0)+num(r.checkedIn); });
+  const ciOps=Object.entries(ciByOp).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]);
+  const generic=ops.filter(o=>GENERIC_RE.test(o[0])); const genericPrep=generic.reduce((a,x)=>a+x[1],0);
+  // backlog snapshots: first and last of the week
+  const snaps=col(db,'wmsStats').filter(s=>s.date>=ws&&s.date<=we).sort((a,b)=>a.at<b.at?-1:1);
+  return { ws, we, days, withData, prepTotal, prepDaysN:prepDays.length, prepWorkN:prepWork.length, avgWork, best, worst, ci, co, outRate, flowDaysN:flowDays.length, worstFlow,
+    ops, ciOps, generic, genericPrep, firstSnap:snaps[0]||null, lastSnap:snaps[snaps.length-1]||null };
+}
+function pct(a,b){ return b? Math.round((a-b)/b*100) : null; }
+function pctWord(p){ if(p==null) return ''; if(Math.abs(p)<=3) return 'në të njëjtin nivel'; return (p<0? `${Math.abs(p)}% më pak` : `${p}% më shumë`); }
+/* Narrative weekly report for the Monday-based week containing `date`. Returns {html,text,stats,weekStart,weekEnd,weekNo}. */
+function buildWeeklyNarrative(db, date, opts){
+  opts=opts||{}; const h=esc;
+  const {start:ws, end:we}=weekBounds(date);
+  const wk=weekNumber(db,ws);
+  const rows=col(db,'observations').filter(o=>o.date>=ws&&o.date<=we);
+  const meas=col(db,'measurements').filter(m=>m.date>=ws&&m.date<=we);
+  const probs=col(db,'problems').filter(p=>p.dateIdentified>=ws&&p.dateIdentified<=we);
+  const F=wmsWeekFacts(db,ws,we);
+  const Fp=wmsWeekFacts(db,addDaysIso(ws,-7),addDaysIso(we,-7));
+  if(!rows.length && !meas.length && !F) return {html:'',text:'',empty:true, weekStart:ws, weekEnd:we, weekNo:wk};
+  const startD=cfg(db).startDate; const firstWork=[ws,we].map(x=>x); // range shown in day numbers
+  const dayFrom=startD? Math.max(1,dayNumber(db, ws<startD?startD:ws)) : null, dayTo=startD? dayNumber(db, we) : null;
+  const ph=phaseFor(db, we<localDate()?we:localDate());
+  const sevRank={Critical:0,Important:1,Improvement:2,Minor:3};
+  const bySevRank=(a,b)=>((sevRank[a.severity]!=null?sevRank[a.severity]:9)-(sevRank[b.severity]!=null?sevRank[b.severity]:9));
+  const sec=(t,body)=>body?`<p style="margin:10px 0 0"><b style="color:var(--accent)">${t}.</b> ${body}</p>`:'';
+
+  // 1 · week in numbers
+  const ctx=[];
+  ctx.push(`<b>Java ${wk!=null?wk:'—'} e vëzhgimit, ${h(fmtDateAl(ws))} – ${h(fmtDateAl(we))}</b>${dayFrom?` — ditët e punës ${dayFrom}–${Math.min(30,dayTo)}/30`:''}, faza ${h(String(ph.n))} (${h(ph.name)}).`);
+  if(F){
+    if(F.prepTotal){ let s=`Gjatë javës WMS regjistroi <b>${F.prepTotal} porosi të përgatitura</b> në ${F.prepDaysN} ditë me të dhëna`;
+      if(F.avgWork!=null) s+=`, mesatarisht <b>${F.avgWork}/ditë pune</b>`;
+      if(Fp && Fp.avgWork!=null && F.avgWork!=null){ const p=pct(F.avgWork,Fp.avgWork); s+=` — ${pctWord(p)} se java e kaluar (${Fp.avgWork}/ditë)`; }
+      if(F.best) s+=`. Dita më e fortë: ${AL_DAYS_SHORT[dobj(F.best.d).getDay()]} ${h(fmtDateAl(F.best.d))} me ${F.best.W.prep}`;
+      if(F.worst && F.worst.d!==(F.best&&F.best.d)) s+=`; më e dobëta e ditëve të punës: ${AL_DAYS_SHORT[dobj(F.worst.d).getDay()]} ${h(fmtDateAl(F.worst.d))} me ${F.worst.W.prep}`;
+      ctx.push(s+'.'); }
+    if(F.flowDaysN){ let s=`Në rrjedhën e produkteve hynë <b>${F.ci}</b> (check-in) dhe dolën <b>${F.co}</b> (check-out)`;
+      if(F.outRate!=null) s+=` — ${F.outRate}% e asaj që hyri doli brenda ditës`;
+      if(Fp && Fp.outRate!=null && F.outRate!=null) s+=` (java e kaluar ${Fp.outRate}%)`;
+      if(F.worstFlow && F.worstFlow.W.outRate!=null && F.worstFlow.W.outRate<60) s+=`; dita më kritike ${AL_DAYS_SHORT[dobj(F.worstFlow.d).getDay()]} ${h(fmtDateAl(F.worstFlow.d))} me vetëm ${F.worstFlow.W.outRate}%`;
+      ctx.push(s+'.'); }
+    if(F.lastSnap){ let s=`Backlog-u në WMS: <b>${num(F.lastSnap.ordersInProcessing)} porosi në procesim</b> në matjen e fundit të javës (${h(fmtDateAl(F.lastSnap.date))} ${localTime(new Date(F.lastSnap.at))})`;
+      if(F.firstSnap && F.firstSnap!==F.lastSnap && F.firstSnap.date!==F.lastSnap.date){ const d=num(F.lastSnap.ordersInProcessing)-num(F.firstSnap.ordersInProcessing); s+=`, ${d<0?'−':'+'}${Math.abs(d)} kundrejt matjes së parë (${h(fmtDateAl(F.firstSnap.date))})`; }
+      ctx.push(s+`; ${num(F.lastSnap.ordersReadyToUnmap)} gati për përfundim.`); }
+    if(F.ops.length>=2 && F.prepTotal){ const a=F.ops[0], b=F.ops[1]; const share=Math.round((a[1]+b[1])/F.prepTotal*100);
+      let s=`Ngarkesën e picking e mbajtën kryesisht <b>${h(a[0])}</b> (${a[1]}) dhe <b>${h(b[0])}</b> (${b[1]}) — ${share}% e javës, nga ${F.ops.length} llogari me porosi`;
+      if(F.genericPrep) s+=`; ${Math.round(F.genericPrep/F.prepTotal*100)}% e porosive u regjistruan nën llogari gjenerike (${F.generic.map(o=>h(o[0])).join(', ')})`;
+      if(F.ciOps.length) s+=`. Pranimin e mbajti ${h(F.ciOps[0][0])} (${F.ciOps[0][1]}${F.ci?`, ${Math.round(F.ciOps[0][1]/F.ci*100)}%`:''})`;
+      ctx.push(s+'.'); }
+  } else ctx.push('Për këtë javë nuk ka shifra WMS të sinkronizuara — përmbledhja mbështetet vetëm te ditari.');
+
+  // 2 · day by day (compact table)
+  let dayTable='';
+  if(F){ const tr=F.days.map(x=>{ const W=x.W; const dow=dobj(x.d).getDay(); const off=!isWorkDay(db,x.d);
+      const obsN=rows.filter(o=>o.date===x.d).length;
+      return `<tr${off?' style="opacity:.75"':''}><td>${AL_DAYS_SHORT[dow]} ${h(fmtDateAl(x.d))}${off?' <span class="faint">·off</span>':''}</td>
+        <td style="text-align:right">${W&&W.prep?`<b>${W.prep}</b>`:'<span class="faint">—</span>'}</td>
+        <td style="text-align:right">${W&&W.checkedIn!=null?W.checkedIn:'<span class="faint">—</span>'}</td>
+        <td style="text-align:right">${W&&W.checkedOut!=null?W.checkedOut:'<span class="faint">—</span>'}</td>
+        <td style="text-align:right">${W&&W.outRate!=null?`<b style="color:${W.outRate>=90?'var(--ok)':(W.outRate>=60?'var(--warn)':'var(--crit)')}">${W.outRate}%</b>`:'<span class="faint">—</span>'}</td>
+        <td style="text-align:right">${W&&W.last?num(W.last.ordersInProcessing):'<span class="faint">—</span>'}</td>
+        <td style="text-align:right">${obsN||'<span class="faint">—</span>'}</td></tr>`; }).join('');
+    dayTable=`<div style="overflow:auto;margin-top:10px"><table class="tbl" style="font-size:12.5px"><thead><tr><th>Dita</th><th style="text-align:right">Porosi</th><th style="text-align:right">Check-in</th><th style="text-align:right">Check-out</th><th style="text-align:right">Out/In</th><th style="text-align:right">Në procesim</th><th style="text-align:right">Vëzhgime</th></tr></thead><tbody>${tr}</tbody></table></div>`; }
+
+  // 3 · what was observed
+  const bySev={}, byProc={}; rows.forEach(o=>{ if(o.severity) bySev[o.severity]=(bySev[o.severity]||0)+1; const pn=procName(db,o.processId)||'I pacaktuar'; byProc[pn]=(byProc[pn]||0)+1; });
+  const topProc=Object.entries(byProc).sort((a,b)=>b[1]-a[1]);
+  const nAuto=rows.filter(o=>o.auto).length;
+  let seen='';
+  if(rows.length){
+    const sevWords=[]; if(bySev.Critical) sevWords.push(`${bySev.Critical} kritike`); if(bySev.Important) sevWords.push(`${bySev.Important} të rëndësishme`); if(bySev.Improvement) sevWords.push(`${bySev.Improvement} për përmirësim`); if(bySev.Minor) sevWords.push(`${bySev.Minor} të vogla`);
+    seen=`Në ditar u regjistruan <b>${rows.length} vëzhgime</b>${nAuto?` (${nAuto} nga analiza automatike WMS)`:''}${sevWords.length?` — ${slAl(sevWords)}`:''}${topProc.length?`, më së shumti te ${slAl(topProc.slice(0,3).map(([k,c])=>`<b>${h(k)}</b> (${c})`))}`:''}.`;
+    const crit=rows.filter(o=>o.severity==='Critical').sort((a,b)=>a.date<b.date?-1:1);
+    if(crit.length) seen+=` Kritike: ${crit.slice(0,4).map(o=>`${h(fmtDateAl(o.date))} — ${h(lc1(trimEnd(fs1(o.subProcess||o.what,120))))}`).join('; ')}${crit.length>4?`; dhe ${crit.length-4} të tjera`:''}.`;
+    const flags={i:rows.filter(o=>o.interruption).length, r:rows.filter(o=>o.rework).length, e:rows.filter(o=>o.error).length};
+    const fw=[]; if(flags.i) fw.push(`${flags.i} ndërprerje`); if(flags.r) fw.push(`${flags.r} ripërpunim${flags.r===1?'':'e'}`); if(flags.e) fw.push(`${flags.e} gabim${flags.e===1?'':'e'}`);
+    if(fw.length) seen+=` U shënuan ${slAl(fw)}.`;
+  } else seen='Në ditar nuk ka vëzhgime për këtë javë.';
+  if(meas.length){ const procS=meas.reduce((a,m)=>a+(m.processingSec||0),0), waitS=meas.reduce((a,m)=>a+(m.waitingSec||0),0); const tot=procS+waitS;
+    const mp={}; meas.forEach(m=>{ const pn=procName(db,m.processId)||'—'; mp[pn]=(mp[pn]||0)+1; }); const mpTop=Object.entries(mp).sort((a,b)=>b[1]-a[1]);
+    seen+=` U kryen <b>${meas.length} matje</b>${mpTop.length?` (${slAl(mpTop.slice(0,3).map(([k,c])=>`${h(k)} ${c}`))})`:''}: ${Math.round(procS/60)} min punë aktive dhe ${Math.round(waitS/60)} min pritje${tot?` — pritja zë ${Math.round(waitS/tot*100)}% të ciklit të matur`:''}.`; }
+  if(probs.length) seen+=` Në regjistrin e bottleneck-eve u shtuan ${probs.length} problem${probs.length===1?'':'e'}.`;
+
+  // 4 · hypotheses & validation
+  const withHyp=rows.filter(o=>o.cause).length, validated=rows.filter(o=>o.validationStatus==='Validated').length, notConf=rows.filter(o=>o.validationStatus==='Not confirmed').length, pending=rows.filter(o=>o.validationStatus==='Pending validation').length;
+  const allPending=col(db,'observations').filter(o=>o.validationStatus==='Pending validation' && o.date<=we);
+  const overdue=allPending.filter(o=>o.followUpDate && o.followUpDate<=we);
+  let hyp='';
+  if(withHyp||allPending.length){
+    hyp=`Këtë javë u ngritën ${withHyp} hipoteza; ${validated?`${validated} u validua${validated===1?'':'n'}`:'asnjë nuk u validua ende'}${notConf?`, ${notConf} nuk u konfirmua${notConf===1?'':'n'}`:''}${pending?`, ${pending} pres${pending===1?'in':'in'} validim`:''}.`;
+    if(allPending.length) hyp+=` Në total <b>${allPending.length} hipoteza të hapura</b> deri në fund të javës${overdue.length?`, nga të cilat ${overdue.length} me afat validimi të kaluar: ${overdue.slice(0,3).map(o=>`${h(lc1(trimEnd(fs1(o.subProcess||o.what,90))))} (${h(fmtDateAl(o.followUpDate))})`).join('; ')}${overdue.length>3?'; …':''}`:''}.`;
+    const results=rows.filter(o=>o.validationResult).map(o=>trimEnd(fs1(o.validationResult,140)));
+    if(results.length) hyp+=` Rezultate validimi: ${h(slAl(results.slice(0,3).map(lc1)))}.`;
+  }
+
+  // 5 · week-over-week trend
+  let trend='';
+  const tParts=[]; let score=0;
+  if(F && Fp && F.avgWork!=null && Fp.avgWork!=null){ const p=pct(F.avgWork,Fp.avgWork); tParts.push(`porositë/ditë pune ${F.avgWork} kundrejt ${Fp.avgWork} (${p>0?'+':''}${p}%)`); if(p>=5) score++; else if(p<=-5) score--; }
+  if(F && Fp && F.outRate!=null && Fp.outRate!=null){ tParts.push(`Out/In ${F.outRate}% kundrejt ${Fp.outRate}%`); if(F.outRate>=Fp.outRate+5) score++; else if(F.outRate<=Fp.outRate-5) score--; }
+  const prevRows=col(db,'observations').filter(o=>o.date>=addDaysIso(ws,-7)&&o.date<=addDaysIso(we,-7));
+  if(rows.length && prevRows.length){ const nr=r=>r.filter(o=>o.interruption||o.rework||o.error).length/r.length; const a=nr(rows), b=nr(prevRows);
+    tParts.push(`vëzhgime me ndërprerje/ripërpunim/gabim ${Math.round(a*100)}% kundrejt ${Math.round(b*100)}%`); if(a<=b-0.1) score++; else if(a>=b+0.1) score--; }
+  if(tParts.length){ const verd= score>0?'java tregon <b>përmirësim</b>':(score<0?'java tregon <b>keqësim</b> që kërkon vëmendje':'gjendja mbetet <b>e qëndrueshme</b>, pa trend të qartë');
+    trend=`Krahasuar me javën e kaluar (${slAl(tParts)}), ${verd}.`; }
+  else trend= Fp||prevRows.length ? 'Të dhënat e dy javëve nuk mjaftojnë për një krahasim të besueshëm.' : 'Kjo është java e parë me të dhëna — bëhet baza krahasuese për javët në vijim.';
+
+  // 6 · closing & focus for next week
+  const nextPh=phaseFor(db, addDaysIso(we,1));
+  let focus=[];
+  if(F && F.outRate!=null && F.outRate<75) focus.push('bilanci check-in/check-out — kupto ku mbeten produktet që hyjnë e s\'dalin');
+  if(F && F.ops.length>=3 && F.prepTotal && (F.ops[0][1]+F.ops[1][1])/F.prepTotal>=0.6) focus.push('shpërndarja e picking përtej dy personave (trajnim / rotacion)');
+  if(F && F.genericPrep && F.prepTotal && F.genericPrep/F.prepTotal>=0.1) focus.push('llogari personale për çdo operator në WMS');
+  if(overdue.length) focus.push(`mbyllja e ${overdue.length} validimeve me afat të kaluar`);
+  else if(allPending.length) focus.push(`validimi i ${Math.min(allPending.length,3)} hipotezave më të rëndësishme`);
+  if(!meas.length) focus.push('matje me kronometër (Process Measurement) për të ndarë kohën e pritjes nga puna');
+  const closing=`Fokusi për javën ${wk!=null?wk+1:'e ardhshme'}${nextPh.n!==ph.n?` (hyn faza ${h(String(nextPh.n))} — ${h(nextPh.name)})`:''}: ${focus.length?slAl(focus.slice(0,4)):'vazhdimi i vëzhgimeve dhe matjeve sistematike'}.`;
+
+  const title=opts.title||`Raport javor · java ${wk!=null?wk:'—'} (${fmtDateAl(ws)} – ${fmtDateAl(we)})`;
+  const html=`<div class="report" style="padding:14px 16px;margin-bottom:12px;line-height:1.75">
+      <div style="font-weight:700;color:var(--accent);font-size:12px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">${h(title)}</div>
+      <p style="margin:0">${ctx.join(' ')}</p>
+      ${dayTable}
+      ${sec('Çka u vëzhgua', seen)}
+      ${sec('Hipotezat dhe validimi', hyp)}
+      ${sec('Trendi javë pas jave', trend)}
+      <p style="margin:10px 0 0"><b style="color:var(--accent)">Përfundimi.</b> <span class="etag et-rec">fokus</span> ${closing}</p>
+      <p class="meta" style="margin:10px 0 0">Raporti bazohet në shifrat WMS të javës dhe në ditar (vëzhgime, matje, probleme); ruan ndarjen fakt–hipotezë.${opts.generatedAt?` Gjeneruar automatikisht më ${h(fmtDateAl(opts.generatedAt.slice(0,10)))} ${h(localTime(new Date(opts.generatedAt)))}.`:''}</p></div>`;
+  return { html, text: stripTags(html.replace(/<\/p>/g,'\n\n').replace(/<\/tr>/g,'\n').replace(/<\/t[dh]>/g,' | ').replace(/<\/div>/g,'\n')).replace(/\n{3,}/g,'\n\n').trim(), empty:false,
+    weekStart:ws, weekEnd:we, weekNo:wk,
+    stats:{obs:rows.length, auto:nAuto, meas:meas.length, critical:bySev.Critical||0, pending, prepTotal:F?F.prepTotal:null, avgWork:F?F.avgWork:null, outRate:F?F.outRate:null} };
+}
+
 /* Standalone printable HTML page for an archived report (written by the agent to /reports). */
 function standaloneReportPage(title, innerHtml){
   return `<!DOCTYPE html><html lang="sq"><head><meta charset="utf-8"><title>${esc(title)}</title>
@@ -362,5 +522,6 @@ function standaloneReportPage(title, innerHtml){
 return { esc, num, uid, nowISO, localDate, localTime, fmtDateAl, slAl, fs1, lc1, trimEnd, stripHyp, stripTags, PHASES,
   isWorkDay, workingDaysCount, dayNumber, phaseFor, procName, procIdByName, nextWorkDay,
   importStats, importPrepared, importCheckin, importFlow,
-  wmsDayFacts, wmsAutoObservations, dayMetrics, priorBaseline, buildDailyNarrative, standaloneReportPage };
+  wmsDayFacts, wmsAutoObservations, dayMetrics, priorBaseline, buildDailyNarrative,
+  weekBounds, weekNumber, addDaysIso, wmsWeekFacts, buildWeeklyNarrative, standaloneReportPage };
 });
