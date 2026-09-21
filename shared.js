@@ -276,7 +276,9 @@ function buildDailyNarrative(db, d, opts){
       ctx.push(s+'.'); }
     if(W.checkedIn!=null){ let s=`Në rrjedhën e produkteve, <b>${W.checkedIn}</b> u bënë check-in dhe <b>${W.checkedOut}</b> check-out`;
       if(W.outRate!=null) s+=` — pra ${W.outRate}% e asaj që hyri, doli po atë ditë${W.outRate<75?'; pjesa tjetër shtohet stokut në pritje':''}`;
-      if(W.ciOps.length) s+=`. Pranimin e mbajti kryesisht ${h(W.ciOps[0][0])} (${W.ciOps[0][1]}${W.checkedIn?`, ${Math.round(W.ciOps[0][1]/W.checkedIn*100)}%`:''})`;
+      if(W.ciOps.length===1) s+=`. Pranimin e bëri vetëm ${h(W.ciOps[0][0])} (${W.ciOps[0][1]})`;
+      else if(W.ciOps.length>=2){ const a=W.ciOps[0], b=W.ciOps[1]; const combPct=W.checkedIn?Math.round((a[1]+b[1])/W.checkedIn*100):null;
+        s+=`. Pranimin e mbajtën kryesisht ${h(a[0])} (${a[1]}${W.checkedIn?`, ${Math.round(a[1]/W.checkedIn*100)}%`:''}) dhe ${h(b[0])} (${b[1]}${W.checkedIn?`, ${Math.round(b[1]/W.checkedIn*100)}%`:''})${combPct!=null?` — ${combPct}% e totalit`:''}`; }
       ctx.push(s+'.'); }
     if(W.last){ let s=`Në ${opts.closing?'mbyllje të turnit':'matjen e fundit të ditës'} (${localTime(new Date(W.last.at))}), WMS tregonte <b>${num(W.last.ordersInProcessing)} porosi në procesim</b>`;
       if(W.first && W.first!==W.last && num(W.first.ordersInProcessing)!==num(W.last.ordersInProcessing)){ const dlt=num(W.last.ordersInProcessing)-num(W.first.ordersInProcessing); s+=` (${dlt<0?'−':'+'}${Math.abs(dlt)} që nga matja e parë e ditës)`; }
@@ -425,7 +427,9 @@ function buildWeeklyNarrative(db, date, opts){
     if(F.ops.length>=2 && F.prepTotal){ const a=F.ops[0], b=F.ops[1]; const share=Math.round((a[1]+b[1])/F.prepTotal*100);
       let s=`Ngarkesën e picking e mbajtën kryesisht <b>${h(a[0])}</b> (${a[1]}) dhe <b>${h(b[0])}</b> (${b[1]}) — ${share}% e javës, nga ${F.ops.length} llogari me porosi`;
       if(F.genericPrep) s+=`; ${Math.round(F.genericPrep/F.prepTotal*100)}% e porosive u regjistruan nën llogari gjenerike (${F.generic.map(o=>h(o[0])).join(', ')})`;
-      if(F.ciOps.length) s+=`. Pranimin e mbajti ${h(F.ciOps[0][0])} (${F.ciOps[0][1]}${F.ci?`, ${Math.round(F.ciOps[0][1]/F.ci*100)}%`:''})`;
+      if(F.ciOps.length===1) s+=`. Pranimin e bëri vetëm ${h(F.ciOps[0][0])} (${F.ciOps[0][1]})`;
+      else if(F.ciOps.length>=2){ const ca=F.ciOps[0], cb=F.ciOps[1]; const combPct=F.ci?Math.round((ca[1]+cb[1])/F.ci*100):null;
+        s+=`. Pranimin e mbajtën ${h(ca[0])} (${ca[1]}${F.ci?`, ${Math.round(ca[1]/F.ci*100)}%`:''}) dhe ${h(cb[0])} (${cb[1]}${F.ci?`, ${Math.round(cb[1]/F.ci*100)}%`:''})${combPct!=null?` — ${combPct}% e javës`:''}`; }
       ctx.push(s+'.'); }
   } else ctx.push('Për këtë javë nuk ka shifra WMS të sinkronizuara — përmbledhja mbështetet vetëm te ditari.');
 
