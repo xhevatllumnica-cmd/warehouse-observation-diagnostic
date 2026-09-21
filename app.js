@@ -2800,7 +2800,14 @@ function wmsDashboard(box){
     + wmsPreparedDashboardHTML()
     + wmsSameDayHTML()
     + `<div class="note" style="margin-top:12px"><span class="etag et-data">source: WMS</span> "Orders prepared" vijnë nga <b>/Order/GetPreparedOrders</b> (për operator/ditë). "Events" janë rreshta ProductLogs (opsionale, kërkojnë filtër produkti).</div>`;
+  $$('#wmsOpTable [data-sortkey]').forEach(th=>{ th.onclick=()=>{
+    const k=th.dataset.sortkey;
+    if(wmsOpTableSort.key===k) wmsOpTableSort.dir = wmsOpTableSort.dir==='asc'?'desc':'asc';
+    else wmsOpTableSort={key:k, dir:k==='op'?'asc':'desc'};
+    wmsDashboard(box);
+  }; });
 }
+let wmsOpTableSort={key:'total', dir:'desc'};   // 'total' = historical default (p+ci+co, desc); set by clicking a column header
 function wmsPreparedDashboardHTML(){
   const prep=Store.col('wmsPrepared'); const chk=Store.col('wmsCheckin');
   if(!prep.length && !chk.length) return '';
@@ -2826,12 +2833,20 @@ function wmsPreparedDashboardHTML(){
   prep.forEach(r=>{ if(r.date===refDay) pMap[r.operator]=(pMap[r.operator]||0)+num(r.preparedOrders); });
   chk.forEach(r=>{ if(r.date===refDay){ ciMap[r.operator]=(ciMap[r.operator]||0)+num(r.checkedIn); coMap[r.operator]=(coMap[r.operator]||0)+num(r.checkedOut); } });
   const opsAll=[...new Set([...Object.keys(pMap),...Object.keys(ciMap),...Object.keys(coMap)])]
-    .map(op=>({op, p:pMap[op]||0, ci:ciMap[op]||0, co:coMap[op]||0}))
-    .sort((a,b)=>(b.p+b.ci+b.co)-(a.p+a.ci+a.co));
+    .map(op=>({op, p:pMap[op]||0, ci:ciMap[op]||0, co:coMap[op]||0}));
+  const sortDir=wmsOpTableSort.dir==='asc'?1:-1;
+  opsAll.sort((a,b)=>{
+    const k=wmsOpTableSort.key;
+    if(k==='op') return sortDir*(a.op<b.op?-1:(a.op>b.op?1:0));
+    if(k==='p'||k==='ci'||k==='co') return sortDir*(a[k]-b[k]);
+    return (b.p+b.ci+b.co)-(a.p+a.ci+a.co);   // default 'total' — historically always descending, no header toggles it
+  });
   const tot={p:opsAll.reduce((a,x)=>a+x.p,0), ci:opsAll.reduce((a,x)=>a+x.ci,0), co:opsAll.reduce((a,x)=>a+x.co,0)};
   const cell=(v,color)=>`<td style="text-align:right">${v?`<b style="color:${color}">${v}</b>`:'<span class="muted">0</span>'}</td>`;
-  const opTable=`<div style="overflow:auto"><table class="tbl">
-    <thead><tr><th>Operator</th><th style="text-align:right" title="orders (/Order/GetPreparedOrders)">Prepared <span class="sub">porosi</span></th><th style="text-align:right" title="products (ProductLogs «Checked in»)">Checked In <span class="sub">produkte</span></th><th style="text-align:right" title="products (ProductLogs «Check out»)">Produkte të përgatitura për Check Out</th></tr></thead>
+  const sortArrow=k=>wmsOpTableSort.key===k?` <span class="sub">${wmsOpTableSort.dir==='asc'?'▲':'▼'}</span>`:'';
+  const th=(key,label,align,title)=>`<th data-sortkey="${key}" style="${align?'text-align:right;':''}cursor:pointer;user-select:none" title="${title?h(title)+' — ':''}kliko për të renditur">${label}${sortArrow(key)}</th>`;
+  const opTable=`<div style="overflow:auto"><table class="tbl" id="wmsOpTable">
+    <thead><tr>${th('op','Operator',false)}${th('p','Prepared <span class="sub">porosi</span>',true,'orders (/Order/GetPreparedOrders)')}${th('ci','Checked In <span class="sub">produkte</span>',true,'products (ProductLogs «Checked in»)')}${th('co','Produkte të përgatitura për Check Out',true,'products (ProductLogs «Check out»)')}</tr></thead>
     <tbody>${opsAll.length?opsAll.map(r=>`<tr><td>${h(r.op)}</td>${cell(r.p,'var(--ok)')}${cell(r.ci,'var(--fact)')}${cell(r.co,'var(--imp)')}</tr>`).join(''):emptyRow(4,'—')}
       <tr style="border-top:2px solid var(--line)"><td><b>Total</b></td><td style="text-align:right"><b>${tot.p}</b></td><td style="text-align:right"><b>${tot.ci}</b></td><td style="text-align:right"><b>${tot.co}</b></td></tr></tbody></table></div>`;
   return `<div class="card" style="margin:14px 0"><h3>By operator — Prepared · Checked In · Checked Out <span class="sub">latest day ${refDay?h(fmtDateAl(refDay)):'—'} · source: /Order/GetPreparedOrders + /Warehouse/ProductLogs</span></h3>
