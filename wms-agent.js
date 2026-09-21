@@ -18,6 +18,24 @@
 'use strict';
 const http=require('http'), https=require('https'), fs=require('fs'), path=require('path'), url=require('url');
 
+/* --- log to file as well as the console -----------------------------------
+   The agent normally runs hidden (Startup / VBS), so console output is lost.
+   Everything is appended to wms-agent.log next to this file (rotated at ~1 MB). */
+(function(){
+  const LOG=path.join(__dirname,'wms-agent.log');
+  const write=(lvl,args)=>{ try{
+    const line='['+new Date().toISOString()+'] '+lvl+' '+args.map(a=>typeof a==='string'?a:(a&&a.stack)||JSON.stringify(a)).join(' ')+'\n';
+    try{ if(fs.existsSync(LOG) && fs.statSync(LOG).size>1e6) fs.renameSync(LOG, LOG+'.1'); }catch(e){}
+    fs.appendFileSync(LOG, line);
+  }catch(e){} };
+  const oLog=console.log.bind(console), oErr=console.error.bind(console);
+  console.log=(...a)=>{ oLog(...a); write('INFO',a); };
+  console.error=(...a)=>{ oErr(...a); write('ERROR',a); };
+  process.on('uncaughtException', e=>{ console.error('uncaughtException', e); setTimeout(()=>process.exit(1),200); });
+  process.on('unhandledRejection', e=>{ console.error('unhandledRejection', e); });
+  console.log('[wms-agent] starting  pid='+process.pid+'  node='+process.version+'  cwd='+process.cwd()+'  dir='+__dirname);
+})();
+
 let cfg={};
 try{ cfg=JSON.parse(fs.readFileSync(path.join(__dirname,'wms-agent.config.json'),'utf8')); }
 catch(e){ console.error('\n[wms-agent] Missing wms-agent.config.json.\n  Copy wms-agent.config.example.json to wms-agent.config.json and paste your WMS cookie.\n'); process.exit(1); }
@@ -313,7 +331,11 @@ http.createServer(async (req,resp)=>{
   const q=url.parse(req.url,true);
   const json=(code,obj,extra)=>{ resp.writeHead(code,Object.assign({'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Cache-Control':'no-store'},extra||{})); resp.end(JSON.stringify(obj)); };
   try{
-    if(q.pathname==='/wms/health') return json(200,{ok:true, wms:WMS, reportTime:REPORT_TIME, sharedDb:fs.existsSync(DB_FILE)});
+    if(q.pathname==='/wms/health'){
+      const startupDir=path.join(process.env.APPDATA||'', 'Microsoft','Windows','Start Menu','Programs','Startup');
+      const autostart=!!process.env.APPDATA && ['wms-agent-startup.vbs','wms-agent-hidden.vbs'].some(f=>fs.existsSync(path.join(startupDir,f)));
+      return json(200,{ok:true, wms:WMS, reportTime:REPORT_TIME, sharedDb:fs.existsSync(DB_FILE), autostart, keepAliveMin:KEEPALIVE_MIN, sessionExpired, pid:process.pid});
+    }
     // ---- shared database ----
     if(q.pathname==='/db' && req.method==='GET'){
       const db=loadDb(); if(!db) return json(404,{error:'no shared db yet'});
@@ -327,6 +349,27 @@ http.createServer(async (req,resp)=>{
       const cur=loadDb(); const curAt=(cur&&cur.meta&&cur.meta.savedAt)||''; const base=String(req.headers['x-base-saved-at']||'');
       if(cur && curAt && base!==curAt) return json(409,{conflict:true, db:cur});     // someone else saved since this tab last pulled
       const savedAt=saveDb(body); return json(200,{ok:true, savedAt});
+    }
+    // ---- paste a fresh WMS cookie from the app (no file editing) ----
+    // Validated against WMS before it is saved; the value never leaves this machine.
+    if(q.pathname==='/wms/ext-ping' && req.method==='POST'){ let b={}; try{ b=JSON.parse(await readBody(req)); }catch(e){}
+      console.log('[wms-agent] extension v'+(b.version||'?')+' ping ('+(b.reason||'?')+'): loggedIn='+b.loggedIn+' found='+(b.found||'')); return json(200,{ok:true}); }
+    if(q.pathname==='/wms/cookie' && req.method==='OPTIONS'){ resp.writeHead(204,{'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type'}); return resp.end(); }
+    if(q.pathname==='/wms/cookie' && req.method==='POST'){
+      let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
+      let raw=String(body&&body.cookie||'').trim().replace(/^cookie:\s*/i,'').replace(/[\r\n]+/g,' ');
+      const jar=normalizeCookie(raw);
+      const ticket=jar['.AspNet.Cookies']||'';
+      const chunked=Object.keys(jar).some(n=>/^\.AspNet\.CookiesC\d+$/.test(n));
+      if(!ticket) return json(400,{error:'Cookie-ja duhet të përmbajë ".AspNet.Cookies=…" — kopjo gjithë vlerën e rreshtit "cookie:" nga Request Headers.'});
+      if(ticket.length<200 && !chunked) return json(400,{error:'Bileta e login-it (.AspNet.Cookies) ka vetëm '+ticket.length+' shkronja — normalisht ~3000. '+(jar[Object.keys(jar).find(n=>/^OpenIdConnect\.nonce/.test(n))||'']?'Përmban "OpenIdConnect.nonce" → u kopjua nga faqja e LOGIN-it, para se të kyçeshe. ':'')+'Kyçu plotësisht në WMS (deri sa të shohësh dashboard-in), pastaj F12 → Network → F5 → kopjo cookie-n nga një kërkesë e RE.'});
+      const prevJar=cookieJar; cookieJar=jar; sessionExpired=false;
+      const t=await getStats();
+      const looksReal = t.data && typeof t.data.ordersInProcessing==='number';
+      if(t.error || !looksReal){ cookieJar=prevJar; sessionExpired=true; return json(401,{error: (t.error&&t.error!=='auth_expired')?t.error:'WMS e refuzon këtë cookie (login i skaduar ose i kopjuar gabim). Kyçu në WMS, rifresko faqen dhe kopjo sërish.'}); }
+      cfg.cookie=cookieHeader(); lastWrittenCookie=cfg.cookie; persistCookie(true);
+      console.log('[wms-agent] '+new Date().toLocaleTimeString()+' new WMS cookie accepted via app ('+cfg.cookie.length+' chars).');
+      return json(200,{ok:true, stats:t.data});
     }
     if(q.pathname==='/report/run' && req.method==='POST'){ const r=await runDailyJob(q.query.date||isoToday(), false, {skipAuto:q.query.auto==='0'}); return json(r.error?(r.error==='busy'?429:500):200, r); }
     if(q.pathname==='/report/week' && req.method==='POST'){ const r=await runWeeklyJob(q.query.date||isoToday(), false, {noSync:q.query.sync==='0'}); return json(r.error?(r.error==='busy'?429:500):200, r); }
@@ -357,7 +400,7 @@ http.createServer(async (req,resp)=>{
 /* Keep-alive: a light request on a timer renews the sliding session cookie
    (Set-Cookie is captured by wmsFetch) so the session survives without manual
    re-pasting, as long as this agent keeps running. */
-const KEEPALIVE_MIN=20;
+const KEEPALIVE_MIN=Number(cfg.keepAliveMinutes||5);   // short on purpose: the WMS session slides, and a PC waking from sleep must renew it fast
 async function keepAlive(){
   try{ const r=await getStats(); if(r.error==='auth_expired'){ console.log('[wms-agent] '+new Date().toLocaleTimeString()+' keep-alive: session expired — a fresh cookie is needed (WMS ended the login).'); }
     else { console.log('[wms-agent] '+new Date().toLocaleTimeString()+' keep-alive OK (cookie renewed if the server rotated it).'); } }

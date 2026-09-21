@@ -69,3 +69,5 @@ desktop.ini
 wods-db.json
 wods-db.json.tmp
 reports/
+wms-agent.log
+wms-agent.log.1

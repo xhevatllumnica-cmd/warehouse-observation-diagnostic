@@ -2703,9 +2703,46 @@ function renderWMS(v){
   if(onAgent){
     connBadge=`<span class="badge b-ok">🟢 Agjenti i lidhur</span>`
       + `<span class="badge ${cfg.autoSync?'b-ok':'b-muted'}">Auto-sync ${cfg.autoSync?('ON · çdo '+(cfg.interval||30)+' min'):'OFF'}</span>`;
-    connHint=cfg.lastError
-      ? `<div class="hint" style="margin-top:6px;color:#f2a">⚠ ${h(cfg.lastError)==='auth_expired'?'Cookie-ja e WMS ka skaduar — përditësoje te <b>wms-agent.config.json</b> dhe ristarto agjentin.':h(cfg.lastError)}</div>`
-      : `<div class="hint" style="margin-top:6px">Të dhënat merren <b>automatikisht</b> nga agjenti lokal (localhost) me sesionin tënd të autorizuar të WMS-it. S'ka hapa manualë.</div>`;
+    connHint=(cfg.lastError
+      ? `<div class="hint" style="margin-top:6px;color:#f2a">⚠ ${h(cfg.lastError)==='auth_expired'?'Sesioni i WMS ka skaduar (ndodh kur PC-ja rri i fikur / në sleep — serveri e mbyll sesionin). Ngjit cookie-n e re më poshtë; agjenti e provon dhe e ruan vetë.':h(cfg.lastError)}</div>`
+      : `<div class="hint" style="margin-top:6px">Të dhënat merren <b>automatikisht</b> nga agjenti lokal (localhost) me sesionin tënd të autorizuar të WMS-it. S'ka hapa manualë.</div>`)
+      + `<div class="hint" id="wmsHealthLine" style="margin-top:4px"></div>`
+      + `<div id="wmsCookieBox" style="margin-top:8px;${cfg.lastError==='auth_expired'?'':'display:none'}">
+           <div class="note" style="margin-bottom:8px"><b>Mënyra pa kopjime — ekstensioni "WMS Agent Link"</b> (instalohet <b>një herë</b>, 30 sekonda):
+             <ol style="margin:6px 0 4px 18px;padding:0">
+               <li>Chrome → shkruaj <code>chrome://extensions</code> → ndiz <b>Developer mode</b> (djathtas lart).</li>
+               <li><b>Load unpacked</b> → zgjidh folderin <code>C:\\Users\\Xhevati\\Desktop\\warehouse-observation-app\\chrome-extension</code>.</li>
+               <li>Hap <a href="https://wms.gjirafamall.com" target="_blank" rel="noopener">wms.gjirafamall.com</a> dhe kyçu si zakonisht.</li>
+             </ol>
+             Nga ai moment, sa herë je i kyçur në WMS në Chrome, ekstensioni ia jep sesionin agjentit vetë (edhe kur skadon dhe rikyçesh). Asgjë nuk del nga ky kompjuter.</div>
+           <div class="small muted" style="margin-bottom:4px">Alternativa manuale (vetëm nëse s'do ekstension): Chrome, i kyçur në WMS deri te dashboard-i → F12 → Network → F5 → një kërkesë e re → Request Headers → <code>cookie:</code> → kopjo gjithë vlerën (~3 000+ shkronja, pa <code>OpenIdConnect.nonce</code>) dhe ngjite këtu:</div>
+           <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+             <textarea id="wmsCookieIn" rows="3" placeholder="gjs=…; ASP.NET_SessionId=…; .AspNet.Cookies=…" style="flex:1;min-width:260px;font-family:monospace;font-size:11.5px"></textarea>
+             <button class="btn primary" id="wmsCookieSave">🔑 Ruaj cookie-n</button>
+           </div>
+           <div class="hint" id="wmsCookieMsg" style="margin-top:4px"></div>
+         </div>
+         ${cfg.lastError==='auth_expired'?'':'<button class="btn sm ghost" id="wmsCookieToggle" style="margin-top:6px">🔑 Ndrysho cookie-n e WMS</button>'}`;
+    setTimeout(()=>{
+      const tg=$('#wmsCookieToggle'); if(tg) tg.onclick=()=>{ const b=$('#wmsCookieBox'); b.style.display=b.style.display==='none'?'':'none'; };
+      const save=$('#wmsCookieSave'); if(save) save.onclick=async()=>{
+        const val=($('#wmsCookieIn').value||'').trim(); const msg=$('#wmsCookieMsg');
+        if(!val){ msg.textContent='Ngjit vlerën e cookie-s së pari.'; return; }
+        save.disabled=true; save.textContent='⏳ Po provohet me WMS…';
+        try{ const r=await fetch('/wms/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:val})}); const j=await r.json();
+          if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+          $('#wmsCookieIn').value=''; msg.innerHTML='<span style="color:var(--ok)">✓ Cookie e pranuar — WMS u përgjigj. Po sinkronizoj…</span>';
+          wmsCfg().lastError=''; Store.persist();
+          await wmsAgentSync(7,1); toast('Cookie e re · sync ✓'); renderWMS($('#view'));
+        }catch(e){ msg.innerHTML='<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'; save.disabled=false; save.textContent='🔑 Ruaj cookie-n'; }
+      };
+    },0);
+    // agent self-report: does it start with Windows, how often does it renew the session, is the session alive right now
+    fetch('/wms/health',{cache:'no-store'}).then(r=>r.json()).then(hh=>{ const el=$('#wmsHealthLine'); if(!el) return;
+      el.innerHTML = `${hh.autostart?'<span class="badge b-ok">Niset me Windows ✓</span>':'<span class="badge b-warn">Nuk niset me Windows</span> <span class="muted">→ ekzekuto <b>install-autostart.bat</b></span>'}`
+        + ` <span class="badge b-muted">Keep-alive çdo ${h(String(hh.keepAliveMin||'?'))} min</span>`
+        + ` <span class="badge ${hh.sessionExpired?'b-crit':'b-ok'}">Sesioni WMS: ${hh.sessionExpired?'i skaduar':'aktiv'}</span>`
+        + ` <span class="muted small">Sesioni mbahet gjallë vetëm sa kohë PC-ja është ndezur dhe agjenti punon — vendos <i>Sleep: Never</i> për të mos skaduar natën.</span>`; }).catch(()=>{});
   } else {
     connBadge=`<span class="badge b-muted">Agjenti jo aktiv</span>`;
     connHint=`<div class="hint" style="margin-top:6px">Për sync <b>automatik</b>: nis <b>start-wms-agent.bat</b> dhe hape app-in nga <b>http://localhost:8790/app.html</b>. Ndryshe, përdor <b>import të autorizuar</b> te skeda <b>Import</b>.</div>`;
