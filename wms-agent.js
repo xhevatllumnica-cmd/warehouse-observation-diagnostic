@@ -150,25 +150,40 @@ async function getPrepared(start,end){
   return {data:rows};
 }
 
-/* Products checked in per operator/day.
-   Source: /Warehouse/ProductLogsData (event log). Filter LogType === "Checked in".
+/* Products checked in / checked out per operator/day.
+   Source: /Warehouse/ProductLogsData (event log).
+   WMS logs the completed check-out action under TWO distinct LogType strings — "Check out"
+   AND "Checked out" (confirmed 2026-09-22 by dumping the full log for several days: on a
+   representative day they were 728 and 311 rows respectively). Counting only "Check out" silently
+   missed 15-30% of real checkout events every day — this is what caused our daily/weekly reports to
+   under-report checkout volume against the warehouse's own WhatsApp "AI Operator" flow updates.
    No date filter on the server side other than StartDate/EndDate (MM/DD/YYYY) + StoreId=0,
    so we loop one request per day (bounded volume) and group by operator. */
 const CHECKIN_LOGTYPE='Checked in';
-const CHECKOUT_LOGTYPE='Check out'; // main checkout action (products dispatched/shipped that day)
+const CHECKOUT_LOGTYPES=['Check out','Checked out'];
 const PLOG_COLS=['ProductItemUniqueIdentifier','ProductCode','Sku','ProductSerialNumber','VendorName','ProductName','OrderId','LogType','Row','UpdatedByName','InsertDateTime','LastInspectDate']
   .map(d=>({data:d,name:'',searchable:true,orderable:false,search:{value:'',regex:false}}));
 const PLOG_PAGE=2000;   // length>~3000 makes the server 500 on busy days, so page in safe chunks
 const PLOG_MAXPAGES=15; // safety cap per day (30k events)
-const checkinCache={}; // iso date -> {ops:[{operator,checkedIn}], inCount, outCount} for PAST days (immutable)
+/* WMS keeps APPENDING events to a "finished" calendar day's log for a while afterwards (backend/
+   batch processing logs a backdated InsertDateTime) — confirmed 2026-09-22: re-fetching 21.09 a day
+   later returned materially more rows (Checked in 854→1032, Check out 615→728) than our own sync had
+   captured on the day itself. So a past day is only safe to cache once it has had time to "settle" —
+   caching from day one (as before) silently froze an incomplete count forever. */
+const CACHE_SETTLE_DAYS=3;
+const checkinCache={}; // iso date -> {ops, inCount, outCount} — only for days older than CACHE_SETTLE_DAYS
 function isoToday(){ const t=new Date(); return t.getFullYear()+'-'+p2(t.getMonth()+1)+'-'+p2(t.getDate()); }
 async function getCheckins(start,end){
   const s=parseDMY(start), e=parseDMY(end||start); const out=[]; const daily=[]; const tIso=isoToday();
+  const tDate=new Date(tIso+'T00:00:00');
   for(let d=new Date(s); d<=e; d.setDate(d.getDate()+1)){
     const mdy=p2(d.getMonth()+1)+'/'+p2(d.getDate())+'/'+d.getFullYear();
     const iso=d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());
-    // past days never change → serve from cache to avoid re-paging the whole event log
-    if(iso!==tIso && checkinCache[iso]){ const c=checkinCache[iso];
+    const age=Math.round((tDate - new Date(iso+'T00:00:00'))/86400000);   // days between this date and today
+    const settled=age>=CACHE_SETTLE_DAYS;
+    // only fully "settled" past days are cached — anything more recent is refetched every time,
+    // since WMS can still be appending events to it (see note above)
+    if(settled && checkinCache[iso]){ const c=checkinCache[iso];
       c.ops.forEach(o=>out.push({date:iso,operator:o.operator,checkedIn:o.checkedIn||0,checkedOut:o.checkedOut||0}));
       daily.push({date:iso,checkedIn:c.inCount,checkedOut:c.outCount}); continue; }
     const byIn={}, byOut={}; let inCount=0, outCount=0; let start2=0, total=Infinity, pages=0;
@@ -183,7 +198,7 @@ async function getCheckins(start,end){
       rows.forEach(x=>{
         const op=(x.UpdatedByName||'').trim()||'(pa operator)';
         if(x.LogType===CHECKIN_LOGTYPE){ inCount++; byIn[op]=(byIn[op]||0)+1; }
-        else if(x.LogType===CHECKOUT_LOGTYPE){ outCount++; byOut[op]=(byOut[op]||0)+1; }
+        else if(CHECKOUT_LOGTYPES.includes(x.LogType)){ outCount++; byOut[op]=(byOut[op]||0)+1; }
       });
       pages++; if(!rows.length) break; start2+=PLOG_PAGE;
     }
@@ -191,7 +206,7 @@ async function getCheckins(start,end){
     const ops=[...opsSet].map(op=>({operator:op, checkedIn:byIn[op]||0, checkedOut:byOut[op]||0}));
     ops.forEach(o=>out.push({date:iso, operator:o.operator, checkedIn:o.checkedIn, checkedOut:o.checkedOut}));
     daily.push({date:iso, checkedIn:inCount, checkedOut:outCount});
-    if(iso!==tIso) checkinCache[iso]={ops, inCount, outCount}; // cache immutable past days
+    if(settled) checkinCache[iso]={ops, inCount, outCount}; // only cache once the day has had time to settle
   }
   return {data:out, daily};
 }
