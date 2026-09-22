@@ -187,21 +187,53 @@ async function getCheckins(start,end){
       c.ops.forEach(o=>out.push({date:iso,operator:o.operator,checkedIn:o.checkedIn||0,checkedOut:o.checkedOut||0}));
       daily.push({date:iso,checkedIn:c.inCount,checkedOut:c.outCount}); continue; }
     const byIn={}, byOut={}; let inCount=0, outCount=0; let start2=0, total=Infinity, pages=0;
-    while(start2<total && pages<PLOG_MAXPAGES){
-      const params={draw:1,start:start2,length:PLOG_PAGE,search:{value:'',regex:false},order:[{column:10,dir:'desc'}],columns:PLOG_COLS,
-        filters:{StartDate:mdy,EndDate:mdy,StoreId:0,ProductCode:'',Sku:'',ProductItemUniqueIdentifier:'',ProductSerialNumber:''}};
-      const body=enc(params).join('&');
-      const r=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body});
-      if(looksLoggedOut(r)) return {error:'auth_expired'};
-      let j; try{ j=JSON.parse(r.body); }catch(e2){ return {error:'bad_response'}; }
-      const rows=j.data||[]; total=Number(j.recordsFiltered)||rows.length;
-      rows.forEach(x=>{
-        const op=(x.UpdatedByName||'').trim()||'(pa operator)';
-        if(x.LogType===CHECKIN_LOGTYPE){ inCount++; byIn[op]=(byIn[op]||0)+1; }
-        else if(CHECKOUT_LOGTYPES.includes(x.LogType)){ outCount++; byOut[op]=(byOut[op]||0)+1; }
-      });
-      pages++; if(!rows.length) break; start2+=PLOG_PAGE;
+    /* Start-offset paging on this WMS endpoint is unreliable once a day needs more than one page —
+       found 2026-09-22: a fetch-all-in-one-request (length >= recordsFiltered) can disagree with the
+       paged total by double digits of percent, in EITHER direction (extra duplicate rows on "today"
+       while it is still being written to; missing rows on already-settled past days too — root cause
+       is most likely a non-deterministic tie-break in WMS's own ORDER BY when many rows share one
+       timestamp). De-duplicating rows across pages by natural key was tried and reverted: most
+       "Checked in" rows carry no ProductItemUniqueIdentifier, so that key collapsed distinct rows too
+       and made settled days WORSE. The fix that actually holds up: when the WHOLE day fits under
+       SINGLE_FETCH_MAX, fetch it in one request (no offset involved at all → provably exact, verified
+       rows.length===recordsFiltered) instead of paging. Only a day too large for that single request
+       falls back to the old incremental paging, carrying its known margin of error — disclosed, not
+       silently hidden, and rare in practice. */
+    const first={draw:1,start:0,length:PLOG_PAGE,search:{value:'',regex:false},order:[{column:10,dir:'desc'}],columns:PLOG_COLS,
+      filters:{StartDate:mdy,EndDate:mdy,StoreId:0,ProductCode:'',Sku:'',ProductItemUniqueIdentifier:'',ProductSerialNumber:''}};
+    let r=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:enc(first).join('&')});
+    if(looksLoggedOut(r)) return {error:'auth_expired'};
+    let j; try{ j=JSON.parse(r.body); }catch(e2){ return {error:'bad_response'}; }
+    let rowsAll=j.data||[]; total=Number(j.recordsFiltered)||rowsAll.length; pages=1; start2=PLOG_PAGE;
+    const SINGLE_FETCH_MAX=4000;   // conservative — a length of 5000-6000 tested fine on 2026-09-22, keeping margin below the length~3000 that once 500'd on a busier day
+    let gotSingle = rowsAll.length>=total;   // page 1 already had everything
+    if(!gotSingle && total<=SINGLE_FETCH_MAX){
+      try{
+        const whole={draw:1,start:0,length:total,search:{value:'',regex:false},order:[{column:10,dir:'desc'}],columns:PLOG_COLS,
+          filters:{StartDate:mdy,EndDate:mdy,StoreId:0,ProductCode:'',Sku:'',ProductItemUniqueIdentifier:'',ProductSerialNumber:''}};
+        const r2=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:enc(whole).join('&')});
+        if(!looksLoggedOut(r2)){ const j2=JSON.parse(r2.body); const d2=j2.data||[];
+          if(d2.length===total){ rowsAll=d2; gotSingle=true; } }
+      }catch(e3){ /* any failure (500, bad json, short read) — fall through to incremental paging below */ }
     }
+    if(!gotSingle){
+      // fallback: incremental paging, starting from the page-1 rows we already have
+      while(start2<total && pages<PLOG_MAXPAGES){
+        const params={draw:1,start:start2,length:PLOG_PAGE,search:{value:'',regex:false},order:[{column:10,dir:'desc'}],columns:PLOG_COLS,
+          filters:{StartDate:mdy,EndDate:mdy,StoreId:0,ProductCode:'',Sku:'',ProductItemUniqueIdentifier:'',ProductSerialNumber:''}};
+        const body=enc(params).join('&');
+        const rp=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body});
+        if(looksLoggedOut(rp)) return {error:'auth_expired'};
+        let jp; try{ jp=JSON.parse(rp.body); }catch(e4){ return {error:'bad_response'}; }
+        const rows=jp.data||[]; total=Number(jp.recordsFiltered)||rows.length; rowsAll=rowsAll.concat(rows);
+        pages++; if(!rows.length) break; start2+=PLOG_PAGE;
+      }
+    }
+    rowsAll.forEach(x=>{
+      const op=(x.UpdatedByName||'').trim()||'(pa operator)';
+      if(x.LogType===CHECKIN_LOGTYPE){ inCount++; byIn[op]=(byIn[op]||0)+1; }
+      else if(CHECKOUT_LOGTYPES.includes(x.LogType)){ outCount++; byOut[op]=(byOut[op]||0)+1; }
+    });
     const opsSet=new Set([...Object.keys(byIn),...Object.keys(byOut)]);
     const ops=[...opsSet].map(op=>({operator:op, checkedIn:byIn[op]||0, checkedOut:byOut[op]||0}));
     ops.forEach(o=>out.push({date:iso, operator:o.operator, checkedIn:o.checkedIn, checkedOut:o.checkedOut}));

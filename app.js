@@ -2765,6 +2765,49 @@ function renderWMS(v){
   ({dashboard:wmsDashboard, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
 }
 
+/* "Orders prepared" KPI, as a single Line with Markers chart of the daily total (sum across
+   operators) over the last 14 days with data. An earlier version broke this down per operator as a
+   100%-stacked chart, but that composition wasn't clear at a glance — reverted to the plain daily
+   total, which is what this tile always meant. Pure SVG, no library. */
+function niceCeil(v){ if(v<=0) return 10; const mag=Math.pow(10,Math.floor(Math.log10(v))); const norm=v/mag; const step=norm<=1?1:norm<=2?2:norm<=5?5:10; return step*mag; }
+function wmsPrepStackedChartHTML(){
+  const prep=Store.col('wmsPrepared'); if(!prep.length) return '';
+  const byDay={}; prep.forEach(r=>{ byDay[r.date]=(byDay[r.date]||0)+num(r.preparedOrders); });
+  const days=Object.keys(byDay).filter(d=>byDay[d]>0).sort().slice(-14);
+  if(!days.length) return '';
+  const lastDay=days[days.length-1];
+  const lastTotal=byDay[lastDay];
+  const maxV=niceCeil(Math.max(...days.map(d=>byDay[d])));
+  const color='var(--ok)';
+  const W=320,H=92,padL=22,padR=3,padT=14,padB=4;
+  const x=i=> days.length>1? padL+(W-padL-padR)*(i/(days.length-1)) : (padL+W-padR)/2;
+  const y=v=> padT+(H-padT-padB)*(1-v/maxV);
+  const pts=days.map((d,i)=>[x(i), y(byDay[d])]);
+  const poly=pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  const area=`${padL.toFixed(1)},${y(0).toFixed(1)} `+poly+` ${x(days.length-1).toFixed(1)},${y(0).toFixed(1)}`;
+  const markers=pts.map((p,i)=>{ const d=days[i];
+    return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.4" fill="${color}"><title>${h(fmtDateAl(d))}: ${byDay[d]} porosi</title></circle>`; }).join('');
+  const gridSvg=[0,0.25,0.5,0.75,1].map(f=>{ const v=Math.round(maxV*f);
+    return `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W-padR}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1" stroke-dasharray="2,3"/>`
+      +`<text x="${padL-3}" y="${(y(v)+2).toFixed(1)}" text-anchor="end" font-size="6" fill="var(--faint)">${v}</text>`; }).join('');
+  // date ticks along the top — thin them out so labels never overlap in the ~300px-wide plot
+  const dateStep=Math.max(1, Math.ceil(days.length/6));
+  const dateSvg=days.map((d,i)=>(i%dateStep===0||i===days.length-1)
+    ? `<text x="${x(i).toFixed(1)}" y="${(padT-4).toFixed(1)}" text-anchor="middle" font-size="6" fill="var(--faint)">${h(fmtDateAl(d).slice(0,5))}</text>` : '').join('');
+  return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <h3 style="margin:0">Porosi të përgatitura <span class="sub">Line with Markers · ${h(fmtDateAl(days[0]))}–${h(fmtDateAl(lastDay))}</span></h3>
+        <div style="text-align:right"><div class="val" style="font-size:20px;font-weight:800">${lastTotal}</div><div class="faint" style="font-size:11px">${h(fmtDateAl(lastDay))} · sum across operators</div></div>
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="width:100%;height:auto;display:block;margin-top:6px">
+        <defs><linearGradient id="prepFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${color}" stop-opacity=".35"/><stop offset="100%" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+        ${gridSvg}${dateSvg}
+        <polygon points="${area}" fill="url(#prepFill)" stroke="none"/>
+        <polyline points="${poly}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        ${markers}
+      </svg>
+    </div>`;
+}
 function wmsDashboard(box){
   const logs=Store.col('wmsLogs');
   const snap=Store.col('wmsStats')[0];
@@ -2786,10 +2829,9 @@ function wmsDashboard(box){
       ${kc(snap?snap.invoiceProductsCheckedIn:'—','Products Checked In', snap?'live snapshot '+h(new Date(snap.at).toLocaleString()):'import a snapshot')}
       ${kc(snap?snap.invoiceProductsProcessed:'—','Products Processed', snap?'':'—')}
       ${kc(snap?snap.ordersInProcessing:'—','Orders In Processing','')}
-      ${(()=>{ const prep=Store.col('wmsPrepared'); if(!prep.length) return kc(new Set(logs.map(l=>l.operator).filter(Boolean)).size||'—','Operators (in data)','from logs');
-        const byDay={}; prep.forEach(r=>byDay[r.date]=(byDay[r.date]||0)+num(r.preparedOrders)); const days=Object.keys(byDay).sort(); const last=days[days.length-1];
-        return kc(byDay[last]||'—','Orders prepared ('+(last?fmtDateAl(last):'—')+')','sum across operators'); })()}
+      ${Store.col('wmsPrepared').length?'':kc(new Set(logs.map(l=>l.operator).filter(Boolean)).size||'—','Operators (in data)','from logs')}
     </div>`
+    + wmsPrepStackedChartHTML()
     + (logs.length? `<div class="grid g-2">
         <div class="card"><h3>Product-log events by day <span class="sub">last 14 days with data</span></h3>${dayRows.length?dayRows.map(([k,c])=>barRow(fmtDateAl(k),c,maxDay,'var(--accent)')).join(''):'<div class="empty">—</div>'}</div>
         <div class="card"><h3>Events by operator <span class="sub">top 10</span></h3>${opRows.map(([k,c])=>barRow(k,c,maxOp,'var(--imp)')).join('')}</div>
