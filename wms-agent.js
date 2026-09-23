@@ -152,15 +152,20 @@ async function getPrepared(start,end){
 
 /* Products checked in / checked out per operator/day.
    Source: /Warehouse/ProductLogsData (event log).
-   WMS logs the completed check-out action under TWO distinct LogType strings — "Check out"
-   AND "Checked out" (confirmed 2026-09-22 by dumping the full log for several days: on a
-   representative day they were 728 and 311 rows respectively). Counting only "Check out" silently
-   missed 15-30% of real checkout events every day — this is what caused our daily/weekly reports to
-   under-report checkout volume against the warehouse's own WhatsApp "AI Operator" flow updates.
+   CHECKOUT_LOGTYPES history: first thought to be "Check out" alone, then "Check out"+"Checked out"
+   (2026-09-22 — that combo undercounted 15-30% of full-day totals against AI Operator, and looked
+   like a fix). Both were wrong. Confirmed 2026-09-23 with an intraday, zero-ambiguity test: on a
+   quiet morning where the WHOLE day fit in one request (519 of 519 rows, no paging, no possible
+   duplication/gap), AI Operator's "Checkout products" matched "ProductScanned for checkout" EXACTLY
+   at both the 08:00 mark (39=39) and the 10:00 mark (85=85) — while "Check out"+"Checked out" gave
+   4 and 55, nowhere close. The earlier full-day comparisons that seemed to favor "Check out"+"Checked
+   out" were themselves corrupted by the very pagination unreliability documented below (any day busy
+   enough to need real comparison was also busy enough to need >1 page). This intraday test is the
+   first comparison ever done on a COMPLETE, unpaged dataset — trust it over the earlier ones.
    No date filter on the server side other than StartDate/EndDate (MM/DD/YYYY) + StoreId=0,
    so we loop one request per day (bounded volume) and group by operator. */
 const CHECKIN_LOGTYPE='Checked in';
-const CHECKOUT_LOGTYPES=['Check out','Checked out'];
+const CHECKOUT_LOGTYPES=['ProductScanned for checkout'];
 const PLOG_COLS=['ProductItemUniqueIdentifier','ProductCode','Sku','ProductSerialNumber','VendorName','ProductName','OrderId','LogType','Row','UpdatedByName','InsertDateTime','LastInspectDate']
   .map(d=>({data:d,name:'',searchable:true,orderable:false,search:{value:'',regex:false}}));
 const PLOG_PAGE=2000;   // length>~3000 makes the server 500 on busy days, so page in safe chunks
@@ -273,7 +278,12 @@ function cumulativeByMark(rows, iso){
   return out;
 }
 async function flowDayMarks(iso, dayTotals){
-  const dl=await fetchDayProductLogs(isoToMdy(iso));
+  // "today" (and any day younger than CACHE_SETTLE_DAYS) keeps gaining events all day — dayLogsCache
+  // must NOT serve a snapshot from an earlier call in this same agent run, or every mark after the
+  // first-ever fetch of that date would silently freeze (found 2026-09-23: the 10:00 mark kept
+  // reporting the row set fetched around 09:16 instead of the true, larger one hours later).
+  const age=Math.round((new Date(isoToday()+'T00:00:00') - new Date(iso+'T00:00:00'))/86400000);
+  const dl=await fetchDayProductLogs(isoToMdy(iso), {noCache: age<CACHE_SETTLE_DAYS});
   if(dl.error) return {error:dl.error};
   const marks=cumulativeByMark(dl.rows, iso);
   return {marks, reliable:dl.reliable, dayTotals};
