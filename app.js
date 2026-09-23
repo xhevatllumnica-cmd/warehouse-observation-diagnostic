@@ -2902,14 +2902,7 @@ function wmsDashboard(box){
     + wmsPreparedDashboardHTML()
     + wmsSameDayHTML()
     + `<div class="note" style="margin-top:12px"><span class="etag et-data">source: WMS</span> "Orders prepared" vijnë nga <b>/Order/GetPreparedOrders</b> (për operator/ditë). "Events" janë rreshta ProductLogs (opsionale, kërkojnë filtër produkti).</div>`;
-  $$('#wmsOpTable [data-sortkey]').forEach(th=>{ th.onclick=()=>{
-    const k=th.dataset.sortkey;
-    if(wmsOpTableSort.key===k) wmsOpTableSort.dir = wmsOpTableSort.dir==='asc'?'desc':'asc';
-    else wmsOpTableSort={key:k, dir:k==='op'?'asc':'desc'};
-    wmsDashboard(box);
-  }; });
 }
-let wmsOpTableSort={key:'total', dir:'desc'};   // 'total' = historical default (p+ci+co, desc); set by clicking a column header
 function wmsPreparedDashboardHTML(){
   const prep=Store.col('wmsPrepared'); const chk=Store.col('wmsCheckin');
   if(!prep.length && !chk.length) return '';
@@ -2928,32 +2921,9 @@ function wmsPreparedDashboardHTML(){
   const C=agg(chk, r=>r.checkedIn);
   const O=agg(chk, r=>r.checkedOut);
   const col=(title,sub,rows,max,color)=>`<div><h3 style="font-size:12.5px;margin:0 0 6px">${title}${sub?` <span class="sub">${sub}</span>`:''}</h3>${rows.length?rows.map(([k,c])=>barRow(k,c,max,color)).join(''):'<div class="empty" style="font-size:12px">—</div>'}</div>`;
-  // ---- combined per-operator table for the latest day (Prepared · Checked In · Checked Out) ----
-  const allDates=[...prep.map(r=>r.date),...chk.map(r=>r.date)].filter(Boolean).sort();
-  const refDay=allDates[allDates.length-1]||null;
-  const pMap={}, ciMap={}, coMap={};
-  prep.forEach(r=>{ if(r.date===refDay) pMap[r.operator]=(pMap[r.operator]||0)+num(r.preparedOrders); });
-  chk.forEach(r=>{ if(r.date===refDay){ ciMap[r.operator]=(ciMap[r.operator]||0)+num(r.checkedIn); coMap[r.operator]=(coMap[r.operator]||0)+num(r.checkedOut); } });
-  const opsAll=[...new Set([...Object.keys(pMap),...Object.keys(ciMap),...Object.keys(coMap)])]
-    .map(op=>({op, p:pMap[op]||0, ci:ciMap[op]||0, co:coMap[op]||0}));
-  const sortDir=wmsOpTableSort.dir==='asc'?1:-1;
-  opsAll.sort((a,b)=>{
-    const k=wmsOpTableSort.key;
-    if(k==='op') return sortDir*(a.op<b.op?-1:(a.op>b.op?1:0));
-    if(k==='p'||k==='ci'||k==='co') return sortDir*(a[k]-b[k]);
-    return (b.p+b.ci+b.co)-(a.p+a.ci+a.co);   // default 'total' — historically always descending, no header toggles it
-  });
-  const tot={p:opsAll.reduce((a,x)=>a+x.p,0), ci:opsAll.reduce((a,x)=>a+x.ci,0), co:opsAll.reduce((a,x)=>a+x.co,0)};
-  const cell=(v,color)=>`<td style="text-align:right">${v?`<b style="color:${color}">${v}</b>`:'<span class="muted">0</span>'}</td>`;
-  const sortArrow=k=>wmsOpTableSort.key===k?` <span class="sub">${wmsOpTableSort.dir==='asc'?'▲':'▼'}</span>`:'';
-  const th=(key,label,align,title)=>`<th data-sortkey="${key}" style="${align?'text-align:right;':''}cursor:pointer;user-select:none" title="${title?h(title)+' — ':''}kliko për të renditur">${label}${sortArrow(key)}</th>`;
-  const opTable=`<div style="overflow:auto"><table class="tbl" id="wmsOpTable">
-    <thead><tr>${th('op','Operator',false)}${th('p','Prepared <span class="sub">porosi</span>',true,'orders (/Order/GetPreparedOrders)')}${th('ci','Checked In <span class="sub">produkte</span>',true,'products (ProductLogs «Checked in»)')}${th('co','Produkte të përgatitura për Check Out',true,'products (ProductLogs «Check out»)')}</tr></thead>
-    <tbody>${opsAll.length?opsAll.map(r=>`<tr><td>${h(r.op)}</td>${cell(r.p,'var(--ok)')}${cell(r.ci,'var(--fact)')}${cell(r.co,'var(--imp)')}</tr>`).join(''):emptyRow(4,'—')}
-      <tr style="border-top:2px solid var(--line)"><td><b>Total</b></td><td style="text-align:right"><b>${tot.p}</b></td><td style="text-align:right"><b>${tot.ci}</b></td><td style="text-align:right"><b>${tot.co}</b></td></tr></tbody></table></div>`;
-  return `<div class="card" style="margin:14px 0"><h3>By operator — Prepared · Checked In · Checked Out <span class="sub">latest day ${refDay?h(fmtDateAl(refDay)):'—'} · source: /Order/GetPreparedOrders + /Warehouse/ProductLogs</span></h3>
-      ${opTable}
-      <div class="hint" style="margin:8px 0 14px">Njësi të ndryshme: <b>Prepared</b> = porosi (orders); <b>Checked In / Checked Out</b> = produkte (events). Picking dhe check-out shpesh bëhen nga persona të ndryshëm.</div>
+  // The old per-operator "latest day" table lived here; removed in favour of the "Operators" tab,
+  // which shows the same Prepared/Checked In/Checked Out breakdown for any date range, not just today.
+  return `<div class="card" style="margin:14px 0"><h3>Prepared · Checked In · Checked Out — trendi ditor <span class="sub">last 14 days · source: /Order/GetPreparedOrders + /Warehouse/ProductLogs</span></h3>
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
         ${col('Prepared by day', 'porosi', P.days.map(([k,c])=>[fmtDateAl(k),c]), P.maxD, 'var(--ok)')}
         ${col('Checked In by day', 'produkte', C.days.map(([k,c])=>[fmtDateAl(k),c]), C.maxD, 'var(--fact)')}
@@ -2962,60 +2932,105 @@ function wmsPreparedDashboardHTML(){
       <div class="hint" style="margin-top:10px">ℹ️ <b>Checked In by day</b> (nga log-u i eventeve, për operator/ditë) mund të ndryshojë pak nga karta <b>Products Checked In</b> lart (numëruesi live i WMS-it, <code>GetDashboardStats</code>). Të dy janë të saktë por masin ndryshe: karta lart = numëruesi zyrtar i WMS-it (i lidhur me faturat, dritare rrotulluese); këtu = evente «Checked in» për ditën kalendarike 00:00–tani. Diferenca vjen nga kufiri i ditës dhe përkufizimi, jo nga një gabim.</div></div>`;
 }
 
-let wmsOpFilter={from:'',to:'',shift:''};
+/* "Operators" tab — daily per-operator Prepared / Checked In / Checked Out over a date range, built
+   from the AUTO-SYNCED WMS data. The Dashboard used to have its own "By operator" table for just the
+   latest day (removed — this tab supersedes it for any date range). The tab originally read
+   Store.col('wmsLogs'), a collection only the manual "Import" workflow ever fills — since the agent's
+   automatic sync took over (wmsPrepared / wmsCheckin), wmsLogs has stayed empty and this tab showed
+   nothing but "no data" ever since. */
+let wmsOpFilter={from:'',to:''};
+function wmsOpDefaultRange(){
+  const days=[...new Set([...Store.col('wmsPrepared'),...Store.col('wmsCheckin')].map(r=>r.date))].filter(Boolean).sort();
+  if(!days.length) return;
+  wmsOpFilter.to=days[days.length-1];
+  wmsOpFilter.from=days[Math.max(0,days.length-14)];
+}
+/* one row per operator/day */
+function wmsOperatorDailyAgg(fromDate,toDate){
+  const byKey={};
+  const get=(op,date)=>{ const k=op+'|'+date; return byKey[k]||(byKey[k]={operator:op,date,prepared:0,checkedIn:0,checkedOut:0}); };
+  Store.col('wmsPrepared').forEach(r=>{ if(!r.operator||!r.date) return; if(fromDate&&r.date<fromDate) return; if(toDate&&r.date>toDate) return;
+    get(r.operator,r.date).prepared+=num(r.preparedOrders); });
+  Store.col('wmsCheckin').forEach(r=>{ if(!r.operator||!r.date) return; if(fromDate&&r.date<fromDate) return; if(toDate&&r.date>toDate) return;
+    const g=get(r.operator,r.date); g.checkedIn+=num(r.checkedIn); g.checkedOut+=num(r.checkedOut); });
+  return Object.values(byKey).sort((a,b)=> a.date<b.date?1:a.date>b.date?-1:(b.prepared+b.checkedIn+b.checkedOut)-(a.prepared+a.checkedIn+a.checkedOut));
+}
+/* rolled up per operator across the whole range, plus a few derived stats */
+function wmsOperatorSummary(fromDate,toDate){
+  const daily=wmsOperatorDailyAgg(fromDate,toDate);
+  const byOp={};
+  daily.forEach(d=>{ const g=byOp[d.operator]||(byOp[d.operator]={operator:d.operator,prepared:0,checkedIn:0,checkedOut:0,days:new Set(),lastDate:d.date});
+    g.prepared+=d.prepared; g.checkedIn+=d.checkedIn; g.checkedOut+=d.checkedOut;
+    if(d.prepared||d.checkedIn||d.checkedOut) g.days.add(d.date);
+    if(d.date>g.lastDate) g.lastDate=d.date; });
+  const tot={prepared:0,checkedIn:0,checkedOut:0}; Object.values(byOp).forEach(g=>{ tot.prepared+=g.prepared; tot.checkedIn+=g.checkedIn; tot.checkedOut+=g.checkedOut; });
+  return Object.values(byOp).map(g=>({ operator:g.operator, prepared:g.prepared, checkedIn:g.checkedIn, checkedOut:g.checkedOut,
+    daysActive:g.days.size, lastDate:g.lastDate,
+    avgPrepared: g.days.size? Math.round(g.prepared/g.days.size*10)/10 : 0,
+    outRate: g.checkedIn>0? Math.round(g.checkedOut/g.checkedIn*100) : null,
+    sharePrepared: tot.prepared? Math.round(g.prepared/tot.prepared*100) : 0,
+  })).sort((a,b)=>(b.prepared+b.checkedIn+b.checkedOut)-(a.prepared+a.checkedIn+a.checkedOut));
+}
 function wmsOperators(box){
-  const shifts=['',...(Store.col('wmsShifts').map(s=>s.name)),'UNKNOWN'];
+  if(!wmsOpFilter.from && !wmsOpFilter.to) wmsOpDefaultRange();
   box.innerHTML = `<div class="filters">
-      <label class="small muted" style="align-self:center">From <input type="date" id="wof" value="${h(wmsOpFilter.from)}"></label>
-      <label class="small muted" style="align-self:center">To <input type="date" id="wot" value="${h(wmsOpFilter.to)}"></label>
-      <select id="wosh">${shifts.map(s=>`<option value="${h(s)}" ${wmsOpFilter.shift===s?'selected':''}>${s?h(s):'All shifts'}</option>`).join('')}</select>
+      <label class="small muted" style="align-self:center">Nga <input type="date" id="wof" value="${h(wmsOpFilter.from)}"></label>
+      <label class="small muted" style="align-self:center">Deri <input type="date" id="wot" value="${h(wmsOpFilter.to)}"></label>
+      <button class="btn sm" id="wo7">7 ditët e fundit</button>
+      <button class="btn sm" id="wo30">30 ditët e fundit</button>
       <button class="btn" id="woExport">⬇ Export CSV</button>
     </div><div id="wopTable"></div>`;
   $('#wof').onchange=e=>{wmsOpFilter.from=e.target.value;drawWmsOps();};
   $('#wot').onchange=e=>{wmsOpFilter.to=e.target.value;drawWmsOps();};
-  $('#wosh').onchange=e=>{wmsOpFilter.shift=e.target.value;drawWmsOps();};
+  const setLast=n=>{ const days=[...new Set([...Store.col('wmsPrepared'),...Store.col('wmsCheckin')].map(r=>r.date))].filter(Boolean).sort();
+    if(!days.length) return; wmsOpFilter.to=days[days.length-1]; wmsOpFilter.from=days[Math.max(0,days.length-n)];
+    $('#wof').value=wmsOpFilter.from; $('#wot').value=wmsOpFilter.to; drawWmsOps(); };
+  $('#wo7').onclick=()=>setLast(7); $('#wo30').onclick=()=>setLast(30);
   $('#woExport').onclick=wmsExportOps;
   drawWmsOps();
 }
 function drawWmsOps(){
-  const rows=wmsOperatorAgg(wmsOpFilter.from,wmsOpFilter.to,wmsOpFilter.shift);
+  const rows=wmsOperatorSummary(wmsOpFilter.from,wmsOpFilter.to);
   const box=$('#wopTable'); if(!box) return;
-  box.innerHTML = rows.length? `<div class="tablewrap"><table><thead><tr><th>Operator</th><th>Date</th><th>Shift</th><th>Orders</th><th>Products*</th><th>First</th><th>Last</th><th>Hours</th><th>Events/h</th><th></th></tr></thead>
+  const rangeLbl=(wmsOpFilter.from&&wmsOpFilter.to)?`${fmtDateAl(wmsOpFilter.from)} – ${fmtDateAl(wmsOpFilter.to)}`:'krejt periudha';
+  box.innerHTML = rows.length? `<div class="hint" style="margin-bottom:6px">Periudha: <b>${h(rangeLbl)}</b> · burimi: /Order/GetPreparedOrders + /Warehouse/ProductLogs (i njëjti sync automatik si te Dashboard)</div>
+    <div class="tablewrap"><table><thead><tr><th>Operator</th><th style="text-align:right">Ditë aktive</th><th style="text-align:right">Prepared <span class="sub">total</span></th><th style="text-align:right">Mesatare/ditë</th><th style="text-align:right">Checked In</th><th style="text-align:right">Checked Out</th><th style="text-align:right">Out/In</th><th style="text-align:right">Pjesa e porosive</th><th>Aktiv së fundmi</th><th></th></tr></thead>
     <tbody>${rows.map((r,i)=>`<tr>
-      <td>${h(r.operator)}</td><td class="small">${h(fmtDateAl(r.date))}</td>
-      <td>${r.shift==='UNKNOWN'?'<span class="badge b-warn">UNKNOWN</span>':h(r.shift)}</td>
-      <td><b>${r.orders}</b></td><td>${r.events}</td>
-      <td class="small">${fmtTime(r.first)}</td><td class="small">${fmtTime(r.last)}</td>
-      <td class="small">${r.hours?r.hours.toFixed(1):'—'}</td><td>${r.evPerHour??'—'}</td>
-      <td><button class="btn sm" data-wop="${i}">Detail</button></td></tr>`).join('')}</tbody></table></div>
-      <div class="hint" style="margin-top:6px">*"Products" = numri i ngjarjeve ProductLogs të operatorit (jo domosdo produkte të përfunduara). "Orders" = OrderId të dallueshëm. Events/h = ngjarje ÷ (koha e fundit − e parë) — jo productivity i mirëfilltë pa kohë aktive.</div>`
-    : `<div class="card"><div class="empty">S'ka të dhëna për këtë filtër. Importo log-et te skeda Import.</div></div>`;
+      <td>${h(r.operator)}</td>
+      <td style="text-align:right">${r.daysActive}</td>
+      <td style="text-align:right"><b>${r.prepared||'<span class="muted">0</span>'}</b></td>
+      <td style="text-align:right">${r.avgPrepared||'—'}</td>
+      <td style="text-align:right">${r.checkedIn||'<span class="muted">0</span>'}</td>
+      <td style="text-align:right">${r.checkedOut||'<span class="muted">0</span>'}</td>
+      <td style="text-align:right">${r.outRate!=null?`<span class="badge ${r.outRate>=90?'b-ok':(r.outRate>=60?'b-warn':'b-crit')}">${r.outRate}%</span>`:'—'}</td>
+      <td style="text-align:right">${r.sharePrepared?r.sharePrepared+'%':'—'}</td>
+      <td class="small">${h(fmtDateAl(r.lastDate))}</td>
+      <td><button class="btn sm" data-wop="${i}">Detaje</button></td></tr>`).join('')}</tbody></table></div>
+      <div class="hint" style="margin-top:6px">"Prepared" = porosi (orders, nga GetPreparedOrders); "Checked In/Out" = produkte (evente ProductLogs). "Pjesa e porosive" = % e totalit të Prepared në këtë periudhë mes gjithë operatorëve — tregon përqendrimin e ngarkesës.</div>`
+    : `<div class="card"><div class="empty">S'ka të dhëna WMS për këtë periudhë. Sigurohu që agjenti është duke sinkronizuar (skeda Dashboard).</div></div>`;
   $$('#wopTable [data-wop]').forEach(b=>b.onclick=()=>wmsOperatorDetail(rows[+b.dataset.wop]));
 }
 function wmsOperatorDetail(r){
-  const hist=wmsOperatorAgg('','','').filter(x=>x.operator===r.operator).sort((a,b)=>a.date<b.date?1:-1).slice(0,30);
-  const lt=Object.entries(r.logTypes||{}).sort((a,b)=>b[1]-a[1]);
+  const hist=wmsOperatorDailyAgg(wmsOpFilter.from,wmsOpFilter.to).filter(x=>x.operator===r.operator);
   openModal('Operator · '+r.operator,
     `<div style="display:grid;gap:4px;font-size:13px;margin-bottom:10px">
-       <div><b>Date:</b> ${h(fmtDateAl(r.date))} · <b>Shift:</b> ${h(r.shift)}</div>
-       <div><b>Orders processed:</b> ${r.orders} · <b>Product events:</b> ${r.events}</div>
-       <div><b>First:</b> ${fmtTime(r.first)} · <b>Last:</b> ${fmtTime(r.last)} · <b>Hours:</b> ${r.hours?r.hours.toFixed(1):'—'}</div>
-       <div><b>Events/hour:</b> ${r.evPerHour??'—'} · <b>Orders/hour:</b> ${r.ordPerHour??'—'}</div>
+       <div><b>Ditë aktive:</b> ${r.daysActive} · <b>Aktiv së fundmi:</b> ${h(fmtDateAl(r.lastDate))}</div>
+       <div><b>Prepared (total):</b> ${r.prepared} · <b>mesatare/ditë:</b> ${r.avgPrepared||'—'} · <b>pjesa e porosive:</b> ${r.sharePrepared||0}%</div>
+       <div><b>Checked In:</b> ${r.checkedIn} · <b>Checked Out:</b> ${r.checkedOut} · <b>Out/In:</b> ${r.outRate!=null?r.outRate+'%':'—'}</div>
      </div>
-     ${lt.length?`<div class="small"><b>By LogType:</b> ${lt.map(([k,c])=>`<span class="badge b-muted">${h(k)}: ${c}</span>`).join(' ')}</div>`:''}
-     <h3 style="font-size:12.5px;margin:12px 0 6px">Daily history</h3>
-     <div class="tablewrap"><table><thead><tr><th>Date</th><th>Shift</th><th>Orders</th><th>Events</th><th>Hours</th><th>Ev/h</th></tr></thead>
-     <tbody>${hist.map(x=>`<tr><td class="small">${h(fmtDateAl(x.date))}</td><td>${h(x.shift)}</td><td>${x.orders}</td><td>${x.events}</td><td>${x.hours?x.hours.toFixed(1):'—'}</td><td>${x.evPerHour??'—'}</td></tr>`).join('')}</tbody></table></div>`,
+     <h3 style="font-size:12.5px;margin:12px 0 6px">Historia ditore</h3>
+     <div class="tablewrap"><table><thead><tr><th>Data</th><th style="text-align:right">Prepared</th><th style="text-align:right">Checked In</th><th style="text-align:right">Checked Out</th></tr></thead>
+     <tbody>${hist.map(x=>`<tr><td class="small">${h(fmtDateAl(x.date))}</td><td style="text-align:right">${x.prepared||'—'}</td><td style="text-align:right">${x.checkedIn||'—'}</td><td style="text-align:right">${x.checkedOut||'—'}</td></tr>`).join('')}</tbody></table></div>`,
     `<button class="btn primary" id="mok">Close</button>`);
   $('#mok').onclick=closeModal;
 }
 function wmsExportOps(){
-  const rows=wmsOperatorAgg(wmsOpFilter.from,wmsOpFilter.to,wmsOpFilter.shift);
+  const rows=wmsOperatorSummary(wmsOpFilter.from,wmsOpFilter.to);
   if(!rows.length){ toast('Nothing to export'); return; }
-  const keys=['date','shift','operator','orders','events','first','last','hours','evPerHour','ordPerHour'];
+  const keys=['operator','daysActive','prepared','avgPrepared','checkedIn','checkedOut','outRate','sharePrepared','lastDate'];
   const esc=v=>{ if(v==null)return''; v=String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
-  const csv=[keys.join(',')].concat(rows.map(r=>keys.map(k=>esc(k==='hours'?(r.hours?r.hours.toFixed(2):''):r[k])).join(','))).join('\n');
-  downloadFile('wms-operator-performance-'+todayStr()+'.csv','﻿'+csv,'text/csv;charset=utf-8');
+  const csv=[keys.join(',')].concat(rows.map(r=>keys.map(k=>esc(r[k])).join(','))).join('\n');
+  downloadFile('wms-operator-performance-'+(wmsOpFilter.from||'all')+'_'+(wmsOpFilter.to||todayStr())+'.csv','﻿'+csv,'text/csv;charset=utf-8');
 }
 
 /* decode an uploaded file buffer as UTF-8 / UTF-16 / UTF-32 (WMS exports are often UTF-32/UTF-16) */
