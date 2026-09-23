@@ -2755,14 +2755,74 @@ function renderWMS(v){
       <span class="muted">Rows: <b>${nData}</b></span>
     </div>
     ${connHint}</div>`;
-  const tabs=[['dashboard','Dashboard'],['operators','Operators'],['import','Import'],['validation','Validation'],['shifts','Shifts'],['log','Sync Log']];
+  const tabs=[['dashboard','Dashboard'],['flow2h','Flow (2h)'],['operators','Operators'],['import','Import'],['validation','Validation'],['shifts','Shifts'],['log','Sync Log']];
   v.innerHTML = pagehead('WMS Data & Performance','Marrje, ruajtje, filtrim dhe analizë e të dhënave nga GjirafaWMS — Products Checked In, Orders, dhe performanca për operator/ditë/ndërrim. Të gjurmueshme, pa hamendje.')
     + conn
     + `<div class="filters" id="wmsTabs">${tabs.map(t=>`<button class="btn ${wmsTab===t[0]?'primary':''}" data-wtab="${t[0]}">${t[1]}</button>`).join('')}</div>`
     + `<div id="wmsBody"></div>`;
   $$('#wmsTabs [data-wtab]').forEach(b=>b.onclick=()=>{ wmsTab=b.dataset.wtab; renderWMS(v); });
   const body=$('#wmsBody');
-  ({dashboard:wmsDashboard, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
+  ({dashboard:wmsDashboard, flow2h:wmsFlow2h, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
+}
+
+/* "Flow (2h)" — the warehouse's own running totals at 08:00, 10:00 ... 20:00 for a chosen date,
+   each against the same hour yesterday, in the style of the team's WhatsApp "AI Operator" bot.
+   The agent (GET /wms/flow2h?date=YYYY-MM-DD) reconstructs Check-in/Checkout exactly from WMS
+   ProductLogs timestamps for any date; "Orders" (Prepared) has no per-event timestamp in WMS, so it
+   only appears for the current hour (today) or the day's final total (a finished day) — disclosed,
+   not guessed. Marks are always rendered oldest→newest (calendar order), and a mark that hasn't
+   happened yet is simply not shown. */
+let wmsFlow2hDate=null;
+function wmsFlow2h(box){
+  if(!wmsFlow2hDate) wmsFlow2hDate=todayStr();
+  box.innerHTML = `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>📅 Data:</b> <input type="date" id="flow2hDate" value="${h(wmsFlow2hDate)}" style="width:auto;min-height:36px">
+        <button class="btn sm" id="flow2hRefresh">↻ Rifresko</button>
+        <span class="hint" style="margin:0 0 0 auto">Rrjedha e depos çdo 2 orë (08:00–20:00), krahasuar me të njëjtën orë dje.</span>
+      </div>
+    </div>
+    <div id="flow2hBody"><div class="empty">Po ngarkohet…</div></div>`;
+  $('#flow2hDate').onchange=e=>{ wmsFlow2hDate=e.target.value||todayStr(); loadFlow2h(); };
+  $('#flow2hRefresh').onclick=()=>loadFlow2h();
+  loadFlow2h();
+}
+async function loadFlow2h(){
+  const body=$('#flow2hBody'); if(!body) return;
+  body.innerHTML=`<div class="empty">Po ngarkohet…</div>`;
+  try{
+    const r=await fetch('/wms/flow2h?date='+encodeURIComponent(wmsFlow2hDate),{cache:'no-store'});
+    const j=await r.json();
+    if(!r.ok || j.error){ body.innerHTML=`<div class="empty">Gabim: ${h(j.error||('HTTP '+r.status))}</div>`; return; }
+    body.innerHTML=renderFlow2hHTML(j);
+  }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}). Hapja e app-it nga http://localhost:8790 kërkohet për këtë skedë.</div>`; }
+}
+function renderFlow2hHTML(data){
+  const past=data.marks.filter(m=>!m.future);
+  if(!past.length) return `<div class="empty">Ende s'ka arritur ora e parë (08:00) për ${h(fmtDateAl(data.date))}.</div>`;
+  const pctBadge=p=> p==null?'':`<span class="badge ${p>=0?'b-ok':'b-crit'}" style="margin-left:6px">${p>=0?'+':''}${p}%</span>`;
+  // oldest → newest (calendar order), as asked — a chronological log of the shift, not a chat feed
+  const cards=past.map((m,i)=>{
+    const prevM=past[i-1];
+    const tempoProducts = prevM ? Math.round((m.checkedOut-prevM.checkedOut)/2) : null;
+    const tempoOrders = (prevM && m.orders!=null && prevM.orders!=null) ? Math.round((m.orders-prevM.orders)/2) : null;
+    return `<div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h3 style="margin:0">Rrjedha e depos — deri në ${h(m.hour)}</h3>
+        <span class="faint small">${h(fmtDateAl(data.date))}</span>
+      </div>
+      <div style="margin-top:6px;line-height:1.9">
+        <div>Porosi të përfunduara sot: ${m.orders!=null?`<b>${m.orders}</b>`:'<span class="faint">— (WMS s\'ka të dhëna historike për këtë orë)</span>'}</div>
+        <div>Check-in: <b>${m.checkedIn}</b>${pctBadge(m.checkedInPct)}${m.checkedInPrev!=null?` <span class="faint">— dje në këtë orë: ${m.checkedInPrev}</span>`:''}</div>
+        <div>Checkout products: <b>${m.checkedOut}</b>${pctBadge(m.checkedOutPct)}${m.checkedOutPrev!=null?` <span class="faint">— dje në këtë orë: ${m.checkedOutPrev}</span>`:''}</div>
+        <div class="faint small" style="margin-top:4px">Ritmi aktual (2 orët e fundit): ${tempoProducts!=null?tempoProducts+' produkte/orë':'—'}${tempoOrders!=null?' · '+tempoOrders+' porosi/orë':''}</div>
+      </div>
+    </div>`;
+  }).join('');
+  const pf=data.prevFullDay;
+  const footer = pf ? `<div class="note" style="margin-top:6px"><b>Dita e kaluar plotë (${h(fmtDateAl(data.prevDate))}):</b> ${pf.checkedIn} check-in · ${pf.checkedOut} checkout (produkte) · ${pf.orders} porosi</div>` : '';
+  const warn = data.reliable===false ? `<div class="hint" style="margin-top:6px;color:var(--warn)">⚠ Njëra nga ditët e krahasuara ka vëllim shumë të lartë eventesh (mbi kufirin e leximit të sigurt); shifrat e asaj dite mund të kenë një margjinë të vogël gabimi — kufizim i njohur i faqësimit të WMS-it.</div>` : '';
+  return cards + `<div class="hint" style="margin-top:10px">${h(data.note)}</div>` + footer + warn;
 }
 
 /* "Orders prepared" KPI, as a single Line with Markers chart of the daily total (sum across

@@ -172,7 +172,52 @@ const PLOG_MAXPAGES=15; // safety cap per day (30k events)
    caching from day one (as before) silently froze an incomplete count forever. */
 const CACHE_SETTLE_DAYS=3;
 const checkinCache={}; // iso date -> {ops, inCount, outCount} — only for days older than CACHE_SETTLE_DAYS
+const dayLogsCache={};  // mdy -> {rows, reliable} — one WMS fetch per date per agent run, several endpoints share it
 function isoToday(){ const t=new Date(); return t.getFullYear()+'-'+p2(t.getMonth()+1)+'-'+p2(t.getDate()); }
+/* Fetch every ProductLogs row for one calendar day (all LogTypes, no filter) exactly once.
+   Start-offset paging on this WMS endpoint is unreliable once a day needs more than one page —
+   found 2026-09-22: a fetch-all-in-one-request (length >= recordsFiltered) can disagree with the
+   paged total by double digits of percent, in EITHER direction (extra duplicate rows on "today"
+   while it is still being written to; missing rows on already-settled past days too — root cause
+   is most likely a non-deterministic tie-break in WMS's own ORDER BY when many rows share one
+   timestamp). De-duplicating rows across pages by natural key was tried and reverted: most
+   "Checked in" rows carry no ProductItemUniqueIdentifier, so that key collapsed distinct rows too
+   and made settled days WORSE. The fix that actually holds up: when the WHOLE day fits under
+   SINGLE_FETCH_MAX, fetch it in one request (no offset involved at all → provably exact, verified
+   rows.length===recordsFiltered) instead of paging. Only a day too large for that single request
+   falls back to the old incremental paging, carrying its known margin of error (returned as
+   reliable:false — callers should disclose it, not hide it). */
+async function fetchDayProductLogs(mdy, opts){
+  opts=opts||{}; if(!opts.noCache && dayLogsCache[mdy]) return dayLogsCache[mdy];
+  const mk=(start,length)=>({draw:1,start,length,search:{value:'',regex:false},order:[{column:10,dir:'desc'}],columns:PLOG_COLS,
+    filters:{StartDate:mdy,EndDate:mdy,StoreId:0,ProductCode:'',Sku:'',ProductItemUniqueIdentifier:'',ProductSerialNumber:''}});
+  const r=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:enc(mk(0,PLOG_PAGE)).join('&')});
+  if(looksLoggedOut(r)) return {error:'auth_expired'};
+  let j; try{ j=JSON.parse(r.body); }catch(e2){ return {error:'bad_response'}; }
+  let rowsAll=j.data||[]; const total=Number(j.recordsFiltered)||rowsAll.length; let pages=1, start2=PLOG_PAGE;
+  const SINGLE_FETCH_MAX=4000;   // conservative — a length of 5000-6000 tested fine on 2026-09-22, keeping margin below the length~3000 that once 500'd on a busier day
+  let reliable = rowsAll.length>=total;   // page 1 already had everything
+  if(!reliable && total<=SINGLE_FETCH_MAX){
+    try{
+      const r2=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:enc(mk(0,total)).join('&')});
+      if(!looksLoggedOut(r2)){ const j2=JSON.parse(r2.body); const d2=j2.data||[];
+        if(d2.length===total){ rowsAll=d2; reliable=true; } }
+    }catch(e3){ /* any failure (500, bad json, short read) — fall through to incremental paging below */ }
+  }
+  if(!reliable && rowsAll.length<total){
+    // fallback: incremental paging, starting from the page-1 rows we already have — known margin of error
+    while(start2<total && pages<PLOG_MAXPAGES){
+      const rp=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:enc(mk(start2,PLOG_PAGE)).join('&')});
+      if(looksLoggedOut(rp)) return {error:'auth_expired'};
+      let jp; try{ jp=JSON.parse(rp.body); }catch(e4){ return {error:'bad_response'}; }
+      const rows=jp.data||[]; rowsAll=rowsAll.concat(rows);
+      pages++; if(!rows.length) break; start2+=PLOG_PAGE;
+    }
+  }
+  const out={rows:rowsAll, reliable, total};
+  if(!opts.noCache) dayLogsCache[mdy]=out;
+  return out;
+}
 async function getCheckins(start,end){
   const s=parseDMY(start), e=parseDMY(end||start); const out=[]; const daily=[]; const tIso=isoToday();
   const tDate=new Date(tIso+'T00:00:00');
@@ -186,50 +231,10 @@ async function getCheckins(start,end){
     if(settled && checkinCache[iso]){ const c=checkinCache[iso];
       c.ops.forEach(o=>out.push({date:iso,operator:o.operator,checkedIn:o.checkedIn||0,checkedOut:o.checkedOut||0}));
       daily.push({date:iso,checkedIn:c.inCount,checkedOut:c.outCount}); continue; }
-    const byIn={}, byOut={}; let inCount=0, outCount=0; let start2=0, total=Infinity, pages=0;
-    /* Start-offset paging on this WMS endpoint is unreliable once a day needs more than one page —
-       found 2026-09-22: a fetch-all-in-one-request (length >= recordsFiltered) can disagree with the
-       paged total by double digits of percent, in EITHER direction (extra duplicate rows on "today"
-       while it is still being written to; missing rows on already-settled past days too — root cause
-       is most likely a non-deterministic tie-break in WMS's own ORDER BY when many rows share one
-       timestamp). De-duplicating rows across pages by natural key was tried and reverted: most
-       "Checked in" rows carry no ProductItemUniqueIdentifier, so that key collapsed distinct rows too
-       and made settled days WORSE. The fix that actually holds up: when the WHOLE day fits under
-       SINGLE_FETCH_MAX, fetch it in one request (no offset involved at all → provably exact, verified
-       rows.length===recordsFiltered) instead of paging. Only a day too large for that single request
-       falls back to the old incremental paging, carrying its known margin of error — disclosed, not
-       silently hidden, and rare in practice. */
-    const first={draw:1,start:0,length:PLOG_PAGE,search:{value:'',regex:false},order:[{column:10,dir:'desc'}],columns:PLOG_COLS,
-      filters:{StartDate:mdy,EndDate:mdy,StoreId:0,ProductCode:'',Sku:'',ProductItemUniqueIdentifier:'',ProductSerialNumber:''}};
-    let r=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:enc(first).join('&')});
-    if(looksLoggedOut(r)) return {error:'auth_expired'};
-    let j; try{ j=JSON.parse(r.body); }catch(e2){ return {error:'bad_response'}; }
-    let rowsAll=j.data||[]; total=Number(j.recordsFiltered)||rowsAll.length; pages=1; start2=PLOG_PAGE;
-    const SINGLE_FETCH_MAX=4000;   // conservative — a length of 5000-6000 tested fine on 2026-09-22, keeping margin below the length~3000 that once 500'd on a busier day
-    let gotSingle = rowsAll.length>=total;   // page 1 already had everything
-    if(!gotSingle && total<=SINGLE_FETCH_MAX){
-      try{
-        const whole={draw:1,start:0,length:total,search:{value:'',regex:false},order:[{column:10,dir:'desc'}],columns:PLOG_COLS,
-          filters:{StartDate:mdy,EndDate:mdy,StoreId:0,ProductCode:'',Sku:'',ProductItemUniqueIdentifier:'',ProductSerialNumber:''}};
-        const r2=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:enc(whole).join('&')});
-        if(!looksLoggedOut(r2)){ const j2=JSON.parse(r2.body); const d2=j2.data||[];
-          if(d2.length===total){ rowsAll=d2; gotSingle=true; } }
-      }catch(e3){ /* any failure (500, bad json, short read) — fall through to incremental paging below */ }
-    }
-    if(!gotSingle){
-      // fallback: incremental paging, starting from the page-1 rows we already have
-      while(start2<total && pages<PLOG_MAXPAGES){
-        const params={draw:1,start:start2,length:PLOG_PAGE,search:{value:'',regex:false},order:[{column:10,dir:'desc'}],columns:PLOG_COLS,
-          filters:{StartDate:mdy,EndDate:mdy,StoreId:0,ProductCode:'',Sku:'',ProductItemUniqueIdentifier:'',ProductSerialNumber:''}};
-        const body=enc(params).join('&');
-        const rp=await wmsFetch('/Warehouse/ProductLogsData',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body});
-        if(looksLoggedOut(rp)) return {error:'auth_expired'};
-        let jp; try{ jp=JSON.parse(rp.body); }catch(e4){ return {error:'bad_response'}; }
-        const rows=jp.data||[]; total=Number(jp.recordsFiltered)||rows.length; rowsAll=rowsAll.concat(rows);
-        pages++; if(!rows.length) break; start2+=PLOG_PAGE;
-      }
-    }
-    rowsAll.forEach(x=>{
+    const dl=await fetchDayProductLogs(mdy, {noCache:!settled});   // don't cross-cache an unsettled day across two callers in the same run
+    if(dl.error) return dl;
+    const byIn={}, byOut={}; let inCount=0, outCount=0;
+    dl.rows.forEach(x=>{
       const op=(x.UpdatedByName||'').trim()||'(pa operator)';
       if(x.LogType===CHECKIN_LOGTYPE){ inCount++; byIn[op]=(byIn[op]||0)+1; }
       else if(CHECKOUT_LOGTYPES.includes(x.LogType)){ outCount++; byOut[op]=(byOut[op]||0)+1; }
@@ -241,6 +246,62 @@ async function getCheckins(start,end){
     if(settled) checkinCache[iso]={ops, inCount, outCount}; // only cache once the day has had time to settle
   }
   return {data:out, daily};
+}
+
+/* --- bi-hourly flow report ("Flow (2h)" tab) ----------------------------------
+   Mirrors the warehouse's own WhatsApp "AI Operator" bot: for a chosen date, shows the running
+   totals at 08:00, 10:00, ... 20:00 local time, each against the same hour yesterday, plus the
+   2-hour tempo. Check-in/Check-out are reconstructed EXACTLY at each mark from ProductLogs
+   InsertDateTime (works for any date, past or present — see fetchDayProductLogs above). Orders
+   completed (= Prepared orders) has no per-event timestamp in WMS, so it can only be shown for
+   "now" on today or the day's final total on a finished day — earlier marks are honestly left null
+   rather than guessed. */
+const FLOW_MARKS=[8,10,12,14,16,18,20];
+function parseWmsDate(s){ const m=/\/Date\((\d+)\)\//.exec(s||''); return m?Number(m[1]):null; }
+function isoAddDays(iso,n){ const d=new Date(iso+'T12:00:00'); d.setDate(d.getDate()+n); return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()); }
+function isoToMdy(iso){ const [y,m,d]=iso.split('-'); return m+'/'+d+'/'+y; }
+/* cumulative Checked-in / Check-out(+Checked out) counts at each local-time mark, from one day's rows */
+function cumulativeByMark(rows, iso){
+  const cuts=FLOW_MARKS.map(h=>new Date(iso.slice(0,4), Number(iso.slice(5,7))-1, Number(iso.slice(8,10)), h,0,0,0).getTime());
+  const out=FLOW_MARKS.map(()=>({checkedIn:0, checkedOut:0}));
+  rows.forEach(x=>{
+    const t=parseWmsDate(x.InsertDateTime); if(t==null) return;
+    const isIn=x.LogType===CHECKIN_LOGTYPE, isOut=CHECKOUT_LOGTYPES.includes(x.LogType);
+    if(!isIn && !isOut) return;
+    for(let i=0;i<cuts.length;i++){ if(t<=cuts[i]){ if(isIn) out[i].checkedIn++; if(isOut) out[i].checkedOut++; } }
+  });
+  return out;
+}
+async function flowDayMarks(iso, dayTotals){
+  const dl=await fetchDayProductLogs(isoToMdy(iso));
+  if(dl.error) return {error:dl.error};
+  const marks=cumulativeByMark(dl.rows, iso);
+  return {marks, reliable:dl.reliable, dayTotals};
+}
+async function buildFlow2h(db, iso){
+  const today=isoToday(); const prevIso=isoAddDays(iso,-1);
+  const prep=(date)=>(db.wmsPrepared||[]).filter(r=>r.date===date).reduce((a,r)=>a+(Number(r.preparedOrders)||0),0);
+  const flowRow=(date)=>(db.wmsFlow||[]).find(f=>f.date===date);
+  const [cur, prev] = await Promise.all([ flowDayMarks(iso), flowDayMarks(prevIso) ]);
+  if(cur.error) return {error:cur.error};
+  const nowH = iso===today ? new Date().getHours()+new Date().getMinutes()/60 : null;
+  const ordersToday = prep(iso);
+  const marks = FLOW_MARKS.map((h,i)=>{
+    const c=cur.marks[i], p=prev.error?null:prev.marks[i];
+    const pct=(now,then)=> (then!=null && then>0) ? Math.round((now-then)/then*100) : null;
+    // orders: only known "as of now" (today, latest mark not yet in the future) or "final" (a day already over, last mark)
+    let orders=null;
+    if(iso===today){ if(h<=nowH+0.001) orders = (h===FLOW_MARKS.filter(x=>x<=nowH+0.001).pop()) ? ordersToday : null; }
+    else if(h===FLOW_MARKS[FLOW_MARKS.length-1]){ orders = ordersToday; }
+    return { hour:p2(h)+':00', checkedIn:c.checkedIn, checkedOut:c.checkedOut,
+      checkedInPrev: p?p.checkedIn:null, checkedOutPrev: p?p.checkedOut:null,
+      checkedInPct: p?pct(c.checkedIn,p.checkedIn):null, checkedOutPct: p?pct(c.checkedOut,p.checkedOut):null,
+      orders, future: iso===today && h>nowH+0.001 };
+  });
+  const prevFlow=flowRow(prevIso);
+  const prevFullDay = prevFlow ? {checkedIn:prevFlow.checkedIn, checkedOut:prevFlow.checkedOut, orders:prep(prevIso)} : null;
+  return { date:iso, prevDate:prevIso, marks, prevFullDay, reliable: cur.reliable && (prev.error?true:prev.reliable),
+    note:'Porositë (Prepared) shfaqen vetëm për orën aktuale (sot) ose totalin final (ditë e mbyllur) — WMS s\'i ruan me vulë kohore brenda ditës.' };
 }
 
 /* --- shared database (wods-db.json) ------------------------------------------
@@ -426,6 +487,13 @@ http.createServer(async (req,resp)=>{
     if(q.pathname==='/wms/stats'){ const r=await getStats(); return json(r.error?502:200, r.error?{error:r.error}:r.data); }
     if(q.pathname==='/wms/prepared'){ const r=await getPrepared(q.query.start||today(), q.query.end||q.query.start||today()); return json(r.error?502:200, r.error?{error:r.error}:{kind:'preparedOrders',rows:r.data}); }
     if(q.pathname==='/wms/checkin'){ const r=await getCheckins(q.query.start||today(), q.query.end||q.query.start||today()); return json(r.error?502:200, r.error?{error:r.error}:{kind:'checkedIn',rows:r.data,daily:r.daily}); }
+    if(q.pathname==='/wms/flow2h'){
+      const iso=q.query.date || isoToday();
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return json(400,{error:'date must be YYYY-MM-DD'});
+      const db=loadDb(); if(!db) return json(404,{error:'no shared db yet — open the app once via http://localhost:'+PORT+'/app.html'});
+      const r=await buildFlow2h(db, iso);
+      return json(r.error?502:200, r);
+    }
     // static app files
     let f=(q.pathname==='/'||q.pathname==='')?'/app.html':q.pathname;
     const full=path.join(APPDIR, decodeURIComponent(f).replace(/^\/+/,''));
