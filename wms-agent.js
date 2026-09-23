@@ -314,6 +314,92 @@ async function buildFlow2h(db, iso){
     note:'Porositë (Prepared) shfaqen vetëm për orën aktuale (sot) ose totalin final (ditë e mbyllur) — WMS s\'i ruan me vulë kohore brenda ditës.' };
 }
 
+/* --- "Check-in / Checkout Report" tab -----------------------------------------
+   Built from a handwritten spec (2026-09-23): per-period breakdown of Check-in and
+   Checkout activity. Everything here comes from ProductLogs (same rows fetchDayProductLogs
+   already retrieves reliably) — LogType "Map product" is WMS's own "Mapping" operation
+   (confirmed via the WMS database's PerformanceOperationTypes table: LogTypeId 7 = "Mapping",
+   matching the same identification method that confirmed LogTypeId 9 = checkout).
+   Two items from the original spec are NOT available from WMS at all — "stock vs local
+   sellers" and "POD" (proof of delivery) live in a separate system (deliveryplatform.
+   gjirafamall.com, its own login/database) which this agent has no access to. Rather than
+   guess, those fields are returned with available:false and a note — never a fabricated number.
+   "AVG time" fields are computed by matching a later event to an earlier one on the SAME
+   product-unit identifier (ProductItemUniqueIdentifier) — many rows (mostly "Checked in")
+   carry no identifier, so a "coverage" percentage is always reported alongside the average
+   so the number is never read as more complete than it is. */
+const MAPPING_LOGTYPE='Map product';
+function avgMs(arr){ return arr.length? arr.reduce((a,b)=>a+b,0)/arr.length : null; }
+function lastNDays(n){ const t=isoToday(); const out=[]; for(let i=n-1;i>=0;i--) out.push(isoAddDays(t,-i)); return out; }
+async function collectRangeRows(days){
+  const all=[]; let reliable=true;
+  for(const iso of days){
+    const age=Math.round((new Date(isoToday()+'T00:00:00') - new Date(iso+'T00:00:00'))/86400000);
+    const dl=await fetchDayProductLogs(isoToMdy(iso), {noCache: age<CACHE_SETTLE_DAYS});
+    if(dl.error) return dl;
+    dl.rows.forEach(r=>all.push(r));
+    if(!dl.reliable) reliable=false;
+  }
+  return {rows:all, reliable};
+}
+function opAggregate(list){
+  const m={};
+  list.forEach(r=>{ const op=(r.UpdatedByName||'').trim()||'(pa operator)';
+    const g=m[op]||(m[op]={count:0, orders:new Set()}); g.count++; if(r.OrderId) g.orders.add(r.OrderId); });
+  return Object.entries(m).map(([operator,v])=>({operator, count:v.count, orders:v.orders.size})).sort((a,b)=>b.count-a.count);
+}
+/* time from the nearest earlier "from" event to each "to" event, matched on ProductItemUniqueIdentifierId —
+   the raw per-unit id WMS always fills in (confirmed via the database: 100% populated on every LogType,
+   and the SAME id persists across a unit's Check-in→Mapping→Checkout lifecycle). The display field
+   "ProductItemUniqueIdentifier" (no "Id" suffix) that this same endpoint also returns is NOT reliable —
+   found empty on every row tested, whatever the LogType — so it must never be used as a join key. */
+function avgGapMs(fromRows, toRows){
+  const byKey={};
+  fromRows.forEach(r=>{ const k=r.ProductItemUniqueIdentifierId; if(!k) return; const t=parseWmsDate(r.InsertDateTime); if(t==null) return; (byKey[k]=byKey[k]||[]).push(t); });
+  const gaps=[];
+  toRows.forEach(r=>{ const k=r.ProductItemUniqueIdentifierId; if(!k || !byKey[k]) return; const t=parseWmsDate(r.InsertDateTime); if(t==null) return;
+    const earlier=byKey[k].filter(ft=>ft<=t); if(!earlier.length) return; gaps.push(t-Math.max(...earlier)); });
+  return {avgMs:avgMs(gaps), matched:gaps.length};
+}
+function buildCheckReport(rows, db, days){
+  const inRows=rows.filter(r=>r.LogType===CHECKIN_LOGTYPE);
+  const outRows=rows.filter(r=>CHECKOUT_LOGTYPES.includes(r.LogType));
+  const mapRows=rows.filter(r=>r.LogType===MAPPING_LOGTYPE);
+  const withOrder=list=>list.filter(r=>r.OrderId).length;
+  const ci2map=avgGapMs(inRows, mapRows);
+  const ci2out=avgGapMs(inRows, outRows);
+  const ciIds=new Set(inRows.map(r=>r.ProductItemUniqueIdentifierId).filter(Boolean));
+  const outFromCheckin=outRows.filter(r=>r.ProductItemUniqueIdentifierId && ciIds.has(r.ProductItemUniqueIdentifierId));
+  const outOrders=new Set(outRows.map(r=>r.OrderId).filter(Boolean));
+  const outFromCheckinOrders=new Set(outFromCheckin.map(r=>r.OrderId).filter(Boolean));
+  const byOrderSize={}; outRows.forEach(r=>{ if(r.OrderId) byOrderSize[r.OrderId]=(byOrderSize[r.OrderId]||0)+1; });
+  const orderSizes=Object.values(byOrderSize);
+  const preparedOrders=(db.wmsPrepared||[]).filter(r=>days.includes(r.date)).reduce((a,r)=>a+(Number(r.preparedOrders)||0),0);
+  const NA=note=>({available:false, note});
+  const DELIVERY_NOTE='Kërkon lidhje të veçantë me deliveryplatform.gjirafamall.com (sistem tjetër, me login/bazë të vet) — jo ende e disponueshme.';
+  return {
+    range:{from:days[0], to:days[days.length-1], days:days.length},
+    checkin:{
+      total:inRows.length, withOrder:withOrder(inRows), stockOnly:inRows.length-withOrder(inRows),
+      byOperator:opAggregate(inRows),
+      avgTimeToMap:{ms:ci2map.avgMs, matched:ci2map.matched, coveragePct: inRows.length?Math.round(ci2map.matched/inRows.length*100):0},
+      avgTimeToCheckout:{ms:ci2out.avgMs, matched:ci2out.matched, coveragePct: inRows.length?Math.round(ci2out.matched/inRows.length*100):0},
+      mapping:{total:mapRows.length, withOrder:withOrder(mapRows), stockOnly:mapRows.length-withOrder(mapRows), byOperator:opAggregate(mapRows)},
+      pod:NA(DELIVERY_NOTE),
+    },
+    checkout:{
+      total:outRows.length, preparedOrders, distinctOrders:outOrders.size,
+      avgItemsPerOrder: orderSizes.length ? avgMs(orderSizes) : null,
+      fromCheckin:{orders:outFromCheckinOrders.size, pct: outOrders.size?Math.round(outFromCheckinOrders.size/outOrders.size*100):null},
+      byOperator:opAggregate(outRows),
+      stockVsLocalSellers:NA(DELIVERY_NOTE),
+      pod:NA(DELIVERY_NOTE),
+      pendingOtherShipment:NA('Kërkon logjikë shtesë biznesi (backorder ndaj shipmentesh) që s\'është ende e përcaktuar.'),
+      orderAgeInDb:NA('Kërkon datën e krijimit të porosisë — endpoint i ri, jo ende i lidhur.'),
+    },
+  };
+}
+
 /* --- shared database (wods-db.json) ------------------------------------------
    One canonical copy of the app database for every browser on this machine. The
    app pulls it at boot, pushes on every save (with an optimistic-concurrency
@@ -503,6 +589,17 @@ http.createServer(async (req,resp)=>{
       const db=loadDb(); if(!db) return json(404,{error:'no shared db yet — open the app once via http://localhost:'+PORT+'/app.html'});
       const r=await buildFlow2h(db, iso);
       return json(r.error?502:200, r);
+    }
+    if(q.pathname==='/wms/checkreport'){
+      const range=q.query.range||'24h';
+      const n = range==='30d'?30 : range==='7d'?7 : 1;
+      const days=lastNDays(n);
+      const db=loadDb(); if(!db) return json(404,{error:'no shared db yet — open the app once via http://localhost:'+PORT+'/app.html'});
+      const cr=await collectRangeRows(days);
+      if(cr.error) return json(cr.error==='auth_expired'?401:502, cr);
+      const report=buildCheckReport(cr.rows, db, days);
+      report.reliable=cr.reliable;
+      return json(200, report);
     }
     // static app files
     let f=(q.pathname==='/'||q.pathname==='')?'/app.html':q.pathname;

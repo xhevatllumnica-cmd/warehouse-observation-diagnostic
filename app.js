@@ -2755,14 +2755,14 @@ function renderWMS(v){
       <span class="muted">Rows: <b>${nData}</b></span>
     </div>
     ${connHint}</div>`;
-  const tabs=[['dashboard','Dashboard'],['flow2h','Flow (2h)'],['operators','Operators'],['import','Import'],['validation','Validation'],['shifts','Shifts'],['log','Sync Log']];
+  const tabs=[['dashboard','Dashboard'],['flow2h','Flow (2h)'],['checkreport','Check-in / Checkout'],['operators','Operators'],['import','Import'],['validation','Validation'],['shifts','Shifts'],['log','Sync Log']];
   v.innerHTML = pagehead('WMS Data & Performance','Marrje, ruajtje, filtrim dhe analizë e të dhënave nga GjirafaWMS — Products Checked In, Orders, dhe performanca për operator/ditë/ndërrim. Të gjurmueshme, pa hamendje.')
     + conn
     + `<div class="filters" id="wmsTabs">${tabs.map(t=>`<button class="btn ${wmsTab===t[0]?'primary':''}" data-wtab="${t[0]}">${t[1]}</button>`).join('')}</div>`
     + `<div id="wmsBody"></div>`;
   $$('#wmsTabs [data-wtab]').forEach(b=>b.onclick=()=>{ wmsTab=b.dataset.wtab; renderWMS(v); });
   const body=$('#wmsBody');
-  ({dashboard:wmsDashboard, flow2h:wmsFlow2h, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
+  ({dashboard:wmsDashboard, flow2h:wmsFlow2h, checkreport:wmsCheckReport, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
 }
 
 /* "Flow (2h)" — the warehouse's own running totals at 08:00, 10:00 ... 20:00 for a chosen date,
@@ -2823,6 +2823,86 @@ function renderFlow2hHTML(data){
   const footer = pf ? `<div class="note" style="margin-top:6px"><b>Dita e kaluar plotë (${h(fmtDateAl(data.prevDate))}):</b> ${pf.checkedIn} check-in · ${pf.checkedOut} checkout (produkte) · ${pf.orders} porosi</div>` : '';
   const warn = data.reliable===false ? `<div class="hint" style="margin-top:6px;color:var(--warn)">⚠ Njëra nga ditët e krahasuara ka vëllim shumë të lartë eventesh (mbi kufirin e leximit të sigurt); shifrat e asaj dite mund të kenë një margjinë të vogël gabimi — kufizim i njohur i faqësimit të WMS-it.</div>` : '';
   return cards + `<div class="hint" style="margin-top:10px">${h(data.note)}</div>` + footer + warn;
+}
+
+/* "Check-in / Checkout Report" tab — built from a warehouse-lead's handwritten spec (2026-09-23),
+   listing what should be tracked for each of Check-in and Checkout. Everything here comes from the
+   agent's GET /wms/checkreport?range=24h|7d|30d, which reads ProductLogs for the chosen window.
+   Two of the originally-requested figures — "stock vs local sellers" and "POD" (proof of delivery) —
+   live in a separate system (deliveryplatform.gjirafamall.com, its own login/database) that this app
+   has no access to; they're shown as an explicit "not available" note, never a guessed number.
+   AVG-time figures are matched per physical unit (WMS's own internal id) and always show what
+   percentage of events could be matched — a low coverage% means read the average with caution,
+   not that it's wrong. */
+let wmsCheckReportRange='24h';
+function wmsCheckReport(box){
+  const ranges=[['24h','24 orë (sot)'],['7d','7 ditë'],['30d','30 ditë']];
+  box.innerHTML = `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>⏱ Periudha:</b> ${ranges.map(r=>`<button class="btn sm ${wmsCheckReportRange===r[0]?'primary':''}" data-range="${r[0]}">${r[1]}</button>`).join('')}
+        <button class="btn sm" id="checkRepRefresh" style="margin-left:auto">↻ Rifresko</button>
+      </div>
+    </div>
+    <div id="checkRepBody"><div class="empty">Po ngarkohet…</div></div>`;
+  $$('[data-range]').forEach(b=>b.onclick=()=>{ wmsCheckReportRange=b.dataset.range; wmsCheckReport(box); });
+  $('#checkRepRefresh').onclick=()=>loadCheckReport();
+  loadCheckReport();
+}
+async function loadCheckReport(){
+  const body=$('#checkRepBody'); if(!body) return;
+  body.innerHTML=`<div class="empty">Po ngarkohet…</div>`;
+  try{
+    const r=await fetch('/wms/checkreport?range='+encodeURIComponent(wmsCheckReportRange),{cache:'no-store'});
+    const j=await r.json();
+    if(!r.ok || j.error){ body.innerHTML=`<div class="empty">Gabim: ${h(j.error||('HTTP '+r.status))}</div>`; return; }
+    body.innerHTML=renderCheckReportHTML(j);
+  }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}). Hapja e app-it nga http://localhost:8790 kërkohet për këtë skedë.</div>`; }
+}
+function fmtDurMs(ms){ if(ms==null) return '—'; const min=ms/60000; if(min<60) return Math.round(min)+' min'; return (Math.round(min/6)/10)+' orë'; }
+function naRow(label, note){ return `<div style="margin-top:4px">${label}: <span class="faint">jo ende e disponueshme</span> <span class="hint" style="display:block;margin-top:2px">${h(note)}</span></div>`; }
+function opTableHTML(rows, valueLabel){
+  if(!rows.length) return '<div class="empty" style="font-size:12px">—</div>';
+  return `<table style="font-size:12.5px"><thead><tr><th>Operator</th><th>${h(valueLabel)}</th><th>Porosi (distinct)</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${h(r.operator)}</td><td>${r.count}</td><td>${r.orders||'—'}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+function renderCheckReportHTML(data){
+  const warn = data.reliable===false ? `<div class="hint" style="margin-bottom:10px;color:var(--warn)">⚠ Periudha ka ditë me vëllim shumë të lartë eventesh (mbi kufirin e leximit të sigurt); shifrat mund të kenë një margjinë të vogël gabimi — kufizim i njohur i faqësimit të WMS-it.</div>` : '';
+  const ci=data.checkin, co=data.checkout;
+  const rangeLabel = data.range.days===1 ? `sot (${h(fmtDateAl(data.range.to))})` : `${h(fmtDateAl(data.range.from))} → ${h(fmtDateAl(data.range.to))}`;
+  return warn + `<div class="grid g-2">
+    <div class="card">
+      <h3>1. Check-in <span class="sub">${rangeLabel}</span></h3>
+      <div style="line-height:1.9">
+        <div>Total check-in: <b>${ci.total}</b> — nga porosi: <b>${ci.withOrder}</b> · për stock: <b>${ci.stockOnly}</b></div>
+        <div>AVG kohë Check-in → Checkout: <b>${fmtDurMs(ci.avgTimeToCheckout.ms)}</b> <span class="faint small">(${ci.avgTimeToCheckout.matched} çifte të përputhura, ${ci.avgTimeToCheckout.coveragePct}% mbulim)</span></div>
+        <div>AVG kohë pritje për map (Check-in → Mapping): <b>${fmtDurMs(ci.avgTimeToMap.ms)}</b> <span class="faint small">(${ci.avgTimeToMap.matched} çifte, ${ci.avgTimeToMap.coveragePct}% mbulim)</span></div>
+        ${naRow('Sa prej checkout janë në POD', ci.pod.note)}
+        ${naRow('Prej POD te klienti (AVG TIME)', ci.pod.note)}
+      </div>
+      <h3 style="margin-top:14px;font-size:13px">Mapping <span class="sub">${ci.mapping.total} evente</span></h3>
+      <div>Nga porosi: <b>${ci.mapping.withOrder}</b> · për stock: <b>${ci.mapping.stockOnly}</b></div>
+      <div style="margin-top:6px">${opTableHTML(ci.mapping.byOperator,'Mapime')}</div>
+      <h3 style="margin-top:14px;font-size:13px">Check-in për operator</h3>
+      ${opTableHTML(ci.byOperator,'Check-in')}
+    </div>
+    <div class="card">
+      <h3>2. Checkout <span class="sub">${rangeLabel}</span></h3>
+      <div style="line-height:1.9">
+        <div>Porosi gati (Prepared) këtë periudhë: <b>${co.preparedOrders}</b></div>
+        <div>Evente checkout: <b>${co.total}</b> — porosi distinkte: <b>${co.distinctOrders}</b></div>
+        <div>Produkte mesatare / porosi: <b>${co.avgItemsPerOrder!=null?co.avgItemsPerOrder.toFixed(2):'—'}</b></div>
+        <div>Porosi që vijnë nga check-in (kjo periudhë): <b>${co.fromCheckin.orders}</b> ${co.fromCheckin.pct!=null?`<span class="faint">(${co.fromCheckin.pct}% e porosive)</span>`:''}</div>
+        ${naRow('Sa porosi janë nga stoku / nga local sellers', co.stockVsLocalSellers.note)}
+        ${naRow('Sa porosi janë në POD', co.pod.note)}
+        ${naRow('Porosi që presin produkt nga shipment tjetër', co.pendingOtherShipment.note)}
+        ${naRow('Kohë sa ekziston porosia në DB', co.orderAgeInDb.note)}
+      </div>
+      <h3 style="margin-top:14px;font-size:13px">Checkout për operator</h3>
+      ${opTableHTML(co.byOperator,'Checkout')}
+    </div>
+  </div>
+  <div class="note" style="margin-top:12px"><span class="etag et-data">source: WMS ProductLogs</span> Check-in = LogType «Checked in» · Checkout = «ProductScanned for checkout» · Mapping = «Map product». AVG-kohët përputhen për njësi fizike (id i brendshëm i WMS-it), jo për SKU — përqindja e mbulimit tregon sa nga eventet u përputhën.</div>`;
 }
 
 /* "Orders prepared" KPI, as a single Line with Markers chart of the daily total (sum across
