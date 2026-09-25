@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "WMS Agent Link",
-  "version": "1.1",
-  "description": "Ia jep agjentit lokal (localhost:8790) sesionin tënd të WMS-it automatikisht sa herë kyçesh në wms.gjirafamall.com. Asgjë nuk del nga ky kompjuter.",
+  "version": "1.4",
+  "description": "Ia jep agjentit lokal (localhost:8790) sesionin tënd të WMS-it dhe Delivery Platform-it automatikisht sa herë kyçesh në wms.gjirafamall.com ose deliveryplatform.gjirafamall.com. Asgjë nuk del nga ky kompjuter.",
   "permissions": ["cookies", "alarms", "storage"],
   "host_permissions": ["https://wms.gjirafamall.com/*", "https://*.gjirafamall.com/*", "http://localhost:8790/*", "http://127.0.0.1:8790/*"],
   "background": { "service_worker": "background.js" },

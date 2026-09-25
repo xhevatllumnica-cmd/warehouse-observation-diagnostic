@@ -2767,11 +2767,10 @@ function renderWMS(v){
 
 /* "Flow (2h)" — the warehouse's own running totals at 08:00, 10:00 ... 20:00 for a chosen date,
    each against the same hour yesterday, in the style of the team's WhatsApp "AI Operator" bot.
-   The agent (GET /wms/flow2h?date=YYYY-MM-DD) reconstructs Check-in/Checkout exactly from WMS
-   ProductLogs timestamps for any date; "Orders" (Prepared) has no per-event timestamp in WMS, so it
-   only appears for the current hour (today) or the day's final total (a finished day) — disclosed,
-   not guessed. Marks are always rendered oldest→newest (calendar order), and a mark that hasn't
-   happened yet is simply not shown. */
+   The agent (GET /wms/flow2h?date=YYYY-MM-DD) reconstructs every figure (orders, check-ins, picks,
+   checkout products, tempo) from WMS ProductLogs timestamps for any date — see buildFlow2h in
+   wms-agent.js. Card wording follows the AI Operator's own report format. Marks are always rendered
+   oldest→newest (calendar order), and a mark that hasn't happened yet is simply not shown. */
 let wmsFlow2hDate=null;
 function wmsFlow2h(box){
   if(!wmsFlow2hDate) wmsFlow2hDate=todayStr();
@@ -2794,33 +2793,48 @@ async function loadFlow2h(){
     const r=await fetch('/wms/flow2h?date='+encodeURIComponent(wmsFlow2hDate),{cache:'no-store'});
     const j=await r.json();
     if(!r.ok || j.error){ body.innerHTML=`<div class="empty">Gabim: ${h(j.error||('HTTP '+r.status))}</div>`; return; }
-    body.innerHTML=renderFlow2hHTML(j);
+    body.innerHTML=renderFlow2hHTML(j) + staffRosterHTML(j.staff||[]);
+    const sv=$('#staffRosterSave'); if(sv) sv.onclick=async()=>{
+      const list=($('#staffRosterIn').value||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+      if(!list.length){ toast('Lista s\'mund të jetë bosh'); return; }
+      try{ const r=await fetch('/wms/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({staff:list})}); const j=await r.json();
+        if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+        toast('Stafi u ruajt · '+j.staff.length+' emra'); loadFlow2h();
+      }catch(e){ toast('Gabim: '+e.message); }
+    };
   }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}). Hapja e app-it nga http://localhost:8790 kërkohet për këtë skedë.</div>`; }
+}
+/* The warehouse staff roster that "Check-ins" is counted against (same rule as AI Operator). Names must be
+   written exactly as WMS shows them (case, extra spaces and accents are ignored). */
+function staffRosterHTML(list){
+  return `<details class="card" style="margin-top:12px"><summary style="cursor:pointer"><b>Stafi i depos (për Check-ins)</b> <span class="faint small">· ${list.length} emra — kliko për ta ndryshuar</span></summary>
+    <div class="hint" style="margin:8px 0">Check-ins numërohen vetëm për këta emra, siç i shfaq WMS-i (një emër për rresht). Shto këtu punëtorët e rinj; llogaritë e Gjirafës jashtë depos dhe rreshtat pa operator nuk numërohen.</div>
+    <textarea id="staffRosterIn" rows="10" style="width:100%;font-size:12.5px">${h(list.join('\n'))}</textarea>
+    <button class="btn primary sm" id="staffRosterSave" style="margin-top:6px">Ruaj stafin</button>
+  </details>`;
 }
 function renderFlow2hHTML(data){
   const past=data.marks.filter(m=>!m.future);
   if(!past.length) return `<div class="empty">Ende s'ka arritur ora e parë (08:00) për ${h(fmtDateAl(data.date))}.</div>`;
-  const pctBadge=p=> p==null?'':`<span class="badge ${p>=0?'b-ok':'b-crit'}" style="margin-left:6px">${p>=0?'+':''}${p}%</span>`;
+  // "(+8%)" like AI Operator; omitted when yesterday's figure is 0 or unknown, as it does
+  const pct=p=> p==null?'':` <span style="color:${p>=0?'var(--ok)':'var(--crit)'}">(${p>=0?'+':''}${p}%)</span>`;
+  const yv=v=> v==null?'—':v;
   // oldest → newest (calendar order), as asked — a chronological log of the shift, not a chat feed
-  const cards=past.map((m,i)=>{
-    const prevM=past[i-1];
-    const tempoProducts = prevM ? Math.round((m.checkedOut-prevM.checkedOut)/2) : null;
-    const tempoOrders = (prevM && m.orders!=null && prevM.orders!=null) ? Math.round((m.orders-prevM.orders)/2) : null;
-    return `<div class="card" style="margin-bottom:10px">
+  const cards=past.map(m=>`<div class="card" style="margin-bottom:10px">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
         <h3 style="margin:0">Rrjedha e depos — deri në ${h(m.hour)}</h3>
         <span class="faint small">${h(fmtDateAl(data.date))}</span>
       </div>
       <div style="margin-top:6px;line-height:1.9">
-        <div>Porosi të përfunduara sot: ${m.orders!=null?`<b>${m.orders}</b>`:'<span class="faint">— (WMS s\'ka të dhëna historike për këtë orë)</span>'}</div>
-        <div>Check-in: <b>${m.checkedIn}</b>${pctBadge(m.checkedInPct)}${m.checkedInPrev!=null?` <span class="faint">— dje në këtë orë: ${m.checkedInPrev}</span>`:''}</div>
-        <div>Checkout products: <b>${m.checkedOut}</b>${pctBadge(m.checkedOutPct)}${m.checkedOutPrev!=null?` <span class="faint">— dje në këtë orë: ${m.checkedOutPrev}</span>`:''}</div>
-        <div class="faint small" style="margin-top:4px">Ritmi aktual (2 orët e fundit): ${tempoProducts!=null?tempoProducts+' produkte/orë':'—'}${tempoOrders!=null?' · '+tempoOrders+' porosi/orë':''}</div>
+        <div>Orders completed today: <b>${m.orders}</b>${pct(m.ordersPct)} <span class="faint">— yesterday at this hour ${yv(m.ordersPrev)}</span></div>
+        <div>Check-ins: <b>${m.checkedIn}</b> <span class="faint">— yesterday ${yv(m.checkedInPrev)}</span></div>
+        <div>Picks: <b>${m.picks}</b> products <span class="faint">— yesterday ${yv(m.picksPrev)}</span></div>
+        <div>Checkout products: <b>${m.checkedOut}</b>${pct(m.checkedOutPct)} <span class="faint">— yesterday: ${yv(m.checkedOutPrev)}</span></div>
+        <div style="margin-top:4px">Current tempo: <b>${m.tempoOrders}</b> orders/hour · <b>${m.tempoProducts}</b> products/hour <span class="faint">(last 2 hours)</span></div>
       </div>
-    </div>`;
-  }).join('');
+    </div>`).join('');
   const pf=data.prevFullDay;
-  const footer = pf ? `<div class="note" style="margin-top:6px"><b>Dita e kaluar plotë (${h(fmtDateAl(data.prevDate))}):</b> ${pf.checkedIn} check-in · ${pf.checkedOut} checkout (produkte) · ${pf.orders} porosi</div>` : '';
+  const footer = pf ? `<div class="note" style="margin-top:6px"><b>Yesterday full day (${h(fmtDateAl(data.prevDate))}):</b> ${pf.checkedIn} check-ins · ${pf.checkedOut} checkout (products) · ${pf.orders} orders</div>` : '';
   const warn = data.reliable===false ? `<div class="hint" style="margin-top:6px;color:var(--warn)">⚠ Njëra nga ditët e krahasuara ka vëllim shumë të lartë eventesh (mbi kufirin e leximit të sigurt); shifrat e asaj dite mund të kenë një margjinë të vogël gabimi — kufizim i njohur i faqësimit të WMS-it.</div>` : '';
   return cards + `<div class="hint" style="margin-top:10px">${h(data.note)}</div>` + footer + warn;
 }
@@ -2970,6 +2984,7 @@ function wmsDashboard(box){
       ${kc(snap?snap.invoiceProductsProcessed:'—','Products Processed', snap?'':'—')}
       ${kc(snap?snap.ordersInProcessing:'—','Orders In Processing','')}
       ${Store.col('wmsPrepared').length?'':kc(new Set(logs.map(l=>l.operator).filter(Boolean)).size||'—','Operators (in data)','from logs')}
+      <div class="card kpi" id="kpiCheckinOrders" title="Produkte që stafi i depos bëri check-in sot (i njëjti përkufizim si «Check-ins» te AI Operator) / porosi të ndryshme në të cilat po këto njësi dolën (checkout) sot."><div class="val">…</div><div class="lbl">Check-in products/orders</div><div class="foot">po ngarkohet…</div></div>
     </div>`
     + wmsPrepStackedChartHTML()
     + (logs.length? `<div class="grid g-2">
@@ -2982,6 +2997,17 @@ function wmsDashboard(box){
     + wmsPreparedDashboardHTML()
     + wmsSameDayHTML()
     + `<div class="note" style="margin-top:12px"><span class="etag et-data">source: WMS</span> "Orders prepared" vijnë nga <b>/Order/GetPreparedOrders</b> (për operator/ditë). "Events" janë rreshta ProductLogs (opsionale, kërkojnë filtër produkti).</div>`;
+  loadCheckinOrdersTile();
+}
+async function loadCheckinOrdersTile(){
+  const el=$('#kpiCheckinOrders'); if(!el) return;
+  const set=(val,foot)=>{ el.querySelector('.val').innerHTML=val; el.querySelector('.foot').innerHTML=foot; };
+  if(!wmsOnAgent()){ set('—','kërkon agjentin (localhost:8790)'); return; }
+  try{
+    const r=await fetch('/wms/checkin-summary',{cache:'no-store'}); const j=await r.json();
+    if(!r.ok||j.error){ set('—', j.error==='auth_expired'?'sesioni i WMS ka skaduar':h(j.error||('HTTP '+r.status))); return; }
+    set(`${j.products} / ${j.orders}`, `sot · ${j.productsOut} prej tyre dolën në ${j.orders} porosi${j.reliable===false?' · ⚠ të dhëna jo të plota':''}`);
+  }catch(e){ set('—','agjenti s\'përgjigjet'); }
 }
 function wmsPreparedDashboardHTML(){
   const prep=Store.col('wmsPrepared'); const chk=Store.col('wmsCheckin');
