@@ -71,3 +71,5 @@ wods-db.json.tmp
 reports/
 wms-agent.log
 wms-agent.log.1
+flow-chat-state.json
+stats-day-cache.json

@@ -201,3 +201,17 @@ td.wrap,th.wrap{white-space:normal;min-width:180px}
   .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:55;display:none}
   .scrim.on{display:block}
 }
+
+/* "Statistikat e WH" — status colours on KPI tiles and the hour × weekday heatmap */
+.kpi.st-ok{border-left:4px solid var(--ok)} .kpi.st-warn{border-left:4px solid var(--warn)} .kpi.st-crit{border-left:4px solid var(--crit)} .kpi.st-na{border-left:4px solid var(--line2);opacity:.75}
+.heat td{padding:3px 4px;text-align:center;font-size:11px;min-width:24px}
+.heat th{font-size:11px;padding:3px 4px}
+
+/* print / "Save as PDF" of the statistics page: light background, no navigation or controls */
+@media print{
+  :root{--bg:#fff;--bg2:#fff;--panel:#fff;--panel2:#f4f6f8;--line:#ccd4dd;--line2:#b8c2cc;--text:#111;--muted:#444;--faint:#666;--shadow:none}
+  body{background:#fff}
+  .sidebar,.topbar,.scrim,.no-print{display:none !important}
+  .content{padding:0}
+  .card{break-inside:avoid;box-shadow:none}
+}

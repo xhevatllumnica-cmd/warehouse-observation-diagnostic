@@ -380,9 +380,9 @@ async function buildFlow2h(db, iso){
 /* --- "Check-in / Checkout Report" tab -----------------------------------------
    Built from a handwritten spec (2026-09-23): per-period breakdown of Check-in and
    Checkout activity. Everything here comes from ProductLogs (same rows fetchDayProductLogs
-   already retrieves reliably) — LogType "Map product" is WMS's own "Mapping" operation
-   (confirmed via the WMS database's PerformanceOperationTypes table: LogTypeId 7 = "Mapping",
-   matching the same identification method that confirmed LogTypeId 9 = checkout).
+   already retrieves reliably). Mapping = LogTypeId 7 ("Mapped product" — the unit placed on a shelf
+   row), WMS's own "Mapping" operation in PerformanceOperationTypes. Until 2026-09-28 this used
+   "Map product", which is LogTypeId 6 — the stock step BEFORE mapping (2 → 6 → 7), not the mapping.
    Two items from the original spec are NOT available from WMS at all — "stock vs local
    sellers" and "POD" (proof of delivery) live in a separate system (deliveryplatform.
    gjirafamall.com, its own login/database) which this agent has no access to. Rather than
@@ -391,7 +391,7 @@ async function buildFlow2h(db, iso){
    product-unit identifier (ProductItemUniqueIdentifier) — many rows (mostly "Checked in")
    carry no identifier, so a "coverage" percentage is always reported alongside the average
    so the number is never read as more complete than it is. */
-const MAPPING_LOGTYPE='Map product';
+const MAPPING_LOGTYPE_ID=7;
 function avgMs(arr){ return arr.length? arr.reduce((a,b)=>a+b,0)/arr.length : null; }
 function lastNDays(n){ const t=isoToday(); const out=[]; for(let i=n-1;i>=0;i--) out.push(isoAddDays(t,-i)); return out; }
 async function collectRangeRows(days){
@@ -427,7 +427,7 @@ function avgGapMs(fromRows, toRows){
 function buildCheckReport(rows, db, days){
   const inRows=rows.filter(r=>r.LogType===CHECKIN_LOGTYPE);
   const outRows=rows.filter(r=>CHECKOUT_LOGTYPES.includes(r.LogType));
-  const mapRows=rows.filter(r=>r.LogType===MAPPING_LOGTYPE);
+  const mapRows=rows.filter(r=>Number(r.LogTypeId)===MAPPING_LOGTYPE_ID);
   const withOrder=list=>list.filter(r=>r.OrderId).length;
   const ci2map=avgGapMs(inRows, mapRows);
   const ci2out=avgGapMs(inRows, outRows);
@@ -462,6 +462,59 @@ function buildCheckReport(rows, db, days){
     },
   };
 }
+
+/* --- "Performance" tab — WMS's own productivity model ----------------------------------------------
+   Same definitions the WMS itself uses (documented in the gjirafa-wms-data-analyst knowledge base):
+   operation types and weights from PerformanceOperationTypes (check-out = LogTypeId 4/18 ×1.0, check-in = 2
+   ×0.8, map = 7 ×0.6); bands from PerformanceSettings (above the team average +25%, below it −25%);
+   standard times from WarehouseActions.AverageTimeSeconds (check-in 33.2 s, map 18.6 s, check-out 86.1 s)
+   against an 8-hour day. Only the warehouse staff roster is counted (same roster as Check-ins). Picking is
+   left out: WMS logs no pick scans yet (PickSessionScan is empty). */
+const PERF_KIND={2:'checkin', 7:'map', 4:'checkout', 18:'checkout'};
+const PERF_WEIGHT={checkout:1.0, checkin:0.8, map:0.6};
+const PERF_SECONDS={checkin:33.2, map:18.6, checkout:86.1};
+const PERF_BAND_PCT=25, PERF_DAY_HOURS=8;
+const STAFF_ALIASES={'arian rraca':'Arian Racaj'};   // two WMS accounts, one person (confirmed by the lead)
+const localIso=ms=>{ const d=new Date(ms); return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()); };
+function buildPerformance(rows, days){
+  const staff=warehouseStaffSet(), by={};
+  const hourly=Array.from({length:24},(_,h)=>({hour:h, checkin:0, map:0, checkout:0}));
+  rows.forEach(x=>{
+    const kind=PERF_KIND[Number(x.LogTypeId)]; if(!kind) return;
+    const raw=String(x.UpdatedByName||'').replace(/\s+/g,' ').trim(); if(!staff.has(normName(raw))) return;
+    const ts=parseWmsDate(x.InsertDateTime); if(ts==null) return;
+    const name=STAFF_ALIASES[normName(raw)]||raw;
+    const w=by[name]||(by[name]={operator:name, checkin:0, map:0, checkout:0, days:new Set()});
+    w[kind]++; w.days.add(localIso(ts)); hourly[new Date(ts).getHours()][kind]++;
+  });
+  const workers=Object.values(by).map(w=>{
+    const weighted=w.checkout*PERF_WEIGHT.checkout + w.checkin*PERF_WEIGHT.checkin + w.map*PERF_WEIGHT.map;
+    const stdHours=(w.checkin*PERF_SECONDS.checkin + w.map*PERF_SECONDS.map + w.checkout*PERF_SECONDS.checkout)/3600;
+    const activeDays=w.days.size;
+    return {operator:w.operator, checkin:w.checkin, map:w.map, checkout:w.checkout, activeDays,
+      weighted:Math.round(weighted*10)/10, perDay:activeDays?Math.round(weighted/activeDays*10)/10:0,
+      stdHours:Math.round(stdHours*10)/10, stdHoursPerDay:activeDays?Math.round(stdHours/activeDays*10)/10:0,
+      utilPct:activeDays?Math.round(stdHours/activeDays/PERF_DAY_HOURS*100):0};
+  });
+  const avg=workers.length? workers.reduce((a,w)=>a+w.perDay,0)/workers.length : 0;
+  workers.forEach(w=>{ w.band = w.perDay>avg*(1+PERF_BAND_PCT/100) ? 'above' : w.perDay<avg*(1-PERF_BAND_PCT/100) ? 'below' : 'average'; });
+  workers.sort((a,b)=>b.perDay-a.perDay);
+  return {range:{from:days[0], to:days[days.length-1], days:days.length}, workers, teamAvgPerDay:Math.round(avg*10)/10,
+    hourly:hourly.filter(h=>h.checkin||h.map||h.checkout), bandPct:PERF_BAND_PCT, dayHours:PERF_DAY_HOURS};
+}
+
+/* --- "Statistikat e WH" module: WMS data-access layer (all definitions live in wms-stats.js) ---------- */
+const wmsStats=require('./wms-stats.js')({ appDir:APPDIR, fetchDayProductLogs, isoToday, isoAddDays, isoToMdy, lastNDays, parseWmsDate,
+  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb });
+/* Module settings (agent config, one writer). Thresholds are starting values meant to be tuned by the lead:
+   ok (green) when the value reaches `green`, warning (yellow) up to `yellow`, red beyond — `higherIsBetter`
+   decides the direction. */
+const STATS_DEFAULTS={ cutoff:'17:30', targetOrdersPerDay:1000,
+  thresholds:{ ordersPerDay:{green:1000, yellow:850, higherIsBetter:true},
+               putawayMedianMin:{green:60, yellow:120, higherIsBetter:false},
+               unmappedOver24h:{green:0, yellow:50, higherIsBetter:false},
+               safetyObs:{green:0, yellow:1, higherIsBetter:false} } };
+function statsConfig(){ const c=cfg.stats||{}; return Object.assign({}, STATS_DEFAULTS, c, {thresholds:Object.assign({}, STATS_DEFAULTS.thresholds, c.thresholds||{})}); }
 
 /* --- Delivery Platform (deliveryplatform.gjirafamall.com) — second, independent connection ----------
    A completely separate system from WMS: its own login (same corporate SSO, but its own app/database),
@@ -647,6 +700,64 @@ async function reportTick(){
 setInterval(reportTick, 30*1000);
 setTimeout(reportTick, 8000); // catch-up shortly after start (agent was off at report time)
 
+/* --- Google Chat: the Flow (2h) report after each mark ------------------------------------------------
+   Posts the same text as a Flow (2h) card to a Google Chat space through its incoming webhook
+   (cfg.googleChatWebhook). The webhook URL is a secret — anyone holding it can post to that space — so it
+   lives only in the git-ignored config. One message per mark per day: the latest elapsed mark is sent once;
+   marks missed while the PC was off are not back-filled (only the newest goes out, no burst on wake-up). */
+const CHAT_STATE_FILE=path.join(APPDIR,'flow-chat-state.json');
+function chatState(){ try{ return JSON.parse(fs.readFileSync(CHAT_STATE_FILE,'utf8')); }catch(e){ return {sent:{}}; } }
+function saveChatState(s){ try{ fs.writeFileSync(CHAT_STATE_FILE, JSON.stringify(s,null,2)); }catch(e){} }
+function flowChatText(data, m){
+  const pct=p=> p==null?'':' ('+(p>=0?'+':'')+p+'%)', yv=v=> v==null?'—':v, pf=data.prevFullDay;
+  return '*Warehouse — flow until '+m.hour+'* ('+data.date.split('-').reverse().join('.')+')\n\n'
+    +'Orders completed today: *'+m.orders+'*'+pct(m.ordersPct)+' — yesterday at this hour '+yv(m.ordersPrev)+'\n'
+    +'Check-ins: *'+m.checkedIn+'* — yesterday '+yv(m.checkedInPrev)+'\n'
+    +'Picks: *'+m.picks+'* products — yesterday '+yv(m.picksPrev)+'\n'
+    +'Checkout products: *'+m.checkedOut+'*'+pct(m.checkedOutPct)+' — yesterday: '+yv(m.checkedOutPrev)+'\n\n'
+    +'Current tempo: *'+m.tempoOrders+'* orders/hour · *'+m.tempoProducts+'* products/hour (last 2 hours)'
+    +(pf?'\n\nYesterday full day: '+pf.checkedIn+' check-ins · '+pf.checkedOut+' checkout (products) · '+pf.orders+' orders':'')
+    +(data.reliable===false?'\n\n⚠ Të dhëna jo të plota për njërën nga ditët (faqëzimi i WMS-it).':'');
+}
+function postToChat(text){
+  return new Promise(res=>{
+    let u; try{ u=new URL(cfg.googleChatWebhook); }catch(e){ return res({error:'webhook i pavendosur'}); }
+    const body=JSON.stringify({text});
+    const r=https.request(u,{method:'POST',headers:{'Content-Type':'application/json; charset=UTF-8','Content-Length':Buffer.byteLength(body)}},resp=>{
+      let d=''; resp.setEncoding('utf8'); resp.on('data',c=>d+=c);
+      resp.on('end',()=>res(resp.statusCode>=200&&resp.statusCode<300?{ok:true}:{error:'HTTP '+resp.statusCode+' '+d.slice(0,200)})); });
+    r.on('error',e=>res({error:e.message})); r.write(body); r.end();
+  });
+}
+function latestElapsedMark(){ const n=new Date(), mins=n.getHours()*60+n.getMinutes(); return FLOW_MARKS.filter(h=>mins>=h*60+1).pop(); }
+async function sendFlowToChat(hour, test){
+  const data=await buildFlow2h(loadDb()||{}, isoToday());
+  let text;
+  if(data.error) text='⚠ *Warehouse — flow until '+p2(hour)+':00*: s\'u gjenerua — '+(data.error==='auth_expired'?'sesioni i WMS ka skaduar; ngjit një cookie të re te localhost:8790.':data.error);
+  else { const m=data.marks.find(x=>x.hour===p2(hour)+':00'); if(!m) return {error:'ora '+p2(hour)+':00 s\'u gjet'}; text=flowChatText(data, m); }
+  const r=await postToChat(text);
+  console.log('[wms-agent] Google Chat flow '+p2(hour)+':00'+(test?' (test)':'')+': '+(r.ok?'sent ✓':'FAILED '+r.error));
+  return Object.assign(r,{hour:p2(hour)+':00'});
+}
+let chatBusy=false;
+async function chatTick(){
+  if(!cfg.googleChatWebhook || chatBusy) return;
+  const h=latestElapsedMark(); if(h==null) return;
+  const today=isoToday(), st=chatState(), sent=(st.sent&&st.sent[today])||[];
+  if(sent.includes(h)) return;
+  // after a failure, wait 10 min before retrying the same mark (don't hammer a broken webhook every minute)
+  if(st.lastError && st.lastError.hour===h && Date.now()-new Date(st.lastError.at).getTime()<10*60*1000) return;
+  chatBusy=true;
+  try{
+    const r=await sendFlowToChat(h);
+    if(r.ok){ st.sent={[today]:[...sent,h]}; st.last={at:new Date().toISOString(), hour:r.hour}; delete st.lastError; }
+    else st.lastError={at:new Date().toISOString(), hour:h, error:r.error};
+    saveChatState(st);
+  }finally{ chatBusy=false; }
+}
+setInterval(chatTick, 60*1000);
+setTimeout(chatTick, 15000);
+
 const CT={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.md':'text/markdown; charset=utf-8','.csv':'text/csv'};
 http.createServer(async (req,resp)=>{
   const q=url.parse(req.url,true);
@@ -715,6 +826,23 @@ http.createServer(async (req,resp)=>{
       if(dl.error) return json(dl.error==='auth_expired'?401:502, {error:dl.error});
       return json(200, checkinSummary(dl.rows, iso, dl.reliable));
     }
+    // ---- Google Chat (Flow 2h report) ----
+    if(q.pathname==='/chat/status'){ const st=chatState(); return json(200,{configured:!!cfg.googleChatWebhook, last:st.last||null, lastError:st.lastError||null}); }
+    if(q.pathname==='/chat/webhook' && req.method==='POST'){
+      let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
+      const url=String(body&&body.url||'').trim();
+      if(url && !/^https:\/\/chat\.googleapis\.com\/v1\/spaces\/[^/]+\/messages\?/.test(url)) return json(400,{error:'Kjo s\'duket si webhook i Google Chat (duhet të fillojë me https://chat.googleapis.com/v1/spaces/…/messages?key=…).'});
+      try{ const onDisk=JSON.parse(fs.readFileSync(CFG_FILE,'utf8')); if(url) onDisk.googleChatWebhook=url; else delete onDisk.googleChatWebhook; fs.writeFileSync(CFG_FILE, JSON.stringify(onDisk,null,2)); if(url) cfg.googleChatWebhook=url; else delete cfg.googleChatWebhook; }
+      catch(e){ return json(500,{error:'S\'u ruajt: '+e.message}); }
+      console.log('[wms-agent] Google Chat webhook '+(url?'saved':'removed')+'.');
+      return json(200,{ok:true, configured:!!url});
+    }
+    if(q.pathname==='/chat/test' && req.method==='POST'){
+      if(!cfg.googleChatWebhook) return json(400,{error:'Vendos fillimisht webhook-un e Google Chat.'});
+      const h=latestElapsedMark(); if(h==null) return json(400,{error:'Ende s\'ka arritur ora e parë (08:00) sot.'});
+      const r=await sendFlowToChat(h, true);
+      return json(r.ok?200:502, r);
+    }
     if(q.pathname==='/wms/staff' && req.method==='POST'){
       let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
       const list=[...new Set((Array.isArray(body&&body.staff)?body.staff:[]).map(s=>String(s).replace(/\s+/g,' ').trim()).filter(Boolean))];
@@ -723,6 +851,37 @@ http.createServer(async (req,resp)=>{
       catch(e){ return json(500,{error:'S\'u ruajt: '+e.message}); }
       console.log('[wms-agent] warehouse staff roster saved ('+list.length+' names).');
       return json(200,{ok:true, staff:list});
+    }
+    // ---- Statistikat e WH (responses carry no wildcard CORS header: same-origin app only) ----
+    if(q.pathname==='/stats/live'){
+      const n = q.query.range==='30d'?30 : q.query.range==='14d'?14 : 7;
+      const date=q.query.date||'';
+      if(date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date>isoToday())) return json(400,{error:'Data duhet YYYY-MM-DD dhe jo në të ardhmen.'});
+      const r=await wmsStats.live(n, q.query.shift||'', date);
+      resp.writeHead(r.error?(r.error==='auth_expired'?401:502):200, {'Content-Type':'application/json','Cache-Control':'no-store'});
+      return resp.end(JSON.stringify(r.error?r:Object.assign(r,{config:statsConfig()})));
+    }
+    if(q.pathname==='/stats/config' && req.method==='POST'){
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
+      const next={}; const cut=String(body.cutoff||'');
+      if(cut){ if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(cut)) return json(400,{error:'Cut-off duhet në formatin HH:MM'}); next.cutoff=cut; }
+      if(body.targetOrdersPerDay!=null){ const t=Number(body.targetOrdersPerDay); if(!(t>0)) return json(400,{error:'Targeti duhet > 0'}); next.targetOrdersPerDay=t; }
+      if(body.thresholds && typeof body.thresholds==='object'){ next.thresholds={};
+        for(const [k,v] of Object.entries(body.thresholds)){ if(!STATS_DEFAULTS.thresholds[k]||!v) continue; const g=Number(v.green), y=Number(v.yellow);
+          if(!isFinite(g)||!isFinite(y)) return json(400,{error:'Pragjet duhet të jenë numra ('+k+')'}); next.thresholds[k]={green:g, yellow:y, higherIsBetter:STATS_DEFAULTS.thresholds[k].higherIsBetter}; } }
+      try{ const onDisk=JSON.parse(fs.readFileSync(CFG_FILE,'utf8')); const merged=Object.assign({}, onDisk.stats||{}, next, next.thresholds?{thresholds:Object.assign({}, (onDisk.stats||{}).thresholds||{}, next.thresholds)}:{});
+        onDisk.stats=merged; fs.writeFileSync(CFG_FILE, JSON.stringify(onDisk,null,2)); cfg.stats=merged; }
+      catch(e){ return json(500,{error:'S\'u ruajt: '+e.message}); }
+      return json(200,{ok:true, config:statsConfig()});
+    }
+    if(q.pathname==='/wms/performance'){
+      const n = q.query.range==='30d'?30 : q.query.range==='14d'?14 : 7;
+      const days=lastNDays(n);
+      const cr=await collectRangeRows(days);
+      if(cr.error) return json(cr.error==='auth_expired'?401:502, cr);
+      const out=buildPerformance(cr.rows, days); out.reliable=cr.reliable;
+      return json(200, out);
     }
     if(q.pathname==='/wms/checkreport'){
       const range=q.query.range||'24h';

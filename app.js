@@ -450,6 +450,7 @@ const ROUTES = [
   {sec:'Interface'},
   {id:'hq', title:'HQ Interface', ic:'🏢', render:renderHQ},
   {sec:'WMS'},
+  {id:'stats', title:'Statistikat e WH', ic:'📈', render:renderStatsWH},
   {id:'wms', title:'WMS Data & Performance', ic:'🔌', render:renderWMS},
   {sec:'Reports'},
   {id:'reports', title:'Reports', ic:'📄', render:renderReports},
@@ -2755,14 +2756,14 @@ function renderWMS(v){
       <span class="muted">Rows: <b>${nData}</b></span>
     </div>
     ${connHint}</div>`;
-  const tabs=[['dashboard','Dashboard'],['flow2h','Flow (2h)'],['checkreport','Check-in / Checkout'],['operators','Operators'],['import','Import'],['validation','Validation'],['shifts','Shifts'],['log','Sync Log']];
+  const tabs=[['dashboard','Dashboard'],['flow2h','Flow (2h)'],['checkreport','Check-in / Checkout'],['performance','Performance'],['operators','Operators'],['import','Import'],['validation','Validation'],['shifts','Shifts'],['log','Sync Log']];
   v.innerHTML = pagehead('WMS Data & Performance','Marrje, ruajtje, filtrim dhe analizë e të dhënave nga GjirafaWMS — Products Checked In, Orders, dhe performanca për operator/ditë/ndërrim. Të gjurmueshme, pa hamendje.')
     + conn
     + `<div class="filters" id="wmsTabs">${tabs.map(t=>`<button class="btn ${wmsTab===t[0]?'primary':''}" data-wtab="${t[0]}">${t[1]}</button>`).join('')}</div>`
     + `<div id="wmsBody"></div>`;
   $$('#wmsTabs [data-wtab]').forEach(b=>b.onclick=()=>{ wmsTab=b.dataset.wtab; renderWMS(v); });
   const body=$('#wmsBody');
-  ({dashboard:wmsDashboard, flow2h:wmsFlow2h, checkreport:wmsCheckReport, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
+  ({dashboard:wmsDashboard, flow2h:wmsFlow2h, checkreport:wmsCheckReport, performance:wmsPerformance, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
 }
 
 /* "Flow (2h)" — the warehouse's own running totals at 08:00, 10:00 ... 20:00 for a chosen date,
@@ -2793,7 +2794,8 @@ async function loadFlow2h(){
     const r=await fetch('/wms/flow2h?date='+encodeURIComponent(wmsFlow2hDate),{cache:'no-store'});
     const j=await r.json();
     if(!r.ok || j.error){ body.innerHTML=`<div class="empty">Gabim: ${h(j.error||('HTTP '+r.status))}</div>`; return; }
-    body.innerHTML=renderFlow2hHTML(j) + staffRosterHTML(j.staff||[]);
+    body.innerHTML=renderFlow2hHTML(j) + staffRosterHTML(j.staff||[]) + chatSettingsHTML();
+    wireChatSettings();
     const sv=$('#staffRosterSave'); if(sv) sv.onclick=async()=>{
       const list=($('#staffRosterIn').value||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
       if(!list.length){ toast('Lista s\'mund të jetë bosh'); return; }
@@ -2803,6 +2805,41 @@ async function loadFlow2h(){
       }catch(e){ toast('Gabim: '+e.message); }
     };
   }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}). Hapja e app-it nga http://localhost:8790 kërkohet për këtë skedë.</div>`; }
+}
+/* Google Chat delivery of the Flow (2h) report — the agent posts after every mark (08:00 … 20:00) to the
+   space whose incoming-webhook URL is saved here. The URL is a secret, so it's never shown back once saved. */
+function chatSettingsHTML(){
+  return `<details class="card" style="margin-top:12px" id="chatBox"><summary style="cursor:pointer"><b>Google Chat</b> <span class="faint small" id="chatSummary">· po kontrolloj…</span></summary>
+    <div class="hint" style="margin:8px 0">Raporti i secilës orë (08:00, 10:00 … 20:00) dërgohet automatikisht si mesazh në një hapësirë (space) të Google Chat, sapo të kalojë ora.
+      <ol style="margin:6px 0 0 18px;padding:0">
+        <li>Në Google Chat hap hapësirën ku do t'i marrësh (ose krijo një të re vetëm për veten: <b>+ New chat → Create a space</b>).</li>
+        <li>Emri i hapësirës → <b>Apps &amp; integrations</b> → <b>Webhooks</b> → <b>Add webhook</b> → emër p.sh. "Warehouse flow" → <b>Save</b>.</li>
+        <li>Kopjo URL-në e webhook-ut dhe ngjite këtu.</li>
+      </ol></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="password" id="chatUrlIn" placeholder="https://chat.googleapis.com/v1/spaces/…/messages?key=…" style="flex:1;min-width:260px">
+      <button class="btn primary sm" id="chatSave">Ruaj</button>
+      <button class="btn sm" id="chatTest">Dërgo provë tani</button>
+      <button class="btn sm ghost" id="chatRemove">Hiqe</button>
+    </div>
+    <div class="hint" id="chatMsg" style="margin-top:6px"></div>
+  </details>`;
+}
+async function refreshChatStatus(){
+  const s=$('#chatSummary'); if(!s) return;
+  try{ const j=await (await fetch('/chat/status',{cache:'no-store'})).json();
+    s.textContent = !j.configured ? '· jo e lidhur' : ('· e lidhur ✓'+(j.last?' · dërgimi i fundit: '+j.last.hour+' ('+new Date(j.last.at).toLocaleString()+')':'')+(j.lastError?' · ⚠ gabimi i fundit: '+j.lastError.error:''));
+  }catch(e){ s.textContent='· agjenti s\'përgjigjet'; }
+}
+function wireChatSettings(){
+  const msg=t=>{ const m=$('#chatMsg'); if(m) m.innerHTML=t; };
+  const post=async(path,payload)=>{ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload||{})}); const j=await r.json().catch(()=>({})); if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status)); return j; };
+  const sv=$('#chatSave'), ts=$('#chatTest'), rm=$('#chatRemove'); if(!sv) return;
+  sv.onclick=async()=>{ const url=($('#chatUrlIn').value||'').trim(); if(!url){ msg('Ngjit URL-në e webhook-ut.'); return; }
+    try{ await post('/chat/webhook',{url}); $('#chatUrlIn').value=''; msg('<span style="color:var(--ok)">✓ U ruajt. Shtyp «Dërgo provë tani» për ta testuar.</span>'); refreshChatStatus(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  ts.onclick=async()=>{ msg('Po dërgoj…'); try{ const j=await post('/chat/test'); msg('<span style="color:var(--ok)">✓ U dërgua raporti i orës '+h(j.hour)+' — shiko Google Chat.</span>'); refreshChatStatus(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  rm.onclick=async()=>{ try{ await post('/chat/webhook',{url:''}); msg('Webhook-u u hoq — s\'dërgohen më mesazhe.'); refreshChatStatus(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  refreshChatStatus();
 }
 /* The warehouse staff roster that "Check-ins" is counted against (same rule as AI Operator). Names must be
    written exactly as WMS shows them (case, extra spaces and accents are ignored). */
@@ -2916,7 +2953,54 @@ function renderCheckReportHTML(data){
       ${opTableHTML(co.byOperator,'Checkout')}
     </div>
   </div>
-  <div class="note" style="margin-top:12px"><span class="etag et-data">source: WMS ProductLogs</span> Check-in = LogType «Checked in» · Checkout = «ProductScanned for checkout» · Mapping = «Map product». AVG-kohët përputhen për njësi fizike (id i brendshëm i WMS-it), jo për SKU — përqindja e mbulimit tregon sa nga eventet u përputhën.</div>`;
+  <div class="note" style="margin-top:12px"><span class="etag et-data">source: WMS ProductLogs</span> Check-in = LogType «Checked in» · Checkout = «ProductScanned for checkout» · Mapping = «Mapped product» (LogTypeId 7, vendosja në raft). AVG-kohët përputhen për njësi fizike (id i brendshëm i WMS-it), jo për SKU — përqindja e mbulimit tregon sa nga eventet u përputhën.</div>`;
+}
+
+/* "Performance" tab — the WMS's own productivity model per warehouse-staff member (see buildPerformance in
+   wms-agent.js): weighted operations, operations per active day, band vs the team average, standard hours and
+   utilisation of an 8-hour day, plus the hour-of-day throughput that shows where the flow backs up. */
+let wmsPerfRange='7d';
+function wmsPerformance(box){
+  const ranges=[['7d','7 ditë'],['14d','14 ditë'],['30d','30 ditë']];
+  box.innerHTML = `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>⏱ Periudha:</b> ${ranges.map(r=>`<button class="btn sm ${wmsPerfRange===r[0]?'primary':''}" data-prange="${r[0]}">${r[1]}</button>`).join('')}
+        <button class="btn sm" id="perfRefresh">↻ Rifresko</button>
+        <span class="hint" style="margin:0 0 0 auto">Formula e WMS-it: 1.0 × check-out + 0.8 × check-in + 0.6 × map</span>
+      </div>
+    </div>
+    <div id="perfBody"><div class="empty">Po ngarkohet…</div></div>`;
+  $$('[data-prange]').forEach(b=>b.onclick=()=>{ wmsPerfRange=b.dataset.prange; wmsPerformance(box); });
+  $('#perfRefresh').onclick=()=>loadPerformance();
+  loadPerformance();
+}
+async function loadPerformance(){
+  const body=$('#perfBody'); if(!body) return;
+  body.innerHTML=`<div class="empty">Po ngarkohet… ${wmsPerfRange!=='7d'?'(herën e parë periudhat e gjata marrin 1–2 minuta)':''}</div>`;
+  try{
+    const r=await fetch('/wms/performance?range='+encodeURIComponent(wmsPerfRange),{cache:'no-store'});
+    const j=await r.json();
+    if(!r.ok||j.error){ body.innerHTML=`<div class="empty">Gabim: ${h(j.error==='auth_expired'?'sesioni i WMS ka skaduar':(j.error||('HTTP '+r.status)))}</div>`; return; }
+    body.innerHTML=renderPerformanceHTML(j);
+  }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}).</div>`; }
+}
+function renderPerformanceHTML(d){
+  if(!d.workers.length) return `<div class="empty">S'ka operacione nga stafi i depos në këtë periudhë.</div>`;
+  const band={above:['b-ok','Mbi mesataren'], below:['b-crit','Nën mesataren'], average:['b-muted','Mesatare']};
+  const rangeLabel=d.range.days===1?h(fmtDateAl(d.range.to)):`${h(fmtDateAl(d.range.from))} → ${h(fmtDateAl(d.range.to))}`;
+  const rows=d.workers.map(w=>`<tr><td>${h(w.operator)}</td><td>${w.checkin}</td><td>${w.map}</td><td>${w.checkout}</td><td>${w.activeDays}</td>
+      <td>${w.weighted}</td><td><b>${w.perDay}</b></td><td><span class="badge ${band[w.band][0]}">${band[w.band][1]}</span></td>
+      <td>${w.stdHoursPerDay} h</td><td>${w.utilPct}%</td></tr>`).join('');
+  const maxH=Math.max(1,...d.hourly.map(x=>x.checkin+x.map+x.checkout));
+  const hourly=d.hourly.map(x=>barRow(String(x.hour).padStart(2,'0')+':00', x.checkin+x.map+x.checkout, maxH, 'var(--accent)', `check-in ${x.checkin} · map ${x.map} · check-out ${x.checkout}`)).join('');
+  const warn=d.reliable===false?`<div class="hint" style="margin-bottom:10px;color:var(--warn)">⚠ Disa ditë në periudhë nuk u lexuan të plota nga WMS — shifrat mund të jenë pak më të ulëta.</div>`:'';
+  return warn + `<div class="card" style="margin-bottom:14px">
+      <h3>Produktiviteti për punëtor <span class="sub">${rangeLabel} · mesatarja e ekipit ${d.teamAvgPerDay} op./ditë</span></h3>
+      <div style="overflow-x:auto"><table style="font-size:12.5px"><thead><tr><th>Operatori</th><th>Check-in</th><th>Map</th><th>Check-out</th><th>Ditë aktive</th>
+        <th>Op. të peshuara</th><th>Op./ditë</th><th>Kategoria</th><th>Orë standarde/ditë</th><th>Shfrytëzimi (${d.dayHours}h)</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </div>
+    <div class="card" style="margin-bottom:14px"><h3>Rrjedha sipas orës <span class="sub">operacione të stafit, ${rangeLabel}</span></h3>${hourly}</div>
+    <div class="note"><span class="etag et-data">source: WMS ProductLogs</span> Përkufizimet janë ato të vetë WMS-it: check-out = LogTypeId 4/18, check-in = 2, map = 7, peshat 1.0 / 0.8 / 0.6 (<code>PerformanceOperationTypes</code>); kategoria = ±${d.bandPct}% nga mesatarja e ekipit (<code>PerformanceSettings</code>); orët standarde = numri × koha mesatare e veprimit (check-in 33.2 s, map 18.6 s, check-out 86.1 s, <code>WarehouseActions</code>). Shfrytëzimi mat vetëm kohën standarde të operacioneve të skanuara — jo punët e tjera (paketim, pastrim, ndihmë), prandaj "nën mesataren" nuk do të thotë vetvetiu punë e dobët. Picking mungon: WMS s'regjistron ende skanime picking.</div>`;
 }
 
 /* "Orders prepared" KPI, as a single Line with Markers chart of the daily total (sum across
