@@ -504,8 +504,9 @@ function buildPerformance(rows, days){
 }
 
 /* --- "Statistikat e WH" module: WMS data-access layer (all definitions live in wms-stats.js) ---------- */
+const shiftSchedule=require('./shift-schedule.js')({ appDir:APPDIR, normName, warehouseStaffList, STAFF_ALIASES });
 const wmsStats=require('./wms-stats.js')({ appDir:APPDIR, fetchDayProductLogs, isoToday, isoAddDays, isoToMdy, lastNDays, parseWmsDate,
-  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb });
+  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, scheduleForDay:iso=>shiftSchedule.forDay(iso) });
 /* Module settings (agent config, one writer). Thresholds are starting values meant to be tuned by the lead:
    ok (green) when the value reaches `green`, warning (yellow) up to `yellow`, red beyond — `higherIsBetter`
    decides the direction. */
@@ -861,6 +862,28 @@ http.createServer(async (req,resp)=>{
       resp.writeHead(r.error?(r.error==='auth_expired'?401:502):200, {'Content-Type':'application/json','Cache-Control':'no-store'});
       return resp.end(JSON.stringify(r.error?r:Object.assign(r,{config:statsConfig()})));
     }
+    if(q.pathname==='/pulse/data'){   // WMS Pulse snapshot (worker e-mails + pay) — same-origin only, no CORS header
+      let b; try{ b=fs.readFileSync(path.join(APPDIR,'pulse','data.json')); }catch(e){ resp.writeHead(404,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify({error:'WMS Pulse nuk është gjeneruar ende — pritet rifreskimi i parë nga databaza.'})); }
+      resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(b);
+    }
+    if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, shiftSchedule.summary()); }
+    if(q.pathname==='/schedule/import' && req.method==='POST'){
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
+      const b64=String(body&&body.file||'').replace(/^data:[^,]*,/,'');
+      if(!b64) return json(400,{error:'Mungon skedari.'});
+      try{ const r=shiftSchedule.importXlsx(Buffer.from(b64,'base64'), String(body.name||''));
+        console.log('[wms-agent] shift schedule imported: '+r.from+' → '+r.to+', '+r.operators.length+' operators'+(r.unmapped.length?', unmapped: '+r.unmapped.join(', '):''));
+        return json(200, r); }
+      catch(e){ return json(400,{error:e.message}); }
+    }
+    if(q.pathname==='/stats/shifts'){
+      const date=q.query.date||isoToday(), mode=q.query.mode==='week'?'week':'day';
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date) || date>isoToday()) return json(400,{error:'Data duhet YYYY-MM-DD dhe jo në të ardhmen.'});
+      const r=await wmsStats.shifts(date, mode);
+      resp.writeHead(r.error?(r.error==='auth_expired'?401:502):200, {'Content-Type':'application/json','Cache-Control':'no-store'});
+      return resp.end(JSON.stringify(r));
+    }
     if(q.pathname==='/stats/config' && req.method==='POST'){
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
       let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
@@ -926,6 +949,9 @@ http.createServer(async (req,resp)=>{
     let f=(q.pathname==='/'||q.pathname==='')?'/app.html':q.pathname;
     const full=path.join(APPDIR, decodeURIComponent(f).replace(/^\/+/,''));
     if(!full.startsWith(APPDIR)){ resp.writeHead(403); return resp.end('forbidden'); }
+    { // private files are never served: secrets, the employee schedule, WMS Pulse data and raw query results
+      const rel=path.relative(APPDIR, full).split(path.sep).join('/').toLowerCase();
+      if(rel==='wms-agent.config.json' || rel==='shift-schedule.json' || (rel.startsWith('pulse/') && rel!=='pulse/template.html')){ resp.writeHead(404); return resp.end('not found'); } }
     fs.readFile(full,(e,data)=>{ if(e){ resp.writeHead(404); return resp.end('not found'); }
       resp.writeHead(200,{'Content-Type':CT[path.extname(full)]||'application/octet-stream','Cache-Control':'no-store'}); resp.end(data); });
   }catch(err){ json(500,{error:String(err&&err.message||err)}); }

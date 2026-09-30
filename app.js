@@ -451,6 +451,7 @@ const ROUTES = [
   {id:'hq', title:'HQ Interface', ic:'🏢', render:renderHQ},
   {sec:'WMS'},
   {id:'stats', title:'Statistikat e WH', ic:'📈', render:renderStatsWH},
+  {id:'pulse', title:'WMS Pulse', ic:'📡', render:renderPulse},
   {id:'wms', title:'WMS Data & Performance', ic:'🔌', render:renderWMS},
   {sec:'Reports'},
   {id:'reports', title:'Reports', ic:'📄', render:renderReports},
@@ -3594,7 +3595,9 @@ function wmsShiftsView(box){
     <div class="tablewrap"><table><thead><tr><th>Name</th><th>Start</th><th>End</th><th>Weekend</th><th>Active</th><th></th></tr></thead>
     <tbody>${rows.map(s=>`<tr><td><b>${h(s.name)}</b></td><td>${h(s.start)}</td><td>${h(s.end)}</td><td>${s.weekend?'✓':'—'}</td><td>${s.active!==false?'✓':'—'}</td>
       <td><button class="btn sm" data-she="${s.id}">Edit</button> <button class="btn sm danger" data-shd="${s.id}">✕</button></td></tr>`).join('')||emptyRow(6,'No shifts')}</tbody></table></div>
-    <div class="hint" style="margin-top:6px">Rregulla e overlap-it: nëse një timestamp bie brenda <b>më shumë se një</b> ndërrimi aktiv (p.sh. N1∩N2 13:00–15:00), shift-i shënohet <b>UNKNOWN</b> — nuk hamendësohet.</div></div>`;
+    <div class="hint" style="margin-top:6px">Rregulla e overlap-it: nëse një timestamp bie brenda <b>më shumë se një</b> ndërrimi aktiv (p.sh. N1∩N2 13:00–15:00), shift-i shënohet <b>UNKNOWN</b> — nuk hamendësohet.</div></div>`
+    + shiftStatsHTML();
+  wireShiftStats();
   $('#wmsAddShift').onclick=()=>wmsShiftForm();
   $$('#wmsBody [data-she]').forEach(b=>b.onclick=()=>wmsShiftForm(Store.get('wmsShifts',b.dataset.she)));
   $$('#wmsBody [data-shd]').forEach(b=>b.onclick=()=>{ const s=Store.get('wmsShifts',b.dataset.shd); confirmDelete(s.name,()=>{ Store.remove('wmsShifts',s.id); renderWMS($('#view')); }); });

@@ -20,7 +20,7 @@ const fs=require('fs'), path=require('path');
 
 const CO_TYPES=[4,18];                    // check-out, WMS's own definition (PerformanceOperationTypes)
 const OUT_TYPES=[3,4,9,18,27];            // any outbound step: a unit that reached these is no longer waiting for putaway
-const CACHE_VERSION=1;
+const CACHE_VERSION=2;                    // v2 adds per-worker event times (ev) for the shift statistics
 const RESPONSE_TTL_MS=10*60*1000;
 
 module.exports=function makeWmsStats(d){
@@ -37,7 +37,7 @@ module.exports=function makeWmsStats(d){
   function dayAgg(rows, iso, reliable){
     const staff=d.warehouseStaffSet();
     const a={date:iso, reliable, coUnits:new Array(24).fill(0), coOrders:[], kinds:{checkin:new Array(24).fill(0), map:new Array(24).fill(0), checkout:new Array(24).fill(0)},
-      workers:{}, ci:{}, mp:{}, out:{}};
+      workers:{}, ci:{}, mp:{}, out:{}, ev:{}};
     const firstCo={};
     rows.forEach(x=>{
       const t=Number(x.LogTypeId), ts=d.parseWmsDate(x.InsertDateTime); if(ts==null) return;
@@ -48,9 +48,10 @@ module.exports=function makeWmsStats(d){
         if(t===7 && !(a.mp[unit]<=ts)) a.mp[unit]=ts;
         if(OUT_TYPES.includes(t) && !(a.out[unit]<=ts)) a.out[unit]=ts;
       }
-      const kind=d.PERF_KIND[t]; if(!kind) return;
       const raw=String(x.UpdatedByName||'').replace(/\s+/g,' ').trim(); if(!staff.has(d.normName(raw))) return;
       const name=d.STAFF_ALIASES[d.normName(raw)]||raw;
+      (a.ev[name]||(a.ev[name]=[])).push([minute, t]);        // every event of a staff member, for shift presence/timing
+      const kind=d.PERF_KIND[t]; if(!kind) return;
       a.kinds[kind][hr]++;
       const w=a.workers[name]||(a.workers[name]={checkin:0, map:0, checkout:0}); w[kind]++;
     });
@@ -167,5 +168,93 @@ module.exports=function makeWmsStats(d){
     if(!data.error) responses[key]={at:Date.now(), data};
     return data;
   }
-  return {live};
+  /* --- Shift statistics (WMS → Shifts tab) -------------------------------------------------------------
+     With a planned schedule for the day (shift-schedule.js), each operator belongs to the shift they were planned
+     for; planned-but-no-scans = possible absence, scans-but-not-planned (or planned OFF) = work outside the plan,
+     and the start/end signals are measured against each person's own planned hours. Shifts are grouped by planned
+     hours (named after a configured shift with the same hours, else "09:00–17:00").
+     Without a schedule for the day, each staff member is assigned to ONE configured shift from when they actually
+     worked: the shift with most of their events in hours that belong to it only (N1 07–13, N2 15–21 — the 13–15
+     overlap decides nothing), else the shift containing their first event.
+     Performance counts only events inside the (planned or assigned) hours; the rest is "outside". First/last scan
+     and idle gaps are scan-based signals, not clock-in times: a worker can be present without scanning. */
+  const IDLE_GAP_MIN=30, LATE_MIN=15, EARLY_MIN=30;
+  const hhmm=m=>m==null?null:String(Math.floor(m/60)).padStart(2,'0')+':'+String(Math.round(m%60)).padStart(2,'0');
+  function shiftDay(a, iso, shifts, plan, nowMin){
+    const inR=(r,m)=> r.b>=r.a ? (m>=r.a && m<r.b) : (m>=r.a || m<r.b);
+    const we=isWeekend(iso), res={}, unplanned=[];
+    const group=(start,end)=>{ const def=shifts.find(s=>s.start===start && s.end===end && !!s.weekend===we) || shifts.find(s=>s.start===start && s.end===end);
+      const label=def? def.name : start+'–'+end;
+      return res[label]||(res[label]={name:label, start, end, weekend:we, r:{a:toMin(start), b:toMin(end)}, ops:{}, orders:0, units:0, hourW:new Array(24).fill(0), planned:[], absent:[], pending:[]}); };
+    const perf=(g, evs)=>{ const r=g.r, sorted=[...evs].sort((x,y)=>x[0]-y[0]), inS=sorted.filter(([m])=>inR(r,m));
+      if(!inS.length) return null;
+      const k={checkin:0, map:0, checkout:0}; inS.forEach(([m,t])=>{ const kind=d.PERF_KIND[t]; if(kind){ k[kind]++; g.hourW[Math.floor(m/60)]+=d.PERF_WEIGHT[kind]; } });
+      const first=inS[0][0], last=inS[inS.length-1][0];
+      let idleCount=0, idleMin=0; for(let j=1;j<inS.length;j++){ const gap=inS[j][0]-inS[j-1][0]; if(gap>IDLE_GAP_MIN){ idleCount++; idleMin+=gap; } }
+      const endMin=r.b>=r.a? r.b : r.b+1440;
+      return {...k, weighted:k.checkout*d.PERF_WEIGHT.checkout+k.checkin*d.PERF_WEIGHT.checkin+k.map*d.PERF_WEIGHT.map, events:inS.length,
+        outside:sorted.length-inS.length, first, last, activeMin:last-first, idleCount, idleMin, lateMin:Math.max(0, first-r.a), earlyMin:Math.max(0, endMin-last)}; };
+    const evsBy=a.ev||{};
+    if(plan){
+      Object.entries(plan).forEach(([name,p])=>{ if(p.off) return;
+        const g=group(p.start,p.end); g.planned.push(name);
+        const evs=evsBy[name], o=evs && perf(g, evs);
+        if(o) g.ops[name]=o;
+        else if(evs){ const ms=evs.map(e=>e[0]); unplanned.push({operator:name, reason:'skanime vetëm jashtë orarit '+p.start+'–'+p.end, events:evs.length, first:hhmm(Math.min(...ms)), last:hhmm(Math.max(...ms))}); }
+        else if(nowMin!=null && nowMin<g.r.a+LATE_MIN) g.pending.push(name);        // today, shift not started yet
+        else g.absent.push(name); });
+      Object.entries(evsBy).forEach(([name,evs])=>{ const p=plan[name]; if(p && !p.off) return;
+        const ms=evs.map(e=>e[0]); unplanned.push({operator:name, reason:p? 'OFF sipas orarit' : 'jo në orar', events:evs.length, first:hhmm(Math.min(...ms)), last:hhmm(Math.max(...ms))}); });
+    } else {
+      const pool=shifts.filter(s=>!!s.weekend===we).map(s=>({s, a:toMin(s.start), b:toMin(s.end)}));
+      Object.entries(evsBy).forEach(([name, evs])=>{
+        const score=pool.map(r=>evs.filter(([m])=>inR(r,m) && pool.filter(o=>inR(o,m)).length===1).length);
+        let i=score.length? score.indexOf(Math.max(...score)) : -1;
+        if(i<0 || score[i]===0) i=pool.findIndex(r=>evs.some(([m])=>inR(r,m)));
+        if(i<0) return;
+        const g=group(pool[i].s.start, pool[i].s.end), o=perf(g, evs); if(o) g.ops[name]=o; });
+    }
+    Object.values(res).forEach(g=>{ g.orders=a.coOrders.filter(([,m])=>inR(g.r,m)).length; g.units=a.coUnits.reduce((s,v,h)=>s+(inR(g.r,h*60)?v:0),0); });
+    return {groups:res, unplanned, planned:!!plan};
+  }
+  function weekOf(iso){ const dt=new Date(iso+'T12:00:00'); const mon=d.isoAddDays(iso, -((dt.getDay()+6)%7)); return Array.from({length:7},(_,i)=>d.isoAddDays(mon,i)); }
+  async function shifts(date, mode){
+    const today=d.isoToday();
+    const days=(mode==='week'? weekOf(date) : [date]).filter(x=>x<=today);
+    const db=d.loadDb()||{}; const defs=(db.wmsShifts||[]).filter(s=>s.active!==false);
+    if(!defs.length) return {error:'S\'ka ndërrime aktive te WMS → Shifts.'};
+    let reliable=true; const perDay={}, absences=[], unplanned=[], planDays=[];
+    for(const iso of days){ const a=await getDay(iso); if(a.error) return {error:a.error}; if(!a.reliable) reliable=false;
+      const plan=d.scheduleForDay? d.scheduleForDay(iso) : null; if(plan) planDays.push(iso);
+      const now=new Date(), sd=shiftDay(a, iso, defs, plan, iso===today? now.getHours()*60+now.getMinutes() : null); perDay[iso]=sd.groups;
+      sd.unplanned.forEach(u=>unplanned.push(Object.assign({date:iso},u)));
+      Object.values(sd.groups).forEach(g=>g.absent.forEach(n=>absences.push({date:iso, operator:n, shift:g.name, hours:g.start+'–'+g.end}))); }
+    const labels=[]; days.forEach(iso=>Object.values(perDay[iso]).forEach(g=>{ if(!labels.find(l=>l.name===g.name)) labels.push({name:g.name, start:g.start, end:g.end, weekend:g.weekend}); }));
+    labels.sort((x,y)=> (x.weekend-y.weekend) || toMin(x.start)-toMin(y.start) || toMin(x.end)-toMin(y.end));
+    const out=labels.map(s=>{
+      const ops={}, byDay=[], hourW=new Array(24).fill(0); let orders=0, units=0, nDays=0, planned=0, absent=0;
+      days.forEach(iso=>{ const x=perDay[iso][s.name]; if(!x) return; nDays++; planned+=x.planned.length; absent+=x.absent.length;
+        orders+=x.orders; units+=x.units; x.hourW.forEach((v,h)=>hourW[h]+=v);
+        const names=Object.keys(x.ops);
+        byDay.push({date:iso, operators:names.length, planned:x.planned.length, absent:x.absent.length, weighted:r1(names.reduce((t,n)=>t+x.ops[n].weighted,0)), orders:x.orders, units:x.units});
+        names.forEach(n=>{ const o=x.ops[n], A=ops[n]||(ops[n]={operator:n, days:0, checkin:0, map:0, checkout:0, weighted:0, events:0, outside:0, firstSum:0, lastSum:0, activeMin:0, idleCount:0, idleMin:0, lateDays:0, earlyDays:0, lateMinSum:0});
+          A.days++; ['checkin','map','checkout','weighted','events','outside','activeMin','idleCount','idleMin'].forEach(f=>A[f]+=o[f]);
+          A.firstSum+=o.first; A.lastSum+=o.last; A.lateMinSum+=o.lateMin; if(o.lateMin>LATE_MIN) A.lateDays++; if(o.earlyMin>EARLY_MIN) A.earlyDays++; }); });
+      const operators=Object.values(ops).map(A=>({operator:A.operator, days:A.days, checkin:A.checkin, map:A.map, checkout:A.checkout, weighted:r1(A.weighted),
+        perDay:r1(A.weighted/A.days), perActiveHour:A.activeMin>0? r1(A.weighted/(A.activeMin/60)) : null, events:A.events, outside:A.outside,
+        avgFirst:hhmm(A.firstSum/A.days), avgLast:hhmm(A.lastSum/A.days), avgLateMin:Math.round(A.lateMinSum/A.days), lateDays:A.lateDays, earlyDays:A.earlyDays,
+        idleCount:A.idleCount, idleMin:A.idleMin})).sort((a,b)=>b.weighted-a.weighted);
+      const tw=operators.reduce((t,o)=>t+o.weighted,0), opDays=operators.reduce((t,o)=>t+o.days,0);
+      return {name:s.name, start:s.start, end:s.end, weekend:!!s.weekend, daysCovered:nDays, operators,
+        team:{ operators:operators.length, operatorDays:opDays, plannedDays:planned, absentDays:absent, checkin:operators.reduce((t,o)=>t+o.checkin,0), map:operators.reduce((t,o)=>t+o.map,0),
+          checkout:operators.reduce((t,o)=>t+o.checkout,0), weighted:r1(tw), perOperatorDay:opDays? r1(tw/opDays) : null, orders, units,
+          lateStarts:operators.reduce((t,o)=>t+o.lateDays,0), earlyEnds:operators.reduce((t,o)=>t+o.earlyDays,0), idleMin:operators.reduce((t,o)=>t+o.idleMin,0),
+          topShare: tw>0 && operators.length? Math.round(operators[0].weighted/tw*100) : null, topOperator: operators.length? operators[0].operator : null },
+        byDay, hourly: nDays? hourW.map((v,h)=>({hour:h, weightedPerDay:r1(v/nDays)})).filter(x=>x.weightedPerDay) : [] };
+    });
+    return {mode, from:days[0], to:days[days.length-1], days, shifts:out, reliable, refreshedAt:new Date().toISOString(),
+      schedule:{ planDays, missingDays:days.filter(x=>!planDays.includes(x)) }, absences, unplanned,
+      rules:{idleGapMin:IDLE_GAP_MIN, lateMin:LATE_MIN, earlyMin:EARLY_MIN}};
+  }
+  return {live, shifts};
 };

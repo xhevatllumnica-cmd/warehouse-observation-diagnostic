@@ -6,7 +6,7 @@
    references renderStatsWH); it only uses app.js helpers at call time.
    ==========================================================================*/
 'use strict';
-let statsRange='7d', statsShift='', statsLast=null, statsDate='';
+let statsRange='7d', statsShift='', statsLast=null, statsDate='', statsSeq=0;
 const STATS_WEEKDAYS=['Hën','Mar','Mër','Enj','Pre','Sht','Die'];
 
 function statsStatus(v, th){
@@ -32,6 +32,13 @@ function statsShiftsFor(date, time){
   return Store.col('wmsShifts').filter(s=>s.active!==false && !!s.weekend===weekend).filter(s=>{ const a=wmsTimeToMin(s.start), b=wmsTimeToMin(s.end); return b>=a?(m>=a&&m<b):(m>=a||m<b); }).map(s=>s.name);
 }
 
+/* WMS Pulse — the database dashboard (pulse/template.html), fed by pulse/data.json which the scheduled
+   "WMS Pulse refresh" task rebuilds from the WMS database; the page re-reads it every 5 minutes. */
+function renderPulse(v){
+  v.innerHTML = pagehead('WMS Pulse','Tabelat nga databaza e WMS-it (produktiviteti, pagesa për veprim, porositë, stoku, inbound). Rifreskohet automatikisht nga databaza; kjo faqe lexon versionin më të ri çdo 5 minuta.')
+    + (wmsOnAgent()? '<iframe id="pulseFrame" src="/pulse/template.html?embed=1&theme=dark" title="WMS Pulse" style="width:100%;height:calc(100vh - 150px);min-height:600px;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></iframe>'
+                   : '<div class="card"><div class="empty">Hape app-in nga http://localhost:8790.</div></div>');
+}
 function renderStatsWH(v){
   const shifts=Store.col('wmsShifts').filter(s=>s.active!==false);
   v.innerHTML = pagehead('Statistikat e WH','Statistikat e depos kundrejt targeteve: vëllimi dhe throughput-i, pritja për mapim, produktiviteti dhe vëzhgimet nga terreni. Burimet: WMS (log-u i eventeve) dhe të dhënat e vëzhgimeve të këtij aplikacioni.',
@@ -55,12 +62,13 @@ function renderStatsWH(v){
 async function loadStatsWH(){
   const body=$('#statsBody'); if(!body) return;
   body.innerHTML=`<div class="empty">Po ngarkohet… ${statsRange==='14d'||statsRange==='30d'?'(herën e parë periudhat e gjata marrin disa minuta; pastaj ruhen)':''}</div>`;
-  let live=null, err=null;
+  let live=null, err=null; const seq=++statsSeq;
   const q=statsRange==='day' ? 'date='+encodeURIComponent(statsDate||todayStr()) : 'range='+statsRange;
   if(!wmsOnAgent()) err='Hape app-in nga http://localhost:8790 që të lexohen të dhënat e WMS-it.';
   else try{ const r=await fetch('/stats/live?'+q+'&shift='+encodeURIComponent(statsShift),{cache:'no-store'}); live=await r.json();
     if(!r.ok||live.error){ err=live.error==='auth_expired'?'Sesioni i WMS ka skaduar — ngjit cookie-n e re te WMS Data & Performance.':(live.error||('HTTP '+r.status)); live=null; } }
   catch(e){ err='Agjenti s\'përgjigjet ('+e.message+').'; }
+  if(seq!==statsSeq) return;   // a newer filter change is already loading
   if(live) statsLast=live;
   const shown=live||statsLast;
   body.innerHTML = (err?`<div class="hint" style="color:var(--warn);margin-bottom:10px">⚠ ${h(err)}${shown&&!live?' — po shfaqen të dhënat e fundit të ruajtura ('+h(new Date(shown.refreshedAt).toLocaleString())+').':''}</div>`:'')
@@ -182,4 +190,143 @@ function wireStatsBody(d){
       toast('Cilësimet u ruajtën'); if(statsLast) statsLast.config=j.config; loadStatsWH();
     }catch(e){ $('#stMsg').textContent='✗ '+e.message; }
   };
+}
+
+/* ============================================================================
+   Shift statistics — rendered inside WMS Data & Performance → Shifts (GET /stats/shifts, wms-stats.js).
+   Daily or weekly (Mon–Sun of the chosen date): per shift, each operator assigned to that shift, their output
+   and scan-based timing signals, the team totals, plus a lead's view comparing N1 and N2.
+   ==========================================================================*/
+let shiftStatsDate='', shiftStatsMode='day', shiftStatsLast=null, shiftStatsSeq=0;
+function shiftStatsHTML(){
+  return `<div class="card" style="margin-top:14px"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <h3 style="margin:0">Statistikat sipas ndërrimit</h3>
+      <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn sm ${shiftStatsMode==='day'?'primary':''}" data-shmode="day">Ditore</button>
+        <button class="btn sm ${shiftStatsMode==='week'?'primary':''}" data-shmode="week">Javore</button>
+        <input type="date" id="shiftStatsDate" value="${h(shiftStatsDate||todayStr())}" max="${h(todayStr())}" style="width:auto;min-height:34px">
+        <button class="btn sm" id="shiftStatsRefresh">↻</button>
+        <button class="btn sm ghost" id="shiftStatsCsv">⬇ CSV</button>
+      </span></div>
+    <div id="shiftSchedBar" class="small" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center"><span id="shiftSchedInfo" class="faint">Orari: po lexohet…</span>
+      <label class="btn sm ghost" style="cursor:pointer">📅 Ngarko orarin (.xlsx)<input type="file" id="shiftSchedFile" accept=".xlsx" style="display:none"></label></div>
+    <div id="shiftStatsBody" style="margin-top:10px"><div class="empty">Po ngarkohet…</div></div></div>`;
+}
+async function loadShiftSchedInfo(msg){
+  const el=$('#shiftSchedInfo'); if(!el || !wmsOnAgent()) return;
+  try{ const j=await (await fetch('/schedule',{cache:'no-store'})).json();
+    el.innerHTML=(msg? msg+' · ' : '') + (j.loaded
+      ? `Orari i planifikuar: <b>${h(fmtDateAl(j.from))} → ${h(fmtDateAl(j.to))}</b> · ${j.operators} operatorë · oraret ${Object.keys(j.slots||{}).map(h).join(', ')}${j.lastFile?' · <span class="faint">'+h(j.lastFile)+'</span>':''}`
+      : 'S\'ka orar të ngarkuar — ndërrimi i secilit nxirret nga skanimet. Ngarko orarin mujor (.xlsx) për prani dhe nisje sipas planit.');
+  }catch(e){ el.textContent='Orari: agjenti s\'përgjigjet.'; }
+}
+function importShiftSchedule(file){
+  const el=$('#shiftSchedInfo'); if(!file) return; if(el) el.textContent='Po ngarkohet orari…';
+  const fr=new FileReader();
+  fr.onload=async()=>{ try{
+      const r=await fetch('/schedule/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:fr.result, name:file.name})}); const j=await r.json();
+      if(!r.ok||j.error){ if(el) el.innerHTML=`<span style="color:var(--crit)">Orari s'u ngarkua: ${h(j.error||('HTTP '+r.status))}</span>`; return; }
+      loadShiftSchedInfo(`✓ U ngarkuan ${j.days} ditë, ${j.operators.length} operatorë${j.unmapped&&j.unmapped.length?' · <span style="color:var(--warn)">pa përputhje: '+j.unmapped.map(h).join(', ')+'</span>':''}`);
+      loadShiftStats();
+    }catch(e){ if(el) el.textContent='Orari s\'u ngarkua ('+e.message+').'; } };
+  fr.readAsDataURL(file);
+}
+function wireShiftStats(){
+  $$('[data-shmode]').forEach(b=>b.onclick=()=>{ shiftStatsMode=b.dataset.shmode; $$('[data-shmode]').forEach(x=>x.classList.toggle('primary', x.dataset.shmode===shiftStatsMode)); loadShiftStats(); });
+  const di=$('#shiftStatsDate'); if(di) di.onchange=e=>{ shiftStatsDate=e.target.value||todayStr(); loadShiftStats(); };
+  const rf=$('#shiftStatsRefresh'); if(rf) rf.onclick=()=>loadShiftStats();
+  const sf=$('#shiftSchedFile'); if(sf) sf.onchange=e=>{ importShiftSchedule(e.target.files[0]); e.target.value=''; };
+  loadShiftSchedInfo();
+  const cv=$('#shiftStatsCsv'); if(cv) cv.onclick=()=>{ const d=shiftStatsLast; if(!d) return;
+    statsCsv('wh-nderrimet-'+d.mode+'-'+d.from, ['Ndërrimi','Operatori','Ditë','Check-in','Map','Check-out','Op. të peshuara','Op./ditë','Op./orë aktive','Skanimi i parë (mes.)','Skanimi i fundit (mes.)','Nisja pas fillimit (min, mes.)','Ditë me nisje >15 min','Ditë me mbarim >30 min para','Pushime >30 min','Minuta pushimi','Evente jashtë orarit'],
+      d.shifts.flatMap(s=>s.operators.map(o=>[s.name,o.operator,o.days,o.checkin,o.map,o.checkout,o.weighted,o.perDay,o.perActiveHour,o.avgFirst,o.avgLast,o.avgLateMin,o.lateDays,o.earlyDays,o.idleCount,o.idleMin,o.outside])));
+    if((d.absences||[]).length || (d.unplanned||[]).length)
+      statsCsv('wh-prania-'+d.mode+'-'+d.from, ['Data','Operatori','Statusi','Ndërrimi / arsyeja','Evente','Skanimi i parë','Skanimi i fundit'],
+        [...(d.absences||[]).map(a=>[a.date,a.operator,'Planifikuar, pa skanime',a.shift+' ('+a.hours+')','','','']),
+         ...(d.unplanned||[]).map(u=>[u.date,u.operator,'Punë jashtë planit',u.reason,u.events,u.first,u.last])]); };
+  loadShiftStats();
+}
+async function loadShiftStats(){
+  const body=$('#shiftStatsBody'); if(!body) return;
+  if(!wmsOnAgent()){ body.innerHTML='<div class="empty">Hape app-in nga http://localhost:8790.</div>'; return; }
+  body.innerHTML=`<div class="empty">Po ngarkohet…${shiftStatsMode==='week'?' (java e parë mund të marrë deri në një minutë)':''}</div>`;
+  const seq=++shiftStatsSeq;   // only the latest request may render — an older, slower response must not overwrite it
+  try{ const r=await fetch('/stats/shifts?mode='+shiftStatsMode+'&date='+encodeURIComponent(shiftStatsDate||todayStr()),{cache:'no-store'}); const j=await r.json();
+    if(seq!==shiftStatsSeq) return;
+    if(!r.ok||j.error){ body.innerHTML=`<div class="empty">${h(j.error==='auth_expired'?'Sesioni i WMS ka skaduar — ngjit cookie-n e re më lart.':(j.error||('HTTP '+r.status)))}</div>`; return; }
+    shiftStatsLast=j; body.innerHTML=renderShiftStatsHTML(j);
+  }catch(e){ if(seq===shiftStatsSeq) body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}).</div>`; }
+}
+const shiftLbl=(s,sep)=> s.name===s.start+'–'+s.end ? h(s.name) : h(s.name)+sep+h(s.start)+'–'+h(s.end);
+function renderShiftStatsHTML(d){
+  const week=d.mode==='week', period=week? `java ${h(fmtDateAl(d.from))} → ${h(fmtDateAl(d.to))}${d.days.length<7?' (deri sot)':''}` : h(fmtDateAl(d.from));
+  const shifts=d.shifts.filter(s=>s.daysCovered>0);
+  if(!shifts.length) return `<div class="empty">S'ka ndërrime aktive për ${period} (p.sh. weekend pa turn aktiv).</div>`;
+  const fmtH=m=>m==null?'—':(m>=60? Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m' : m+' min');
+  const shiftCard=s=>{
+    const t=s.team, rows=s.operators;
+    if(!rows.length) return `<div class="card" style="margin-bottom:12px"><h3>${shiftLbl(s," · ")}</h3><div class="empty">S'ka aktivitet të stafit në këtë ndërrim${t.plannedDays?` (planifikuar: ${t.plannedDays}${t.absentDays?', pa skanime: '+t.absentDays:''})`:''}.</div></div>`;
+    const kp=(v,l)=>`<div class="card kpi"><div class="val">${v}</div><div class="lbl">${l}</div></div>`;
+    const tr=o=>`<tr><td>${h(o.operator)}</td>${week?`<td>${o.days}</td>`:''}<td>${o.checkin}</td><td>${o.map}</td><td>${o.checkout}</td><td><b>${o.weighted}</b></td>${week?`<td>${o.perDay}</td>`:''}
+      <td>${o.perActiveHour!=null?o.perActiveHour:'—'}</td><td>${h(o.avgFirst||'—')}</td><td>${h(o.avgLast||'—')}</td><td>${o.avgLateMin>15?`<span style="color:var(--warn)">${o.avgLateMin}</span>`:o.avgLateMin}</td>
+      <td>${o.idleCount} · ${fmtH(o.idleMin)}</td><td>${o.outside||'—'}</td></tr>`;
+    const totalRow=`<tr style="font-weight:700;border-top:2px solid var(--line2)"><td>Ekipi (${t.operators})</td>${week?`<td>${t.operatorDays}</td>`:''}<td>${t.checkin}</td><td>${t.map}</td><td>${t.checkout}</td><td>${t.weighted}</td>${week?`<td>${t.perOperatorDay}</td>`:''}<td colspan="4"></td><td>${fmtH(t.idleMin)}</td><td></td></tr>`;
+    const mx=Math.max(1,...s.hourly.map(x=>x.weightedPerDay));
+    return `<div class="card" style="margin-bottom:12px"><h3>${shiftLbl(s," · ")} <span class="sub">${period}</span></h3>
+      <div class="grid g-kpi" style="margin-bottom:10px">
+        ${t.plannedDays? kp(`${t.operatorDays} / ${t.plannedDays}`, (week?'Ditë-operatori prezent / planifikuar':'Prezent / planifikuar')+(t.absentDays?` · <span style="color:var(--warn)">${t.absentDays} pa skanime</span>`:'')) : kp(t.operators,'Operatorë'+(week?' · '+t.operatorDays+' ditë-operatori':''))}
+        ${kp(t.weighted,'Op. të peshuara (ekipi)')}
+        ${kp(t.perOperatorDay!=null?t.perOperatorDay:'—','Op. / operator / ditë')}
+        ${kp(t.orders,'Porosi të dala gjatë orarit')}
+        ${kp(t.lateStarts,'Nisje e skanimit > 15 min')}
+        ${kp(fmtH(t.idleMin),'Pushime > 30 min pa skanim')}
+      </div>
+      <div style="overflow-x:auto"><table style="font-size:12.5px"><thead><tr><th>Operatori</th>${week?'<th>Ditë</th>':''}<th>Check-in</th><th>Map</th><th>Check-out</th><th>Op. të peshuara</th>${week?'<th>Op./ditë</th>':''}
+        <th>Op./orë aktive</th><th>Skanimi i parë</th><th>Skanimi i fundit</th><th>Nisja (min pas ${h(s.start)})</th><th>Pushime >30 min</th><th>Jashtë orarit</th></tr></thead>
+        <tbody>${rows.map(tr).join('')}${totalRow}</tbody></table></div>
+      ${week && s.byDay.length>1?`<div style="margin-top:10px"><b class="small">Sipas ditës</b><table style="font-size:12px;max-width:520px"><thead><tr><th>Data</th><th>Operatorë${t.plannedDays?' (prezent / plan)':''}</th><th>Op. të peshuara</th><th>Porosi të dala</th></tr></thead><tbody>${s.byDay.map(b=>`<tr><td>${h(fmtDateAl(b.date))} ${STATS_WEEKDAYS[(new Date(b.date+'T12:00:00').getDay()+6)%7]}</td><td>${b.planned? b.operators+' / '+b.planned : b.operators}</td><td>${b.weighted}</td><td>${b.orders}</td></tr>`).join('')}</tbody></table></div>`:''}
+      <div style="margin-top:10px"><b class="small">Ritmi sipas orës</b> <span class="faint small">(op. të peshuara të ekipit${week?' për ditë':''})</span>${s.hourly.map(x=>barRow(String(x.hour).padStart(2,'0')+':00', x.weightedPerDay, mx, 'var(--accent)')).join('')}</div>
+    </div>`;
+  };
+  // lead's view: N1 vs N2 (workday shifts) side by side, plus automatic signals
+  const wd=shifts.filter(s=>!s.weekend && s.operators.length);
+  const cmpRows=[['Operatorë (ditë-operatori)',s=>`${s.team.operators} (${s.team.operatorDays})`],
+    ...(wd.some(s=>s.team.plannedDays)? [['Prania sipas orarit',s=>s.team.plannedDays? `${s.team.operatorDays} / ${s.team.plannedDays} (${Math.round(s.team.operatorDays/s.team.plannedDays*100)}%)` : '—']] : []),['Op. të peshuara',s=>s.team.weighted],['Op. / operator / ditë',s=>s.team.perOperatorDay],
+    ['Porosi të dala gjatë orarit',s=>s.team.orders],['Porosi / operator / ditë',s=>s.team.operatorDays? Math.round(s.team.orders/s.team.operatorDays*10)/10 : '—'],
+    ['Check-in / Map / Check-out',s=>`${s.team.checkin} / ${s.team.map} / ${s.team.checkout}`],['Nisje e skanimit > 15 min',s=>s.team.lateStarts],['Mbarim > 30 min para orarit',s=>s.team.earlyEnds],
+    ['Pushime > 30 min pa skanim',s=>fmtH(s.team.idleMin)],['Pjesa e operatorit kryesor',s=>s.team.topShare!=null? `${s.team.topShare}% (${h(s.team.topOperator)})` : '—']];
+  /* Signals: when most of a shift shows the same pattern it's a team/process signal (one line), and a person is
+     only flagged when they stand clearly apart from their own shift — otherwise the list drowns in noise. */
+  const team=[], people=[];
+  wd.forEach(s=>{ const avg=s.team.perOperatorDay||0, ops=s.operators, n=ops.length;
+    const late=ops.map(o=>o.avgLateMin), idle=ops.map(o=>Math.round(o.idleMin/o.days));
+    const lateMed=Math.round(statsMedian(late)||0), idleMed=Math.round(statsMedian(idle)||0);
+    const nLate=late.filter(x=>x>45).length, nIdle=idle.filter(x=>x>90).length;
+    if(s.team.topShare>=35 && n>=3) team.push(`<b>${h(s.name)}:</b> ${h(s.team.topOperator)} bën ${s.team.topShare}% të punës së peshuar — varësi e lartë nga një person; mungesa e tij/saj godet ndërrimin.`);
+    if(n>=3 && nLate>=Math.ceil(n*0.6)) team.push(`<b>${h(s.name)}:</b> ${nLate} nga ${n} operatorë e nisin skanimin më shumë se 45 min pas ${h(s.start)} (mediana ${lateMed} min) — ora e parë e ndërrimit s'përdoret për punë me skaner. Kontrollo çfarë ndodh në fillim të turnit (takim, përgatitje, pritje për punë).`);
+    if(n>=3 && nIdle>=Math.ceil(n*0.6)) team.push(`<b>${h(s.name)}:</b> ${nIdle} nga ${n} operatorë kanë mbi 1h 30m në ditë pa skanim në pushime > 30 min (mediana ${fmtH(idleMed)}) — pritje për punë, punë pa skaner ose mungesë rrjedhe.`);
+    ops.forEach(o=>{ const oIdle=Math.round(o.idleMin/o.days);
+      if(o.avgLateMin>45 && o.avgLateMin>lateMed+45) people.push(`<b>${h(s.name)} · ${h(o.operator)}:</b> skanimi i parë mesatarisht ${o.avgLateMin} min pas ${h(s.start)} — ${o.avgLateMin-lateMed} min më vonë se mediana e ndërrimit${week?' ('+o.lateDays+' nga '+o.days+' ditë)':''}.`);
+      if(oIdle>90 && oIdle>idleMed+90) people.push(`<b>${h(s.name)} · ${h(o.operator)}:</b> ${fmtH(oIdle)} në ditë pa skanim në pushime > 30 min — dukshëm mbi medianën e ndërrimit (${fmtH(idleMed)}).`);
+      if(o.outside>0.2*(o.events+o.outside) && o.outside>=20) people.push(`<b>${h(s.name)} · ${h(o.operator)}:</b> ${o.outside} evente jashtë orarit të ndërrimit — punë shtesë ose orar i ndryshëm nga ai i planifikuar.`);
+      if(avg>0 && o.perDay<avg*0.5 && o.events>0) people.push(`<b>${h(s.name)} · ${h(o.operator)}:</b> ${o.perDay} op./ditë — nën gjysmën e mesatares së ndërrimit (${avg}); kontrollo nëse ka pasur detyra pa skaner.`);
+    }); });
+  const absBy={}; (d.absences||[]).forEach(a=>(absBy[a.operator]=absBy[a.operator]||[]).push(a));
+  Object.entries(absBy).forEach(([n,l])=>people.push(`<b>${h(n)}:</b> planifikuar${l.length>1?' '+l.length+' ditë':''} (${l.map(a=>h(fmtDateAl(a.date))+' '+h(a.hours)).join(', ')}) pa asnjë skanim — mungesë e mundshme, ndërrim i pa regjistruar ose punë pa skaner.`));
+  const unBy={}; (d.unplanned||[]).forEach(u=>(unBy[u.operator]=unBy[u.operator]||[]).push(u));
+  Object.entries(unBy).forEach(([n,l])=>people.push(`<b>${h(n)}:</b> skanime jashtë planit — ${l.map(u=>h(fmtDateAl(u.date))+' '+h(u.first)+'–'+h(u.last)+' ('+h(u.reason)+', '+u.events+' ev.)').join('; ')}. Përditëso orarin nëse ka pasur ndërrim.`));
+  const signals=[...team, ...people];
+  if(wd.length>=2){ const [a,b]=wd, pa=a.team.perOperatorDay||0, pb=b.team.perOperatorDay||0;
+    if(pa&&pb&&Math.abs(pa-pb)/Math.max(pa,pb)>=0.25){ const lo=pa<pb?a:b, hi=pa<pb?b:a; signals.push(`<b>${h(lo.name)}</b> prodhon ${Math.round((1-Math.min(pa,pb)/Math.max(pa,pb))*100)}% më pak për operator se <b>${h(hi.name)}</b> (${Math.min(pa,pb)} kundrejt ${Math.max(pa,pb)} op./operator/ditë) — kontrollo ndarjen e stafit dhe të punës mes ndërrimeve.`); } }
+  const lead=wd.length? `<div class="card" style="margin-bottom:12px"><h3>Për WH Lead <span class="sub">${period}</span></h3>
+      <div style="overflow-x:auto"><table style="font-size:12.5px;max-width:720px"><thead><tr><th></th>${wd.map(s=>`<th>${shiftLbl(s," ")}</th>`).join('')}</tr></thead>
+        <tbody>${cmpRows.map(([l,f])=>`<tr><td>${l}</td>${wd.map(s=>`<td>${f(s)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <div style="margin-top:10px"><b class="small">Sinjale</b>${signals.length?`<ul style="margin:6px 0 0 18px;padding:0;font-size:12.5px;line-height:1.6">${signals.map(x=>`<li>${x}</li>`).join('')}</ul>`:'<div class="small faint">Asnjë sinjal i veçantë.</div>'}</div>
+    </div>` : '';
+  const warn=d.reliable===false?`<div class="hint" style="color:var(--warn);margin-bottom:8px">⚠ Disa ditë nuk u lexuan të plota nga WMS.</div>`:'';
+  const sch=d.schedule||{}, planned=sch.planDays&&sch.planDays.length;
+  const schNote= planned && sch.missingDays.length
+    ? `<div class="hint" style="color:var(--warn);margin-bottom:8px">⚠ Pa orar të planifikuar për ${sch.missingDays.map(x=>h(fmtDateAl(x))).join(', ')} — për këto ditë ndërrimi nxirret nga skanimet.</div>` : '';
+  return warn + schNote + lead + shifts.map(shiftCard).join('')
+    + `<div class="hint">${planned? 'Me orar të planifikuar: çdo operator vendoset në ndërrimin e vet sipas orarit (p.sh. 09:00–17:00); nisja dhe mbarimi maten kundrejt orarit të tij; «pa skanime» = i planifikuar pa asnjë skanim në WMS; «jashtë planit» = skanime ditën OFF, pa orar ose vetëm jashtë orarit. Ditët pa orar: ç' : 'Ç'}do operator caktohet në <b>një</b> ndërrim për ditë, sipas kur ka punuar (N1 07–13 dhe N2 15–21 vendosin; mbivendosja 13–15 jo). Performanca numëron vetëm eventet brenda orarit të ndërrimit; të tjerat janë «jashtë orarit». Op. të peshuara = 1.0 × check-out (4/18) + 0.8 × check-in (2) + 0.6 × map (7). Skanimi i parë/i fundit dhe pushimet &gt; 30 min janë <b>sinjale nga skanimet</b>, jo orari i ardhjes: një punëtor mund të jetë i pranishëm pa skanuar (paketim, pastrim, ndihmë). «Porosi të dala gjatë orarit» = porosi me check-out në orët e ndërrimit (13–15 numërohen te të dy). Burimi: WMS ProductLogs · Depo Prishtinë · vetëm stafi i depos · freskuar ${h(new Date(d.refreshedAt).toLocaleString())}.</div>`;
 }

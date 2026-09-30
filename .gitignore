@@ -73,3 +73,7 @@ wms-agent.log
 wms-agent.log.1
 flow-chat-state.json
 stats-day-cache.json
+shift-schedule.json
+pulse/data.json
+pulse/raw/
+pulse/wms-pulse.html
