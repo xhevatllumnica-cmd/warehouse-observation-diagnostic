@@ -146,6 +146,7 @@ const Store = {
     let migrated=false;
     (this.db.processes||[]).forEach(p=>{ if(!p.flowType){ p.flowType=defaultFlowType(p.name); migrated=true; } });
     if(dedupeDepartments(this.db)) migrated=true;
+    if(typeof bnMigrate==='function' && bnMigrate(this.db)) migrated=true;   // Bottleneck Register fields on existing problems (bottleneck.js)
     // one-time: drop "Arrival" — it is a starting event, not an operational process.
     if(!this.db.config) this.db.config={};
     this.db.config.migrations = this.db.config.migrations || {};
@@ -340,7 +341,7 @@ const Store = {
 };
 const seedCollections = ['config','employees','departments','processes','observations','measurements',
   'orders','products','staffSkills','staffObs','problems','kpiRecords','hqInteractions','quickWins','briefings','validations',
-  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit'];
+  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions'];
 
 function audit(entity,recId,action,before,after){
   const changes=[];
@@ -465,7 +466,7 @@ const ROUTES = [
   {id:'capacity', title:'Kapaciteti & Stafi', ic:'👥', render:renderCapacity},
   {id:'orari', title:'Orari i punës', ic:'📅', render:renderOrari},
   {sec:'Diagnose'},
-  {id:'problems', title:'Bottleneck Register', ic:'⚠', render:renderProblems},
+  {id:'problems', title:'Bottleneck Register', ic:'⚠', render:(typeof renderBottleneck==='function'? renderBottleneck : renderProblems)},
   {id:'kpi', title:'KPI Baseline', ic:'📊', render:renderKPI},
   {id:'validation', title:'Validation', ic:'⚖', render:renderValidation},
   {id:'insights', title:'Insights & Alerts', ic:'💡', render:renderInsights},
@@ -1083,9 +1084,10 @@ function drawObsTable(){
 }
 function convertObsToProblem(id){
   const o=Store.get('observations',id); if(!o) return;
-  Store.insert('problems',{ dateIdentified:todayStr(), processId:o.processId, problem:o.what, location:o.location,
+  const norm=r=> typeof bnNormalize==='function'? bnNormalize(r) : r;   // register fields (BN id, phase, RPN…) when the Bottleneck module is loaded
+  Store.insert('problems',norm({ dateIdentified:todayStr(), processId:o.processId, problem:o.what, location:o.location,
     frequency:1, evidence:o.evidence, impact:o.impact, cause:o.cause, severity:o.severity||'Improvement',
-    status:'Under validation', relatedObs:[o.id], priorityScore:0 });
+    status:'Under validation', relatedObs:[o.id], priorityScore:0, source:'Vëzhgim në terren' }));
   Store.update('observations',id,{status:'Converted to problem'});
   toast('Converted to a register entry'); go();
 }

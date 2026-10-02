@@ -80,3 +80,8 @@ pulse/wms-pulse.html
 
 # local databases (Orari i Warehouse SQLite — employee data)
 data/
+
+# Bottleneck Register: WMS snapshots (staff initials, operational data), rendered queries and metric history stay local
+bottleneck/snapshots/
+bottleneck/queries.run.sql
+bottleneck/metric-history.json

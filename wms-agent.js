@@ -837,6 +837,39 @@ function pulseTick(){
 setInterval(pulseTick, 2*60*1000);
 setTimeout(pulseTick, 20000);
 
+/* Problem / Bottleneck Register (bottleneck/): the WmsDataAdapter keeps bottleneck/queries.run.sql in step with the
+   module's Settings (Store config.bottleneck.params), turns new D1–D13 query results found in the Claude Code
+   transcripts into a snapshot, and the detectors turn the latest snapshot + thresholds into candidates on request. */
+const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
+let bnState={lastCheck:null, lastSnapshot:null, lastError:null}, bnCache=null;
+function bnConfig(){ const db=loadDb(); return (db&&db.config&&db.config.bottleneck)||{}; }
+function bnTick(){
+  try{ const cfg=bnConfig(); bnAdapter.writeRunFile(cfg.params||{});
+    const r=bnAdapter.collect(360); bnState.lastCheck=new Date().toISOString();
+    if(r.changed.length){ bnState.lastSnapshot=r.snapshot.id; bnCache=null; bnRecordHistory(r.snapshot, cfg); console.log('[wms-agent] bottleneck snapshot '+r.snapshot.id+': '+r.changed.join(', ')); }
+    bnState.lastError=null;
+  }catch(e){ bnState.lastError=e.message; console.log('[wms-agent] bottleneck: '+e.message); }
+}
+/* metrics that are a single "now" value per snapshot (units waiting, stuck supplies, …) get a day-by-day history,
+   so a problem's effect can be followed over the 14 days the register requires before closing */
+const BN_HIST=path.join(APPDIR,'bottleneck','metric-history.json');
+function bnRecordHistory(snap, cfg){
+  try{ const det=bnDetectors.detect(snap, cfg.thresholds||{}); let hist={}; try{ hist=JSON.parse(fs.readFileSync(BN_HIST,'utf8')); }catch(e){}
+    Object.values(det.metrics).forEach(m=>{ if((m.series||[]).length!==1) return; const p=m.series[0]; const a=(hist[m.key]=hist[m.key]||[]);
+      const i=a.findIndex(x=>x.d===p.d); if(i>=0) a[i]=p; else a.push(p); a.sort((x,y)=>x.d<y.d?-1:1); if(a.length>180) a.splice(0,a.length-180); });
+    fs.writeFileSync(BN_HIST, JSON.stringify(hist)); }catch(e){ console.log('[wms-agent] bottleneck history: '+e.message); }
+}
+function bnData(){
+  const snap=bnAdapter.latestSnapshot(); if(!snap) return {empty:true, state:bnState};
+  const cfg=bnConfig(), key=snap.id+'|'+JSON.stringify(cfg.thresholds||{});
+  if(!bnCache || bnCache.key!==key){ const data=bnDetectors.detect(snap, cfg.thresholds||{}); let hist={}; try{ hist=JSON.parse(fs.readFileSync(BN_HIST,'utf8')); }catch(e){}
+    Object.values(data.metrics).forEach(m=>{ const hs=hist[m.key]; if(hs && (m.series||[]).length<=1){ const cur=(m.series||[])[0]; m.series=hs.filter(x=>!cur||x.d!==cur.d).concat(cur?[cur]:[]).sort((x,y)=>x.d<y.d?-1:1); m.history=true; } });
+    bnCache={key, data}; }
+  return Object.assign({state:bnState, defaults:bnDetectors.DET_DEFAULTS, params:bnAdapter.paramValues(cfg.params||{})}, bnCache.data);
+}
+setInterval(bnTick, 2*60*1000);
+setTimeout(bnTick, 25000);
+
 /* Orari i Warehouse (warehouse-schedule/, the schedule editor) → the plan used by the shift stats, Kapaciteti & Stafi and
    Insights. Read-only: its monthly Excel export for the previous, current and next month, every 15 min and on demand. */
 const scheduleAppUrl=()=> String(cfg.scheduleAppUrl||'http://localhost:3000').replace(/\/+$/,'');
@@ -960,6 +993,28 @@ http.createServer(async (req,resp)=>{
       resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(b);
     }
     if(q.pathname==='/pulse/status'){ return json(200, Object.assign({building:pulseBuilding}, pulseState)); }
+    // Bottleneck Register — same-origin only (no CORS header): staff initials and operational data
+    if(q.pathname.startsWith('/bn/')){
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      const send=(code,obj)=>{ resp.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'}); resp.end(JSON.stringify(obj)); };
+      if(q.pathname==='/bn/data'){ if(q.query.refresh) bnTick(); return send(200, bnData()); }
+      if(q.pathname==='/bn/snapshot'){ const s=bnAdapter.readSnapshot(q.query.id); if(!s) return send(404,{error:'Snapshot-i nuk u gjet.'});
+        const b=q.query.block? s.blocks[q.query.block] : null;
+        if(q.query.block && !b) return send(404,{error:'Blloku nuk është në këtë snapshot.'});
+        return send(200, b? {id:s.id, at:s.at, block:q.query.block, blockAt:b.at, source:b.source, scope:b.scope, sql:b.sql, row:q.query.rows? b.row : undefined}
+                         : {id:s.id, at:s.at, source:s.source, changed:s.changed, blocks:Object.fromEntries(Object.entries(s.blocks).map(([k,v])=>[k,{at:v.at, source:v.source, scope:v.scope}]))}); }
+      if(q.pathname==='/bn/snapshots'){ return send(200, bnAdapter.listSnapshots().slice(-40).reverse()); }
+      if(q.pathname==='/bn/runfile'){ bnTick(); let t=''; try{ t=fs.readFileSync(path.join(APPDIR,'bottleneck','queries.run.sql'),'utf8'); }catch(e){}
+        resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}); return resp.end(t); }
+      if(q.pathname==='/bn/import' && req.method==='POST'){ let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return send(400,{error:'bad json'}); }
+        try{ const s=bnAdapter.importData(String(body.text||''), String(body.name||'')); bnCache=null; bnState.lastSnapshot=s.id; return send(200,{ok:true, id:s.id, changed:s.changed}); }
+        catch(e){ return send(400,{error:e.message}); } }
+      if(q.pathname==='/bn/export.xlsx' && req.method==='POST'){ let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return send(400,{error:'bad json'}); }
+        const buf=bnXlsx.workbook(Array.isArray(body.sheets)? body.sheets.slice(0,10) : []);
+        resp.writeHead(200,{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','Content-Disposition':'attachment; filename="'+String(body.file||'regjistri.xlsx').replace(/[^\w.-]/g,'_')+'"','Cache-Control':'no-store'});
+        return resp.end(buf); }
+      return send(404,{error:'not found'});
+    }
     if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, Object.assign(shiftSchedule.summary(), {appUrl:scheduleAppUrl()})); }
     if(q.pathname==='/schedule/sync' && req.method==='POST'){
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
@@ -1058,9 +1113,9 @@ http.createServer(async (req,resp)=>{
     let f=(q.pathname==='/'||q.pathname==='')?'/app.html':q.pathname;
     const full=path.join(APPDIR, decodeURIComponent(f).replace(/^\/+/,''));
     if(!full.startsWith(APPDIR)){ resp.writeHead(403); return resp.end('forbidden'); }
-    { // private files are never served: secrets, the employee schedule, WMS Pulse data and raw query results
+    { // private files are never served: secrets, the employee schedule, WMS Pulse data, bottleneck snapshots and raw query results
       const rel=path.relative(APPDIR, full).split(path.sep).join('/').toLowerCase();
-      if(rel==='wms-agent.config.json' || rel==='shift-schedule.json' || (rel.startsWith('pulse/') && rel!=='pulse/template.html')){ resp.writeHead(404); return resp.end('not found'); } }
+      if(rel==='wms-agent.config.json' || rel==='shift-schedule.json' || rel.startsWith('bottleneck/') || (rel.startsWith('pulse/') && rel!=='pulse/template.html')){ resp.writeHead(404); return resp.end('not found'); } }
     fs.readFile(full,(e,data)=>{ if(e){ resp.writeHead(404); return resp.end('not found'); }
       resp.writeHead(200,{'Content-Type':CT[path.extname(full)]||'application/octet-stream','Cache-Control':'no-store'}); resp.end(data); });
   }catch(err){ json(500,{error:String(err&&err.message||err)}); }
