@@ -216,3 +216,79 @@ SELECT /*pulse:G*/
  (SELECT CONVERT(varchar(10),CAST(um.InsertDateTime AS date),120) d, COUNT(*) n FROM OrderUnmaps um
     JOIN Orders o ON o.OrderId=um.OrderId AND o.PlatformId=um.PlatformId AND o.WarehouseId=1
   WHERE um.InsertDateTime>=DATEADD(day,-13,CAST(GETDATE() AS date)) GROUP BY CAST(um.InsertDateTime AS date) ORDER BY 1 FOR JSON PATH) unmaps
+
+-- @H capacity — demand and daily volumes (Kapaciteti & Stafi): the last 12 full weeks (Mon–Sun) before the current
+--    week, warehouse 01. created = orders by local day (+ after 17:30, Gjirafa50); vol = units handled by warehouse
+--    staff per day (check-in 2, map 7, check-out 4/18 — sellers' own accounts and the system account excluded);
+--    coOrd = distinct orders checked out per day; hourly = weekday coverage (units and operator-hours per process);
+--    pay = latest closed piece-rate period; std = WMS AverageTimeSeconds per action.
+SELECT /*pulse:H*/
+ CONVERT(varchar(10),DATEADD(week,-12,m.mon),23) wFrom, CONVERT(varchar(10),m.mon,23) wTo,
+ (SELECT CONVERT(varchar(10),d,23) d, COUNT(*) o, SUM(g) g50, SUM(lt) late FROM (
+    SELECT CAST(DATEADD(minute,z.tz,o.CreatedOnUtc) AS date) d, CASE WHEN o.PlatformId=2 THEN 1 ELSE 0 END g,
+      CASE WHEN CAST(DATEADD(minute,z.tz,o.CreatedOnUtc) AS time)>'17:30' THEN 1 ELSE 0 END lt
+    FROM Orders o WHERE o.WarehouseId=1 AND o.CreatedOnUtc>=DATEADD(minute,-z.tz,CAST(DATEADD(week,-12,m.mon) AS datetime)) AND o.CreatedOnUtc<DATEADD(minute,-z.tz,CAST(m.mon AS datetime))) a
+  GROUP BY d ORDER BY d FOR JSON PATH) created,
+ (SELECT CONVERT(varchar(10),CAST(pl.InsertDateTime AS date),23) d, SUM(CASE WHEN pl.LogTypeId=2 THEN 1 ELSE 0 END) ci, SUM(CASE WHEN pl.LogTypeId=7 THEN 1 ELSE 0 END) mp,
+    SUM(CASE WHEN pl.LogTypeId IN (4,18) THEN 1 ELSE 0 END) co, COUNT(DISTINCT pl.UpdateBy) ops
+  FROM ProductLogs pl WITH (NOLOCK) JOIN Users u ON u.UserId=pl.UpdateBy
+  WHERE pl.InsertDateTime>=DATEADD(week,-12,m.mon) AND pl.InsertDateTime<m.mon AND pl.LogTypeId IN (2,7,4,18)
+    AND u.UserWarehouseId=1 AND u.UserId>0 AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+  GROUP BY CAST(pl.InsertDateTime AS date) ORDER BY 1 FOR JSON PATH) vol,
+ (SELECT CONVERT(varchar(10),d,23) d, COUNT(*) n FROM (SELECT CAST(pl.InsertDateTime AS date) d, pl.OrderId, pl.PlatformId FROM ProductLogs pl WITH (NOLOCK)
+      JOIN Orders o ON o.OrderId=pl.OrderId AND o.PlatformId=pl.PlatformId AND o.WarehouseId=1
+      WHERE pl.LogTypeId IN (4,18) AND pl.OrderId>0 AND pl.InsertDateTime>=DATEADD(week,-12,m.mon) AND pl.InsertDateTime<m.mon
+      GROUP BY CAST(pl.InsertDateTime AS date), pl.OrderId, pl.PlatformId) x GROUP BY d ORDER BY d FOR JSON PATH) coOrd,
+ (SELECT h, COUNT(DISTINCT d) days, SUM(CASE WHEN t=2 THEN n ELSE 0 END) ci, SUM(CASE WHEN t=7 AND n<400 THEN n ELSE 0 END) mp, SUM(CASE WHEN t=4 THEN n ELSE 0 END) co,
+    SUM(CASE WHEN t=2 THEN 1 ELSE 0 END) ciOps, SUM(CASE WHEN t=7 THEN 1 ELSE 0 END) mpOps, SUM(CASE WHEN t=4 THEN 1 ELSE 0 END) coOps, COUNT(DISTINCT CONCAT(d,'-',ub)) anyOps FROM (
+    SELECT CAST(pl.InsertDateTime AS date) d, DATEPART(hour,pl.InsertDateTime) h, pl.UpdateBy ub, CASE WHEN pl.LogTypeId IN (4,18) THEN 4 ELSE pl.LogTypeId END t, COUNT(*) n
+    FROM ProductLogs pl WITH (NOLOCK) JOIN Users u ON u.UserId=pl.UpdateBy
+    WHERE pl.InsertDateTime>=DATEADD(week,-12,m.mon) AND pl.InsertDateTime<m.mon AND DATEPART(weekday,pl.InsertDateTime) NOT IN (1,7) AND pl.LogTypeId IN (2,7,4,18)
+      AND u.UserWarehouseId=1 AND u.UserId>0 AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+    GROUP BY CAST(pl.InsertDateTime AS date), DATEPART(hour,pl.InsertDateTime), pl.UpdateBy, CASE WHEN pl.LogTypeId IN (4,18) THEN 4 ELSE pl.LogTypeId END) x
+  GROUP BY h ORDER BY h FOR JSON PATH) hourly,
+ (SELECT TOP 1 p.Id id, p.PeriodYear y, p.PeriodMonth mo, p.TotalActions ta, p.TotalCost tc,
+    (SELECT COUNT(*) FROM (SELECT pl.OrderId, pl.PlatformId FROM ProductLogs pl WITH (NOLOCK) JOIN Orders o ON o.OrderId=pl.OrderId AND o.PlatformId=pl.PlatformId AND o.WarehouseId=1
+       WHERE pl.LogTypeId IN (4,18) AND pl.OrderId>0 AND pl.InsertDateTime>=p.FromInclusive AND pl.InsertDateTime<p.ToExclusive GROUP BY pl.OrderId, pl.PlatformId) x) orders
+  FROM WarehouseSalaryPeriods p WHERE p.WarehouseId=1 AND p.Status=2 ORDER BY p.Id DESC FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) pay,
+ (SELECT Code c, AverageTimeSeconds s FROM WarehouseActions FOR JSON PATH) std
+FROM (SELECT DATEADD(day, -((DATEPART(weekday,GETDATE())+@@DATEFIRST-2)%7), CAST(GETDATE() AS date)) mon) m
+CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central European Standard Time') tz) z
+
+-- @I capacity — operators (Kapaciteti & Stafi): per warehouse-01 staff account over the same 12 weeks: units and
+--    active hours (distinct clock hours with at least one scan) per process, active days, total active hours. Shown
+--    in the app as initials + the last 3 digits of the WMS UserId; temp (shared) accounts flagged. Sellers excluded.
+SELECT /*pulse:I*/
+ (SELECT LEFT(ISNULL(u.FirstName,'?'),1)+'.'+LEFT(ISNULL(u.LastName,'?'),1)+'.' i, RIGHT(CAST(u.UserId AS varchar(12)),3) id, CASE WHEN u.Username LIKE 'temp%' THEN 1 ELSE 0 END tmp,
+    SUM(CASE WHEN x.t=2 THEN x.n ELSE 0 END) ci, SUM(CASE WHEN x.t=2 THEN 1 ELSE 0 END) ciH, SUM(CASE WHEN x.t=7 THEN x.n ELSE 0 END) mp, SUM(CASE WHEN x.t=7 THEN 1 ELSE 0 END) mpH,
+    SUM(CASE WHEN x.t=4 THEN x.n ELSE 0 END) co, SUM(CASE WHEN x.t=4 THEN 1 ELSE 0 END) coH, COUNT(DISTINCT CAST(x.hh AS date)) days, COUNT(DISTINCT x.hh) hrs
+  FROM (SELECT pl.UpdateBy ub, CASE WHEN pl.LogTypeId IN (4,18) THEN 4 ELSE pl.LogTypeId END t, DATEADD(hour,DATEDIFF(hour,0,pl.InsertDateTime),0) hh, COUNT(*) n
+        FROM ProductLogs pl WITH (NOLOCK) WHERE pl.InsertDateTime>=DATEADD(week,-12,m.mon) AND pl.InsertDateTime<m.mon AND pl.LogTypeId IN (2,7,4,18)
+        GROUP BY pl.UpdateBy, CASE WHEN pl.LogTypeId IN (4,18) THEN 4 ELSE pl.LogTypeId END, DATEADD(hour,DATEDIFF(hour,0,pl.InsertDateTime),0)) x
+  JOIN Users u ON u.UserId=x.ub
+  WHERE u.UserWarehouseId=1 AND u.UserId>0 AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+  GROUP BY u.UserId, u.FirstName, u.LastName, u.Username HAVING SUM(x.n)>=300 ORDER BY SUM(x.n) DESC FOR JSON PATH) ops
+FROM (SELECT DATEADD(day, -((DATEPART(weekday,GETDATE())+@@DATEFIRST-2)%7), CAST(GETDATE() AS date)) mon) m
+
+-- @J capacity — same-day dispatch (Kapaciteti & Stafi): the last 8 full weeks. Ready = the order's last item in the
+--    warehouse (order created, or the last cross-dock unit reserved for it — LogType 3, matched per unit); out = the
+--    first check-out scan (27). Cut-off 17:30 = no inbound after that, so ready by 17:30 should leave the same day.
+SELECT /*pulse:J*/
+ (SELECT wk, MIN(CONVERT(varchar(10),d,23)) d1, COUNT(*) n, SUM(bc) rb, SUM(CASE WHEN bc=1 AND dd=0 THEN 1 ELSE 0 END) rbSame, SUM(CASE WHEN bc=1 AND dd=1 THEN 1 ELSE 0 END) rbNext,
+    SUM(CASE WHEN bc=1 AND dd>=2 THEN 1 ELSE 0 END) rbLater, SUM(xd) xdo, SUM(u) units, MAX(p50) whP50, MAX(p90) whP90
+  FROM (SELECT DATEPART(iso_week,r) wk, CAST(r AS date) d, CASE WHEN CAST(r AS time)<='17:30' THEN 1 ELSE 0 END bc, DATEDIFF(day,CAST(r AS date),CAST(c1 AS date)) dd, xd, u,
+     PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY DATEDIFF(minute,r,c1)) OVER (PARTITION BY DATEPART(iso_week,r)) p50,
+     PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY DATEDIFF(minute,r,c1)) OVER (PARTITION BY DATEPART(iso_week,r)) p90 FROM (
+     SELECT k.c1, k.u, CASE WHEN a.l3 IS NOT NULL THEN 1 ELSE 0 END xd, CASE WHEN a.l3>DATEADD(minute,z.tz,o.CreatedOnUtc) THEN a.l3 ELSE DATEADD(minute,z.tz,o.CreatedOnUtc) END r
+     FROM (SELECT OrderId, PlatformId, MIN(InsertDateTime) c1, COUNT(DISTINCT ProductItemUniqueIdentifierId) u FROM ProductLogs WITH (NOLOCK)
+           WHERE LogTypeId=27 AND OrderId>0 AND InsertDateTime>=DATEADD(day,-7,DATEADD(week,-8,m.mon)) GROUP BY OrderId, PlatformId) k
+     JOIN Orders o ON o.OrderId=k.OrderId AND o.PlatformId=k.PlatformId AND o.WarehouseId=1
+     LEFT JOIN (SELECT k2.OrderId, k2.PlatformId, MAX(x3.InsertDateTime) l3 FROM
+          (SELECT DISTINCT OrderId, PlatformId, ProductItemUniqueIdentifierId uid FROM ProductLogs WITH (NOLOCK)
+           WHERE LogTypeId=27 AND OrderId>0 AND InsertDateTime>=DATEADD(day,-7,DATEADD(week,-8,m.mon))) k2
+          JOIN ProductLogs x3 WITH (NOLOCK) ON x3.ProductItemUniqueIdentifierId=k2.uid AND x3.LogTypeId=3 AND x3.OrderId=k2.OrderId
+          GROUP BY k2.OrderId, k2.PlatformId) a ON a.OrderId=k.OrderId AND a.PlatformId=k.PlatformId) y
+    WHERE r>=DATEADD(week,-8,m.mon) AND r<m.mon AND c1>=r) q
+  GROUP BY wk ORDER BY MIN(d) FOR JSON PATH) sameDay
+FROM (SELECT DATEADD(day, -((DATEPART(weekday,GETDATE())+@@DATEFIRST-2)%7), CAST(GETDATE() AS date)) mon) m
+CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central European Standard Time') tz) z

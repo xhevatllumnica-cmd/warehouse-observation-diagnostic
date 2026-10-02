@@ -443,6 +443,7 @@ const ROUTES = [
   {sec:'People'},
   {id:'matrix', title:'Staff Capability Matrix', ic:'▦', render:renderMatrix},
   {id:'staffobs', title:'Staff Observation Log', ic:'📝', render:renderStaffObs},
+  {id:'capacity', title:'Kapaciteti & Stafi', ic:'👥', render:renderCapacity},
   {sec:'Diagnose'},
   {id:'problems', title:'Bottleneck Register', ic:'⚠', render:renderProblems},
   {id:'kpi', title:'KPI Baseline', ic:'📊', render:renderKPI},
