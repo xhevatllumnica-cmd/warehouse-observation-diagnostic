@@ -437,6 +437,7 @@ const ROUTES = [
   {sec:'Flows'},
   {id:'orders', title:'Order Flow', ic:'➜', render:renderOrders},
   {id:'inbound', title:'Product / Inbound Flow', ic:'⇩', render:renderInbound},
+  {id:'pod', title:'POD — Proof of Delivery', ic:'🚚', render:renderPod},
   {id:'maps', title:'Process Maps', ic:'🗺', render:renderMaps},
   {id:'flows', title:'Actual Process Flow', ic:'🔀', render:renderActualFlows},
   {sec:'People'},

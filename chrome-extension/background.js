@@ -18,11 +18,12 @@ async function cookieHeaderFor(hosts) {
   const mine = all.filter(c => hosts.includes((c.domain || '').replace(/^\./, '')));
   return mine.map(c => c.name + '=' + c.value).join('; ');
 }
-/* logged in = an auth ticket is present (.AspNet.Cookies, possibly chunked into .AspNet.CookiesC1..n).
+/* logged in = an auth ticket is present: .AspNet.Cookies (ASP.NET) or .AspNetCore.Cookies (ASP.NET Core — the
+   Delivery Platform since 10/2026), possibly chunked into …C1..n with the base cookie holding just "chunks-n".
    A leftover OpenIdConnect.nonce cookie is normal after a successful login and must NOT disqualify. */
 function looksLoggedIn(header) {
-  const m = header.match(/(?:^|;\s*)\.AspNet\.Cookies=([^;]*)/);
-  const chunked = /\.AspNet\.CookiesC\d+=/.test(header);
+  const m = header.match(/(?:^|;\s*)\.AspNet(?:Core)?\.Cookies=([^;]*)/);
+  const chunked = /\.AspNet(?:Core)?\.CookiesC\d+=/.test(header);
   return !!(m && (m[1].length >= 200 || chunked));
 }
 function describe(header) {   // names + value lengths only — never the values

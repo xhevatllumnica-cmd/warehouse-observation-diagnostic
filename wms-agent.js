@@ -571,6 +571,53 @@ async function fetchPodLogs(startIso,endIso,opts){
   return {rows:j.data||[], total:Number(j.recordsFiltered)||0};
 }
 
+/* --- POD (Proof of Delivery) — Delivery Platform, read-only -----------------------------------------
+   A "delivery" is one courier's batch for a day (POST /Delivery/FilterDeliveries); its orders come from
+   POST /Delivery/FilterDeliveryItems, one delivery at a time (an all-deliveries query returns 500). These are the
+   list reads the platform's own POD pages use — the write endpoints (ChangeOrdersStatus, ChangePOD, manual POD,
+   AcceptDelivery …) are never called. Customer data (name, phone, e-mail, address, signature, comments, notes,
+   customer id, logs) is dropped right here: only the fields below ever leave this function. */
+const POD_ITEM_FIELDS=['orderId','platformId','platform','type','deliveryDate','deliveredDate','insertedInPodDate','createDateTime','shippingDate',
+  'paymentMethod','price','totalPrice','cashAccepted','isPaid','processStatus','processStatusFundReceived','processStatusRefused','deliveryItemStatus',
+  'itemDeliveryStatusId','orderStatus','driverName','packages','numberOfDaysToDeliverOrder','moreThan24HNePoste','moreThan24HENisur','reviewScore',
+  'isStarterKit','pickUpInStore','city'];
+const dtCols=n=>Array.from({length:n},()=>({data:'',name:'',searchable:true,orderable:false,search:{value:'',regex:false}}));
+const podCache={}, podInflight={};
+async function deliveryPostJson(pathname, params){
+  const r=await deliveryFetch(pathname,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:enc(params).join('&')});
+  if(deliveryLooksLoggedOut(r)) return {error:'auth_expired'};
+  if(r.status!==200) return {error:'HTTP '+r.status};
+  try{ return JSON.parse(r.body); }catch(e){ return {error:'bad_response'}; }
+}
+async function fetchPodDay(iso){
+  const ttl= iso>=isoToday()? 5*60000 : 6*3600000, c=podCache[iso];
+  if(c && Date.now()-c.t<ttl) return c.v;
+  if(podInflight[iso]) return podInflight[iso];
+  return podInflight[iso]=(async()=>{ try{
+    const base={draw:1, start:0, length:999, search:{value:'',regex:false}, order:[{column:0,dir:'desc'}], columns:dtCols(6)};
+    const d=await deliveryPostJson('/Delivery/FilterDeliveries', Object.assign({}, base, {filters:{driverId:'', deliveryStatusId:'0', startDate:iso, endDate:iso}}));
+    if(d.error) return d;
+    const deliveries=(d.data||[]).map(x=>({id:x.id, uid:x.deliveryUniqueId, driver:x.driver, statusId:x.deliveryStatusId, status:x.deliveryStatus,
+      date:x.deliveryDate, pod:x.podCloseTime, group:x.group||''}));
+    const items=[], failed=[];
+    for(let i=0;i<deliveries.length;i+=4){
+      await Promise.all(deliveries.slice(i,i+4).map(async dl=>{
+        const r=await deliveryPostJson('/Delivery/FilterDeliveryItems', Object.assign({}, base, {deliveryId:String(dl.id), order:[{column:1,dir:'desc'}], columns:dtCols(17),
+          filters:{startDate:iso, endDate:iso, processStatus:'', platformId:'', onlyOrders:false, deliveredStartDate:'', deliveredEndDate:'', deliveredStatus:''}}));
+        if(r.error){ failed.push(dl.id); return; }
+        (r.data||[]).forEach(x=>{ const o={deliveryId:dl.id};
+          // the platform writes "no date" as 0001-01-01T00:00:00
+          POD_ITEM_FIELDS.forEach(k=>{ if(x[k]!==undefined) o[k]= typeof x[k]==='string' && x[k].startsWith('0001-01-01')? null : x[k]; });
+          const di=x.deliveryItems||{}; o.packagesTotal=di.numberOfPackages; o.packagesScanned=di.numberOfPackagesScanned; o.itemProcessStatusId=di.itemProcessStatusId;
+          items.push(o); });
+      }));
+    }
+    const v={date:iso, at:new Date().toISOString(), deliveries, items, failed};
+    if(!failed.length) podCache[iso]={t:Date.now(), v};
+    return v;
+  } finally { delete podInflight[iso]; } })();
+}
+
 /* --- shared database (wods-db.json) ------------------------------------------
    One canonical copy of the app database for every browser on this machine. The
    app pulls it at boot, pushes on every save (with an optimistic-concurrency
@@ -923,22 +970,33 @@ http.createServer(async (req,resp)=>{
       let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
       const raw=cleanCookieString(body&&body.cookie);
       const jar={}; parseIntoJarInto(jar, raw);
-      if(!Object.keys(jar).length) return json(400,{error:'Cookie bosh ose i pavlefshëm.'});
+      // diagnostics: cookie names + value lengths only, never the values
+      const dpNames=Object.keys(jar).map(n=>n.replace(/^(OpenIdConnect\.nonce)\..*$/,'$1…')+'('+String(jar[n]).length+')').join(', ')||'(asnjë)';
+      const dpLog=msg=>console.log('[wms-agent] '+new Date().toLocaleTimeString()+' Delivery-Platform cookie from '+((body&&body.source)||'?')+': '+msg+' — cookies: '+dpNames);
+      if(!Object.keys(jar).length){ dpLog('rejected, empty'); return json(400,{error:'Cookie bosh ose i pavlefshëm.'}); }
       // GetPodLogs can legitimately return an empty result set (200 OK, recordsFiltered:0) for an
       // UNAUTHENTICATED request too (seen live, 2026-09-24: a "gjs"-only cookie, no real login ticket,
       // was silently accepted this way) — so "no error from the query" alone is not proof of a real
       // session. Require the actual auth ticket to be present first, same check the extension itself
       // uses to decide "am I logged in" before it ever sends anything.
-      const hasTicket = /(?:^|;\s*)\.AspNet\.Cookies=([^;]{200,})/.test(raw) || /\.AspNet\.CookiesC\d+=/.test(raw);
-      if(!hasTicket) return json(400,{error:'Cookie-ja s\'përmban një biletë login-i të vlefshme (".AspNet.Cookies", ~200+ shkronja) për Delivery Platform-in — vetëm cookie ndihmëse (si "gjs") u gjet. Kyçu plotësisht në deliveryplatform.gjirafamall.com dhe kopjo/rifresko sërish.'});
+      // ASP.NET (.AspNet.Cookies) or ASP.NET Core (.AspNetCore.Cookies — the platform since 10/2026), whole or chunked (…C1..n)
+      const hasTicket = /(?:^|;\s*)\.AspNet(?:Core)?\.Cookies=([^;]{200,})/.test(raw) || /\.AspNet(?:Core)?\.CookiesC\d+=/.test(raw);
+      if(!hasTicket){ dpLog('rejected, no .AspNet(Core).Cookies login ticket'); return json(400,{error:'Cookie-ja s\'përmban një biletë login-i të vlefshme (".AspNet.Cookies", ~200+ shkronja) për Delivery Platform-in — vetëm cookie ndihmëse (si "gjs") u gjet. Kyçu plotësisht në deliveryplatform.gjirafamall.com dhe kopjo/rifresko sërish.'}); }
       const prevJar=deliveryCookieJar; deliveryCookieJar=jar; deliverySessionExpired=false;
       const t=await fetchPodLogs(isoAddDays(isoToday(),-7), isoToday(), {length:1});
-      if(t.error){ deliveryCookieJar=prevJar; deliverySessionExpired=true; return json(401,{error:'Delivery Platform e refuzon këtë cookie (login i skaduar ose i kopjuar gabim).'}); }
+      if(t.error){ deliveryCookieJar=prevJar; deliverySessionExpired=true; dpLog('rejected by the platform ('+t.error+')'); return json(401,{error:'Delivery Platform e refuzon këtë cookie (login i skaduar ose i kopjuar gabim).'}); }
       persistDeliveryCookie();
       console.log('[wms-agent] '+new Date().toLocaleTimeString()+' new Delivery-Platform cookie accepted ('+deliveryCookieHeader().length+' chars).');
       return json(200,{ok:true});
     }
     if(q.pathname==='/delivery/health'){ return json(200,{sessionExpired:deliverySessionExpired, hasCookie:!!deliveryCookieHeader()}); }
+    if(q.pathname==='/delivery/pod'){   // POD for one day (no customer data) — same-origin only, no CORS header
+      const date=q.query.date||isoToday();
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date) || date>isoToday()) return json(400,{error:'Data duhet YYYY-MM-DD dhe jo në të ardhmen.'});
+      const r=await fetchPodDay(date);
+      resp.writeHead(r.error?(r.error==='auth_expired'?401:502):200, {'Content-Type':'application/json','Cache-Control':'no-store'});
+      return resp.end(JSON.stringify(r));
+    }
     if(q.pathname==='/delivery/podlogs'){
       const start=q.query.start || isoAddDays(isoToday(),-7);
       const end=q.query.end || isoToday();
