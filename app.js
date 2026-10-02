@@ -1460,11 +1460,14 @@ function renderInbound(v){
   v.innerHTML = pagehead('Product / Inbound Flow',
     'Track a product or batch through Arrival → Receiving → Check-in → Verification → Mapping → Put-away → Storage. Records discrepancies and compares system vs physical location.',
     `<button class="btn primary" id="addProd">＋ New batch</button>`)
+    + inboundWmsHTML()
+    + `<h3 style="margin:18px 0 8px">Vëzhgime manuale <span class="sub">batch-e të regjistruara me dorë dhe vëzhgime fizike mbi furnizimet e WMS-it</span></h3>`
     + `<div id="inbBody"></div>`;
   $('#addProd').onclick=()=>openProdForm();
+  loadInboundWms();
   drawInbound();
 }
-function openProdForm(existing){
+function openProdForm(existing, prefill){
   const fields=[
     {name:'sku',label:'SKU',type:'text',required:true,row:'a'},
     {name:'desc',label:'Description',type:'text',row:'a'},
@@ -1481,11 +1484,11 @@ function openProdForm(existing){
     {name:'discrepancy',label:'Discrepancy',type:'select',options:DISCREPANCIES},
     {name:'note',label:'Note',type:'text'},
   ];
-  openForm({title:existing?'Edit batch':'New inbound batch', fields, values:existing||{date:todayStr()},
+  openForm({title:existing?'Edit batch':(prefill&&prefill.wmsId?'Vëzhgim fizik · furnizimi '+prefill.wmsId:'New inbound batch'), fields, values:existing||prefill||{date:todayStr()},
     onSave:(vals)=>{
       if(existing) Store.update('products',existing.id,vals);
-      else Store.insert('products',{...vals, stamps:{}});
-      closeModal(); drawInbound(); toast('Batch saved');
+      else Store.insert('products',{...vals, stamps:{}, ...(prefill&&prefill.wmsId?{wmsId:prefill.wmsId}:{})});
+      closeModal(); drawInbound(); if(typeof drawInboundWms==='function') drawInboundWms(); toast('Batch saved');
     }});
 }
 function drawInbound(){
@@ -1513,7 +1516,7 @@ function inboundCard(p){
   const isCross = p.handling && p.handling.startsWith('Cross-dock');
   const hBadge = p.handling? `<span class="badge ${isCross?'b-new':(p.handling.startsWith('Staged')?'b-warn':'b-muted')}">${h(p.handling)}</span>`:'';
   return `<div class="card" style="margin-bottom:14px">
-    <h3>📦 ${h(p.sku)} <span class="sub">${h(p.desc||'')} · ${h(p.date)}</span></h3>
+    <h3>📦 ${h(p.sku)} <span class="sub">${h(p.desc||'')} · ${h(p.date)}</span>${p.wmsId?` <span class="badge b-muted" title="Vëzhgim fizik mbi një furnizim të WMS-it">WMS ${h(p.wmsId)}</span>`:''}</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       ${p.seller?`<span class="small muted">🏷 ${h(p.seller)}</span>`:''} ${hBadge} ${p.orderRef?`<span class="small muted">→ order ${h(p.orderRef)}</span>`:''}
     </div>

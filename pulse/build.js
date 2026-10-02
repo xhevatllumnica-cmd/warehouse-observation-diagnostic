@@ -10,7 +10,7 @@
    Both outputs contain worker e-mails and pay → git-ignored, local only. */
 'use strict';
 const fs=require('fs'), path=require('path'), os=require('os');
-const DIR=__dirname, RAW=path.join(DIR,'raw'), GROUPS=['A','B','C','D','E'];
+const DIR=__dirname, RAW=path.join(DIR,'raw'), GROUPS=['A','B','C','D','E'], OPTIONAL=['F'];   // F = inbound batches (Product / Inbound Flow)
 const args=process.argv.slice(2), flag=f=>args.includes(f), opt=(f,d)=>{ const i=args.indexOf(f); return i>=0? args[i+1] : d; };
 
 function fromTranscripts(maxAgeMin){
@@ -23,9 +23,12 @@ function fromTranscripts(maxAgeMin){
     for(const line of fs.readFileSync(fp,'utf8').split('\n')){ if(!line) continue; let o; try{ o=JSON.parse(line); }catch(e){ continue; }
       const c=o.message&&o.message.content; if(!Array.isArray(c)) continue;
       for(const b of c){
-        if(b.type==='tool_use' && /queryWMSDb/.test(b.name||'')){ const m=/\/\*pulse:([A-E])\*\//.exec((b.input&&b.input.query)||''); if(m) uses[b.id]={g:m[1], ts:Date.parse(o.timestamp)||0}; }
-        if(b.type==='tool_result' && uses[b.tool_use_id] && !b.is_error){
-          const u=uses[b.tool_use_id], t=Array.isArray(b.content)? b.content.map(x=>x.text||'').join('') : String(b.content||'');
+        if(b.type==='tool_use' && /queryWMSDb/.test(b.name||'')){ const m=/\/\*pulse:([A-F])\*\//.exec((b.input&&b.input.query)||''); if(m) uses[b.id]={g:m[1], ts:Date.parse(o.timestamp)||0}; }
+        if(b.type==='tool_result' && uses[b.tool_use_id]){
+          const u=uses[b.tool_use_id]; let t=Array.isArray(b.content)? b.content.map(x=>x.text||'').join('') : String(b.content||'');
+          // a large result is not inlined: Claude Code saves it to a file and the tool result names that file
+          const saved=/saved to (\S+?\.txt)/.exec(t);
+          if(saved){ try{ t=fs.readFileSync(saved[1],'utf8'); }catch(e){ continue; } } else if(b.is_error) continue;
           let j; try{ j=JSON.parse(t); }catch(e){ continue; }
           const row=j.rows&&j.rows[0]; if(!row) continue;
           if(!found[u.g] || found[u.g].ts<u.ts) found[u.g]={ts:u.ts, row};
@@ -36,9 +39,9 @@ function fromTranscripts(maxAgeMin){
 let rows={};
 if(flag('--from-transcripts')){
   const f=fromTranscripts(+opt('--max-age',90));
-  GROUPS.forEach(g=>{ if(f[g]){ rows[g]=f[g].row; fs.mkdirSync(RAW,{recursive:true}); fs.writeFileSync(path.join(RAW,g+'.json'), JSON.stringify(f[g].row)); } });
+  GROUPS.concat(OPTIONAL).forEach(g=>{ if(f[g]){ rows[g]=f[g].row; rows[g]._at=new Date(f[g].ts).toISOString(); fs.mkdirSync(RAW,{recursive:true}); fs.writeFileSync(path.join(RAW,g+'.json'), JSON.stringify(f[g].row)); } });
 }
-GROUPS.forEach(g=>{ if(!rows[g]){ const p=path.join(RAW,g+'.json'); if(fs.existsSync(p)) rows[g]=JSON.parse(fs.readFileSync(p,'utf8')); } });
+GROUPS.concat(OPTIONAL).forEach(g=>{ if(!rows[g]){ const p=path.join(RAW,g+'.json'); if(fs.existsSync(p)) rows[g]=JSON.parse(fs.readFileSync(p,'utf8')); } });
 const missing=GROUPS.filter(g=>!rows[g]); if(missing.length){ console.error('Missing query results for groups: '+missing.join(', ')); process.exit(2); }
 const J=v=> v==null? [] : typeof v==='string'? JSON.parse(v) : v;
 const A=rows.A, B=rows.B, C=rows.C, Dd=rows.D, E=rows.E;
@@ -83,7 +86,10 @@ const pick=J(E.pick).map(r=>[r.n, r.s, r.m, r.o, r.sc, r.rq]);
 const st=J(E.st).map(r=>[r.nm, r.ci, r.co, r.pa, r.ps]);
 const inv=J(E.inv).map(r=>[r.m, r.n, r.s3, r.s1, r.qbo]);
 
-const data={ version:1, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
+// inbound batches (block F, optional): kept as the query's compact objects — rendered by the app's Inbound Flow page
+const inb=rows.F? J(rows.F.inb) : null, inbDaily=rows.F? J(rows.F.inbDaily) : null;
+
+const data={ version:1, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
   D:{week, bands, hour, pay, period, rates, daily, o2c, upo, status, state, dwell, sect, insp, diff, sup, car, pick, st, inv},
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };
@@ -91,4 +97,5 @@ fs.writeFileSync(path.join(DIR,'data.json'), JSON.stringify(data));
 const tpl=fs.readFileSync(path.join(DIR,'template.html'),'utf8');
 const embedded=JSON.stringify(data).replace(/</g,'\\u003c');
 fs.writeFileSync(path.join(DIR,'wms-pulse.html'), tpl.replace('<script id="pulse-data">window.PULSE=null;</script>', ()=>'<script id="pulse-data">window.PULSE='+embedded+';</script>'));
-console.log('WMS Pulse built: data from '+data.generatedAt+' · '+week.length+' workers (7d) · '+bands.length+' (30d) · avg '+r1(avg)+' sd '+r1(sd)+' → pulse/data.json, pulse/wms-pulse.html');
+console.log('WMS Pulse built: data from '+data.generatedAt+' · '+week.length+' workers (7d) · '+bands.length+' (30d) · avg '+r1(avg)+' sd '+r1(sd)
+  +' · inbound '+(inb? inb.length+' batches' : 'not included (block F missing)')+' → pulse/data.json, pulse/wms-pulse.html');

@@ -112,3 +112,49 @@ SELECT /*pulse:E*/
   FROM Stations st WHERE st.WarehouseId=1 AND st.Id<>13 ORDER BY st.Name FOR JSON PATH) st,
  (SELECT CONVERT(varchar(7), InsertDateTime, 126) m, COUNT(*) n, SUM(CASE WHEN StatusId=3 THEN 1 ELSE 0 END) s3, SUM(CASE WHEN StatusId=1 THEN 1 ELSE 0 END) s1, SUM(CASE WHEN SentToQbo=1 THEN 1 ELSE 0 END) qbo
   FROM Invoices WHERE InsertDateTime >= DATEADD(month,-5,DATEFROMPARTS(YEAR(GETDATE()),MONTH(GETDATE()),1)) GROUP BY CONVERT(varchar(7), InsertDateTime, 126) ORDER BY 1 FOR JSON PATH) inv
+
+-- @F inbound batches (Product / Inbound Flow): every supply of warehouse 01 from yesterday and today, plus older ones
+--    (≤14 days) that still have units waiting to be mapped. Stages: arrival = invoice registered (or the truck's actual
+--    arrival when the invoice belongs to a shipment) → receiving = supply opened → check-in (LogType 2) → mapping
+--    (LogType 7) → system update = supply closed (status 3 "Done"). Cross-dock = the unit went to an order (LogType 3)
+--    before any mapping. Times are 'yyyy-mm-dd hh:mi' local.
+SELECT /*pulse:F*/
+ (SELECT s.SupplyUniqueName id, s.StoreId st, s.SupplyStatusId ss, CAST(s.IsFastLane AS int) fl, CAST(s.IsStarterKit AS int) sk,
+    CONVERT(varchar(16),s.InsertDateTime,120) rcv, CASE WHEN s.SupplyStatusId=3 THEN CONVERT(varchar(16),s.UpdateDateTime,120) END dn,
+    iv.inv, iv.ia, iv.arr, iv.ex, ISNULL(u.n,0) n, u.k, u.c1, u.c2, u.m1, u.m2, u.xd, u.mp, u.aw, u.o, u.cm, u.cc, u.im,
+    (SELECT TOP 1 se.SectionName FROM ProductCheckIns c2 JOIN Rows r ON r.Id=c2.RowId JOIN Shelves sh ON sh.Id=r.ShelfId JOIN Sections se ON se.Id=sh.SectionId
+      WHERE c2.SupplyUniqueId=s.SupplyUniqueName AND c2.StatusId=7 GROUP BY se.SectionName ORDER BY COUNT(*) DESC) sec,
+    (SELECT TOP 1 LEFT(gp.Name,48) FROM ProductCheckIns c3 JOIN GjirafaMall_Products gp ON gp.ProductId=c3.ProductId
+      WHERE c3.SupplyUniqueId=s.SupplyUniqueName GROUP BY gp.Name ORDER BY COUNT(*) DESC) pn,
+    (SELECT TOP 1 c5.ProductCode FROM ProductCheckIns c5 WHERE c5.SupplyUniqueId=s.SupplyUniqueName GROUP BY c5.ProductCode ORDER BY COUNT(*) DESC) cd,
+    (SELECT COUNT(*) FROM NotFoundProducts nf WHERE nf.InsertDateTime>=s.InsertDateTime
+      AND nf.ProductCode IN (SELECT c4.ProductCode FROM ProductCheckIns c4 WHERE c4.SupplyUniqueId=s.SupplyUniqueName)) nf
+  FROM Supplies s
+  LEFT JOIN (SELECT c.SupplyUniqueId sid, COUNT(*) n, COUNT(DISTINCT c.ProductCode) k,
+      CONVERT(varchar(16),MIN(x.f2),120) c1, CONVERT(varchar(16),MAX(x.l2),120) c2, CONVERT(varchar(16),MIN(x.f7),120) m1, CONVERT(varchar(16),MAX(x.l7),120) m2,
+      SUM(CASE WHEN x.f3 IS NOT NULL AND (x.f7 IS NULL OR x.f3<x.f7) THEN 1 ELSE 0 END) xd, SUM(CASE WHEN x.f7 IS NOT NULL THEN 1 ELSE 0 END) mp,
+      SUM(CASE WHEN c.StatusId=6 THEN 1 ELSE 0 END) aw, COUNT(DISTINCT CASE WHEN x.f3 IS NOT NULL AND c.OrderId>0 THEN c.OrderId END) o,
+      AVG(CASE WHEN x.f7>x.f2 THEN DATEDIFF(minute,x.f2,x.f7) END) cm,
+      SUM(CASE WHEN pc.uid IS NOT NULL THEN 1 ELSE 0 END) cc, SUM(CASE WHEN ip.uid IS NOT NULL THEN 1 ELSE 0 END) im
+    FROM ProductCheckIns c
+    LEFT JOIN (SELECT ProductItemUniqueIdentifierId uid, MIN(CASE WHEN LogTypeId=2 THEN InsertDateTime END) f2, MAX(CASE WHEN LogTypeId=2 THEN InsertDateTime END) l2,
+         MIN(CASE WHEN LogTypeId=3 THEN InsertDateTime END) f3, MIN(CASE WHEN LogTypeId=7 THEN InsertDateTime END) f7, MAX(CASE WHEN LogTypeId=7 THEN InsertDateTime END) l7
+       FROM ProductLogs WHERE LogTypeId IN (2,3,7) AND InsertDateTime>=DATEADD(day,-14,CAST(GETDATE() AS date)) GROUP BY ProductItemUniqueIdentifierId) x ON x.uid=c.ProductItemUniqueIdentifier
+    LEFT JOIN (SELECT DISTINCT ProductItemUniqueIdentifier uid FROM ProductCodeLogs WHERE InsertDateTime>=DATEADD(day,-14,CAST(GETDATE() AS date))) pc ON pc.uid=c.ProductItemUniqueIdentifier
+    LEFT JOIN (SELECT DISTINCT p.ProductUniqueId uid FROM InspectedProducts p JOIN ProductCheckIns q ON q.ProductItemUniqueIdentifier=p.ProductUniqueId
+       WHERE p.InsertDateTime>=DATEADD(day,-14,CAST(GETDATE() AS date)) AND p.RowId<>q.RowId AND q.StatusId=7) ip ON ip.uid=c.ProductItemUniqueIdentifier
+    WHERE c.WarehouseId=1 AND c.InsertDateTime>=DATEADD(day,-14,CAST(GETDATE() AS date)) GROUP BY c.SupplyUniqueId) u ON u.sid=s.SupplyUniqueName
+  LEFT JOIN (SELECT m.SupplyUniqueId sid, MIN(LTRIM(RTRIM(i.InvoiceNumber))) inv, CONVERT(varchar(16),MIN(i.InsertDateTime),120) ia, CONVERT(varchar(16),MIN(sd.ActualArrivalDate),120) arr, SUM(ipc.n) ex
+    FROM Supply_Invoice_Mapping m JOIN Invoices i ON i.InvoiceUniqueId=m.InvoiceNo LEFT JOIN ShipmentDestinations sd ON sd.Id=i.ShipmentDestinationId
+    LEFT JOIN (SELECT InvoiceUniqueName, COUNT(*) n FROM InvoiceProducts WHERE InsertDateTime>=DATEADD(day,-21,CAST(GETDATE() AS date)) GROUP BY InvoiceUniqueName) ipc ON ipc.InvoiceUniqueName=m.InvoiceNo
+    WHERE m.InsertDateTime>=DATEADD(day,-15,CAST(GETDATE() AS date)) GROUP BY m.SupplyUniqueId) iv ON iv.sid=s.SupplyUniqueName
+  WHERE s.WarehouseId=1 AND (s.InsertDateTime >= DATEADD(day,-1,CAST(GETDATE() AS date)) OR (s.InsertDateTime >= DATEADD(day,-14,CAST(GETDATE() AS date)) AND u.aw>0))
+  ORDER BY s.InsertDateTime DESC FOR JSON PATH, INCLUDE_NULL_VALUES) inb,
+ (SELECT CONVERT(varchar(10),d,120) d, COUNT(*) s, SUM(n) n, SUM(xd) xd, SUM(mp) mp, SUM(aw) aw, AVG(cm) cm FROM (
+    SELECT CAST(s.InsertDateTime AS date) d, COUNT(*) n, SUM(CASE WHEN x.f3 IS NOT NULL AND (x.f7 IS NULL OR x.f3<x.f7) THEN 1 ELSE 0 END) xd,
+      SUM(CASE WHEN x.f7 IS NOT NULL THEN 1 ELSE 0 END) mp, SUM(CASE WHEN c.StatusId=6 THEN 1 ELSE 0 END) aw, AVG(CASE WHEN x.f7>x.f2 THEN DATEDIFF(minute,x.f2,x.f7) END) cm
+    FROM Supplies s JOIN ProductCheckIns c ON c.SupplyUniqueId=s.SupplyUniqueName AND c.WarehouseId=1
+    LEFT JOIN (SELECT ProductItemUniqueIdentifierId uid, MIN(CASE WHEN LogTypeId=2 THEN InsertDateTime END) f2, MIN(CASE WHEN LogTypeId=3 THEN InsertDateTime END) f3, MIN(CASE WHEN LogTypeId=7 THEN InsertDateTime END) f7
+       FROM ProductLogs WHERE LogTypeId IN (2,3,7) AND InsertDateTime>=DATEADD(day,-14,CAST(GETDATE() AS date)) GROUP BY ProductItemUniqueIdentifierId) x ON x.uid=c.ProductItemUniqueIdentifier
+    WHERE s.WarehouseId=1 AND s.InsertDateTime>=DATEADD(day,-13,CAST(GETDATE() AS date)) GROUP BY CAST(s.InsertDateTime AS date), s.SupplyUniqueName) y
+  GROUP BY d ORDER BY d FOR JSON PATH) inbDaily
