@@ -97,6 +97,17 @@ export const RULES = {
   maxOffDaysPerMonth: 4,
 } as const;
 
+/** Pozitat standarde të depos — hapat e procesit në WMS (shtohen me një klikim te Pozitat). */
+export const DEFAULT_POSITIONS = [
+  { name: "Check-in", description: "Pranimi i mallit dhe skanimi në hyrje", color: "#3b82f6" },
+  { name: "Mapim", description: "Vendosja e produkteve në raft (lokacion)", color: "#10b981" },
+  { name: "Picking", description: "Mbledhja e produkteve për porosi", color: "#f59e0b" },
+  { name: "Check-out", description: "Kontrolli, paketimi dhe dalja e porosive", color: "#8b5cf6" },
+  { name: "Inventar", description: "Numërimi dhe kontrolli i stokut", color: "#14b8a6" },
+  { name: "Kthime", description: "Pranimi dhe trajtimi i produkteve të kthyera", color: "#ec4899" },
+  { name: "Supervizor", description: "Koordinimi i ndërrimit", color: "#64748b" },
+] as const;
+
 /** Paleta e ngjyrave që ofrohet kur krijohet një punonjës. */
 export const EMPLOYEE_COLORS = [
   "#ef4444",

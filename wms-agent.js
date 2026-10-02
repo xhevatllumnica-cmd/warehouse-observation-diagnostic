@@ -806,6 +806,52 @@ async function chatTick(){
 setInterval(chatTick, 60*1000);
 setTimeout(chatTick, 15000);
 
+/* WMS Pulse build. The scheduled Claude task only runs the read-only queries (pulse/queries.sql) — a shell step there
+   waits for an approval nobody sees and the refresh stalls. So the agent builds: when a Claude Code transcript newer
+   than pulse/data.json contains WMS Pulse query results (the /*pulse:X*\/ markers), it runs pulse/build.js, which
+   reads those results and writes data.json + wms-pulse.html. Same machine, nothing leaves it. */
+const PULSE_DATA=path.join(APPDIR,'pulse','data.json'), CLAUDE_PROJECTS=path.join(require('os').homedir(),'.claude','projects');
+let pulseBuilding=false, pulseState={lastBuild:null, lastError:null, lastCheck:null};
+function pulseNewResults(){
+  let since=0; try{ since=fs.statSync(PULSE_DATA).mtimeMs; }catch(e){}
+  const cutoff=Math.max(since, Date.now()-90*60000);
+  let dirs=[]; try{ dirs=fs.readdirSync(CLAUDE_PROJECTS); }catch(e){ return false; }
+  for(const d of dirs){ const p=path.join(CLAUDE_PROJECTS,d); let fl; try{ fl=fs.readdirSync(p); }catch(e){ continue; }
+    for(const f of fl){ if(!f.endsWith('.jsonl')) continue; const fp=path.join(p,f); let st; try{ st=fs.statSync(fp); }catch(e){ continue; }
+      if(st.mtimeMs<=cutoff) continue;
+      // only the tail written since the last build can hold new results
+      try{ const fd=fs.openSync(fp,'r'), len=Math.min(st.size, 8*1024*1024), buf=Buffer.alloc(len); fs.readSync(fd,buf,0,len,st.size-len); fs.closeSync(fd);
+        if(buf.includes('/*pulse:') && buf.includes('queryWMSDb')) return true; }catch(e){} } }
+  return false;
+}
+function pulseTick(){
+  if(pulseBuilding) return; pulseState.lastCheck=new Date().toISOString();
+  if(!pulseNewResults()) return;
+  pulseBuilding=true;
+  require('child_process').execFile(process.execPath, [path.join(APPDIR,'pulse','build.js'),'--from-transcripts','--max-age','90'], {cwd:APPDIR, timeout:120000, windowsHide:true}, (err, out, errOut)=>{
+    pulseBuilding=false;
+    if(err){ pulseState.lastError={at:new Date().toISOString(), error:String(errOut||err.message).trim().slice(0,300)}; console.log('[wms-agent] WMS Pulse build failed: '+pulseState.lastError.error); }
+    else { pulseState.lastBuild=new Date().toISOString(); pulseState.lastError=null; console.log('[wms-agent] '+String(out).trim().split('\n').pop()); }
+  });
+}
+setInterval(pulseTick, 2*60*1000);
+setTimeout(pulseTick, 20000);
+
+/* Orari i Warehouse (warehouse-schedule/, the schedule editor) → the plan used by the shift stats, Kapaciteti & Stafi and
+   Insights. Read-only: its monthly Excel export for the previous, current and next month, every 15 min and on demand. */
+const scheduleAppUrl=()=> String(cfg.scheduleAppUrl||'http://localhost:3000').replace(/\/+$/,'');
+let scheduleSyncing=null;
+function scheduleSync(){
+  if(scheduleSyncing) return scheduleSyncing;
+  scheduleSyncing=shiftSchedule.syncFromApp(scheduleAppUrl()).then(r=>{
+    if(r.ok) console.log('[wms-agent] schedule synced from Orari i Warehouse: '+r.months.map(m=>m.m+'/'+m.y+(m.days?' '+m.days+'d':m.empty?' –':' '+m.error)).join(', ')+(r.unmapped.length?' · pa përputhje: '+r.unmapped.join(', '):''));
+    return r;
+  }).catch(e=>({ok:false, error:e.message})).finally(()=>{ scheduleSyncing=null; });
+  return scheduleSyncing;
+}
+setInterval(scheduleSync, 15*60*1000);
+setTimeout(scheduleSync, 30000);
+
 const CT={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.md':'text/markdown; charset=utf-8','.csv':'text/csv'};
 http.createServer(async (req,resp)=>{
   const q=url.parse(req.url,true);
@@ -913,7 +959,12 @@ http.createServer(async (req,resp)=>{
       let b; try{ b=fs.readFileSync(path.join(APPDIR,'pulse','data.json')); }catch(e){ resp.writeHead(404,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify({error:'WMS Pulse nuk është gjeneruar ende — pritet rifreskimi i parë nga databaza.'})); }
       resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(b);
     }
-    if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, shiftSchedule.summary()); }
+    if(q.pathname==='/pulse/status'){ return json(200, Object.assign({building:pulseBuilding}, pulseState)); }
+    if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, Object.assign(shiftSchedule.summary(), {appUrl:scheduleAppUrl()})); }
+    if(q.pathname==='/schedule/sync' && req.method==='POST'){
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      const r=await scheduleSync(); return json(r.ok?200:502, Object.assign(r, {summary:shiftSchedule.summary()}));
+    }
     if(q.pathname==='/schedule/import' && req.method==='POST'){
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
       let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }

@@ -145,6 +145,7 @@ const Store = {
     // additive migration: classify existing processes for Actual Process Flow (never overwrites an existing choice)
     let migrated=false;
     (this.db.processes||[]).forEach(p=>{ if(!p.flowType){ p.flowType=defaultFlowType(p.name); migrated=true; } });
+    if(dedupeDepartments(this.db)) migrated=true;
     // one-time: drop "Arrival" — it is a starting event, not an operational process.
     if(!this.db.config) this.db.config={};
     this.db.config.migrations = this.db.config.migrations || {};
@@ -356,6 +357,24 @@ function audit(entity,recId,action,before,after){
 }
 function summarize(r){ if(!r) return ''; return r.title||r.what||r.problem||r.name||r.orderRef||r.sku||r.metric||r.id||''; }
 
+/* Departments with the same name are one department. Every browser that opened the app for the first time used to
+   seed the default list with fresh random ids, and the shared-copy merge (by id) then kept all of them — 31 rows for
+   11 names (10/2026). Runs on every load: keeps the department that other records point to (else the first), points
+   every reference (hqInteractions.departmentId) at it and tombstones the rest so no other browser brings them back. */
+function dedupeDepartments(db){
+  const deps=db.departments||[]; if(deps.length<2) return false;
+  const used=new Set((db.hqInteractions||[]).map(x=>x.departmentId).filter(Boolean));
+  const groups={}; deps.forEach(d=>{ const k=String(d.name||'').trim().toLowerCase(); (groups[k]=groups[k]||[]).push(d); });
+  const remap={}, drop=new Set();
+  Object.values(groups).forEach(g=>{ if(g.length<2) return;
+    const keep=g.find(d=>used.has(d.id)) || g[0];
+    g.forEach(d=>{ if(d!==keep){ remap[d.id]=keep.id; drop.add(d.id); } }); });
+  if(!drop.size) return false;
+  (db.hqInteractions||[]).forEach(x=>{ if(remap[x.departmentId]) x.departmentId=remap[x.departmentId]; });
+  db.deleted=db.deleted||{}; const at=nowISO(); drop.forEach(id=>{ db.deleted['departments|id|'+id]=at; });
+  db.departments=deps.filter(d=>!drop.has(d.id));
+  return true;
+}
 /* ----------------------------------------------------------------- seed data */
 function seedDB(){
   const P=(name,cat,i)=>({id:uid('prc'),name,category:cat,order:i,active:true,flowType:defaultFlowType(name)});
@@ -366,7 +385,7 @@ function seedDB(){
     ...['Refusals','Returns','Returns verification','Damaged Goods','Waste','Inventory'].map(n=>P(n,'Other',i++)),
   ];
   const departments=['Operations','Procurement','Sales','Customer Support','IT/Product','Finance','HR/BNJ','Logistics/Delivery']
-    .map(n=>({id:uid('dep'),name:n}));
+    .map(n=>({id:'dep_'+n.toLowerCase().replace(/[^a-z0-9]+/g,'-'), name:n}));   // stable ids: a second browser's seed cannot duplicate them
   // A few example employees (clearly editable) so the matrix is usable immediately.
   const employees=[
     {id:uid('emp'),name:'Employee A',role:'Operator',shift:'Day',active:true,example:true},
@@ -444,6 +463,7 @@ const ROUTES = [
   {id:'matrix', title:'Staff Capability Matrix', ic:'▦', render:renderMatrix},
   {id:'staffobs', title:'Staff Observation Log', ic:'📝', render:renderStaffObs},
   {id:'capacity', title:'Kapaciteti & Stafi', ic:'👥', render:renderCapacity},
+  {id:'orari', title:'Orari i punës', ic:'📅', render:renderOrari},
   {sec:'Diagnose'},
   {id:'problems', title:'Bottleneck Register', ic:'⚠', render:renderProblems},
   {id:'kpi', title:'KPI Baseline', ic:'📊', render:renderKPI},
@@ -2087,10 +2107,13 @@ function renderInsights(v){
   const ins=computeInsights();
   v.innerHTML = pipelineStrip('Diagnose') + pagehead('Insights & Alerts',
     'Patterns detected automatically from your data. Every insight is a <b>data-derived finding</b> and shows its evidence — none is an automatic root-cause conclusion.')
+    + wmsInsightsHTML()
+    + `<h3 style="margin:18px 0 8px">Nga të dhënat e app-it <span class="sub">matjet, vëzhgimet, problemet dhe matrica e aftësive</span></h3>`
     + (ins.length? `<div class="grid g-2">${ins.map(insightCard).join('')}</div>`
        : `<div class="card"><div class="empty">No patterns detected yet. Log more observations, measurements and capability data — insights appear automatically.</div></div>`)
     + aiQueryCard();
   wireAIQuery();
+  loadWmsInsights();
 }
 function insightCard(i){
   const lv={crit:'crit',imp:'warn',warn:'warn'}[i.level]||'';

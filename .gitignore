@@ -77,3 +77,6 @@ shift-schedule.json
 pulse/data.json
 pulse/raw/
 pulse/wms-pulse.html
+
+# local databases (Orari i Warehouse SQLite — employee data)
+data/

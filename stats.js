@@ -39,6 +39,49 @@ function renderPulse(v){
     + (wmsOnAgent()? '<iframe id="pulseFrame" src="/pulse/template.html?embed=1&theme=dark" title="WMS Pulse" style="width:100%;height:calc(100vh - 150px);min-height:600px;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></iframe>'
                    : '<div class="card"><div class="empty">Hape app-in nga http://localhost:8790.</div></div>');
 }
+/* Orari i punës — the schedule editor "Orari i Warehouse" (warehouse-schedule/, its own server on :3000) shown inside the
+   app. The agent reads its monthly Excel export every 15 min (and on "Sinkronizo tani") into the plan behind the shift
+   stats, Kapaciteti & Stafi and Insights. */
+const fmtSyncAt=iso=>{ const d=new Date(iso), p=n=>String(n).padStart(2,'0'); return isNaN(d)? iso : p(d.getDate())+'.'+p(d.getMonth()+1)+' '+p(d.getHours())+':'+p(d.getMinutes()); };
+function renderOrari(v){
+  v.innerHTML = pagehead('Orari i punës','Orari mujor i stafit të depos — editohet këtu (Orari i Warehouse). Çdo ndryshim kalon automatikisht te statistikat e ndërrimeve, Kapaciteti & Stafi dhe Insights (sinkronizim çdo 15 minuta, ose menjëherë me «Sinkronizo tani»).',
+      `<span class="no-print" style="display:flex;gap:6px"><button class="btn sm" id="orariSync">⟳ Sinkronizo tani</button><a class="btn sm ghost" id="orariOpen" target="_blank" rel="noopener">↗ Hape veç</a></span>`)
+    + (wmsOnAgent()? `<div id="orariInfo" class="small faint" style="margin:-4px 0 10px">Po lexohet statusi…</div><div id="orariBody"></div>`
+                   : '<div class="card"><div class="empty">Hape app-in nga http://localhost:8790.</div></div>');
+  if(!wmsOnAgent()) return;
+  $('#orariSync').onclick=()=>orariSync();
+  orariLoad();
+}
+function orariInfoHTML(j, msg){
+  const parts=[];
+  if(msg) parts.push(msg);
+  if(j.syncError) parts.push(`<span style="color:var(--warn)">⚠ ${h(j.syncError)}</span>`);
+  else if(j.lastSync) parts.push('Sinkronizuar: <b>'+h(fmtSyncAt(j.lastSync))+'</b>');
+  if(j.loaded) parts.push(`Plani: ${h(fmtDateAl(j.from))} → ${h(fmtDateAl(j.to))} · ${j.operators} operatorë`);
+  if(j.syncUnmapped&&j.syncUnmapped.length) parts.push(`<span style="color:var(--warn)">pa përputhje me stafin e WMS-it: ${j.syncUnmapped.map(h).join(', ')}</span>`);
+  return parts.join(' · ');
+}
+async function orariLoad(msg){
+  let j={}; try{ j=await (await fetch('/schedule',{cache:'no-store'})).json(); }catch(e){ $('#orariInfo').textContent='Agjenti s\'përgjigjet.'; return; }
+  const base=j.appUrl||'http://localhost:3000';
+  $('#orariOpen').href=base+'/orari';
+  $('#orariInfo').innerHTML=orariInfoHTML(j, msg);
+  const body=$('#orariBody'); if(!body) return;
+  // the editor runs as its own server: show it when it answers, otherwise say how to start it
+  const up=await fetch(base+'/orari',{mode:'no-cors',cache:'no-store'}).then(()=>true,()=>false);
+  if(!$('#orariBody')) return;
+  body.innerHTML= up
+    ? `<iframe id="orariFrame" src="${h(base)}/orari" title="Orari i Warehouse" style="width:100%;height:calc(100vh - 190px);min-height:600px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>`
+    : `<div class="card"><div class="empty">Editori i orarit (Orari i Warehouse) nuk po punon në ${h(base)}.<br>Plani i fundit i sinkronizuar mbetet në përdorim për statistikat.<br><span class="small">Nise me: <code>npm --prefix warehouse-schedule run dev</code> (në dosjen e projektit), pastaj rifresko këtë faqe.</span></div></div>`;
+}
+async function orariSync(){
+  const b=$('#orariSync'); if(b){ b.disabled=true; b.textContent='⟳ Po sinkronizohet…'; }
+  try{ const r=await fetch('/schedule/sync',{method:'POST'}); const j=await r.json();
+    const msg= j.ok? '✓ '+j.months.filter(m=>m.days).map(m=>m.m+'/'+m.y+': '+m.days+' ditë').join(', ') : '';
+    $('#orariInfo').innerHTML=orariInfoHTML(Object.assign({}, j.summary||{}, j.ok?{}:{syncError:j.error}), msg);
+  }catch(e){ $('#orariInfo').textContent='Sinkronizimi dështoi ('+e.message+').'; }
+  finally{ if(b){ b.disabled=false; b.textContent='⟳ Sinkronizo tani'; } }
+}
 function renderStatsWH(v){
   const shifts=Store.col('wmsShifts').filter(s=>s.active!==false);
   v.innerHTML = pagehead('Statistikat e WH','Statistikat e depos kundrejt targeteve: vëllimi dhe throughput-i, pritja për mapim, produktiviteti dhe vëzhgimet nga terreni. Burimet: WMS (log-u i eventeve) dhe të dhënat e vëzhgimeve të këtij aplikacioni.',
@@ -216,8 +259,8 @@ async function loadShiftSchedInfo(msg){
   const el=$('#shiftSchedInfo'); if(!el || !wmsOnAgent()) return;
   try{ const j=await (await fetch('/schedule',{cache:'no-store'})).json();
     el.innerHTML=(msg? msg+' · ' : '') + (j.loaded
-      ? `Orari i planifikuar: <b>${h(fmtDateAl(j.from))} → ${h(fmtDateAl(j.to))}</b> · ${j.operators} operatorë · oraret ${Object.keys(j.slots||{}).map(h).join(', ')}${j.lastFile?' · <span class="faint">'+h(j.lastFile)+'</span>':''}`
-      : 'S\'ka orar të ngarkuar — ndërrimi i secilit nxirret nga skanimet. Ngarko orarin mujor (.xlsx) për prani dhe nisje sipas planit.');
+      ? `Orari i planifikuar: <b>${h(fmtDateAl(j.from))} → ${h(fmtDateAl(j.to))}</b> · ${j.operators} operatorë · oraret ${Object.keys(j.slots||{}).map(h).join(', ')}${j.lastSync?' · <span class="faint">nga Orari i Warehouse, sinkronizuar '+h(fmtSyncAt(j.lastSync))+'</span>':j.lastFile?' · <span class="faint">'+h(j.lastFile)+'</span>':''} · <a href="#orari">✏️ Edito orarin</a>`
+      : 'S\'ka orar të ngarkuar — ndërrimi i secilit nxirret nga skanimet. Plotëso orarin te <a href="#orari">Orari i punës</a> ose ngarko orarin mujor (.xlsx).');
   }catch(e){ el.textContent='Orari: agjenti s\'përgjigjet.'; }
 }
 function importShiftSchedule(file){

@@ -53,6 +53,8 @@ module.exports=function makeSchedule(d){
 
   function matchName(raw){
     const k=d.normName(raw), k2=k.endsWith('i')? k.slice(0,-1) : null;
+    // a full name (as the Orari i Warehouse export writes it) matches the roster directly
+    if(k.includes(' ')){ const full=d.warehouseStaffList().find(r=>d.normName(r)===k); if(full) return d.STAFF_ALIASES[d.normName(full)]||full; }
     const hits=[...new Set(d.warehouseStaffList().filter(r=>{ const f=d.normName(r).split(' ')[0]; return f===k || (k2 && f===k2); })
       .map(r=>d.STAFF_ALIASES[d.normName(r)]||r))];
     return hits.length===1? hits[0] : null;
@@ -66,26 +68,46 @@ module.exports=function makeSchedule(d){
       const raw=row[1]; const name=matchName(raw); if(!name){ unmapped.add(raw); return; } names.add(name);
       Object.entries(cols).forEach(([c,iso])=>{ const v=(row[c]||'').replace(/\s+/g,' ').trim(); if(!v) return;
         const m=/^(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})$/.exec(v);
-        const slot= m? {start:pad(m[1]), end:pad(m[2])} : /off/i.test(v)? {off:true, weekly:/weekly/i.test(v)} : null;
+        // statuses as both the lead's Excel and the Orari i Warehouse export write them; sick / annual leave = planned absence
+        const slot= m? {start:pad(m[1]), end:pad(m[2])} : /off/i.test(v)? {off:true, weekly:/weekly/i.test(v)}
+          : /sick|sëmur|semur/i.test(v)? {off:true, reason:'sick'} : /pushim|annual|leave|vjetor/i.test(v)? {off:true, reason:'leave'} : null;
         if(slot) (days[iso]=days[iso]||{})[name]=slot; });
     });
     const dates=Object.keys(days).sort();
     if(!dates.length) throw new Error('S\'u gjet asnjë ditë me orar në skedar (pritet rreshti "Muaji | data | data …" dhe më poshtë emrat me oraret).');
     return {days, dates, operators:[...names].sort(), unmapped:[...unmapped]};
   }
-  function importXlsx(buf, fileName){
+  function importXlsx(buf, fileName, source){
     const p=parse(buf);
     const merged=Object.assign({}, (data&&data.days)||{}, p.days);
-    data={days:merged, importedAt:new Date().toISOString(), lastFile:fileName||'', lastRange:[p.dates[0], p.dates[p.dates.length-1]]};
+    data=Object.assign({}, data||{}, {days:merged, importedAt:new Date().toISOString(), lastFile:fileName||'', lastRange:[p.dates[0], p.dates[p.dates.length-1]]});
+    if(source) data.source=source;
     fs.writeFileSync(FILE, JSON.stringify(data));
     return {ok:true, from:p.dates[0], to:p.dates[p.dates.length-1], days:p.dates.length, operators:p.operators, unmapped:p.unmapped};
+  }
+  /* Orari i Warehouse (the schedule editor, warehouse-schedule/, normally http://localhost:3000) is the source of the
+     plan when it runs: its own monthly Excel export (/api/export/excel) is read for the previous, current and next
+     month and merged by date — the same parser as a manual upload. Nothing is written back to it. */
+  async function syncFromApp(baseUrl){
+    const now=new Date(), months=[-1,0,1].map(k=>{ const t=new Date(now.getFullYear(), now.getMonth()+k, 1); return [t.getFullYear(), t.getMonth()+1]; });
+    const res={ok:true, months:[], unmapped:new Set(), at:new Date().toISOString()};
+    for(const [y,m] of months){
+      let r; try{ r=await fetch(baseUrl.replace(/\/+$/,'')+'/api/export/excel?year='+y+'&month='+m, {signal:AbortSignal.timeout(20000)}); }
+      catch(e){ const err='Orari i Warehouse nuk përgjigjet në '+baseUrl+' ('+e.message+')'; data=Object.assign({}, data||{days:{}}, {syncError:err, syncTriedAt:res.at}); fs.writeFileSync(FILE, JSON.stringify(data)); return {ok:false, error:err}; }
+      if(!r.ok){ res.months.push({y,m,error:'HTTP '+r.status}); continue; }
+      try{ const out=importXlsx(Buffer.from(await r.arrayBuffer()), 'Orari i Warehouse '+m+'/'+y, 'app'); res.months.push({y,m,days:out.days}); out.unmapped.forEach(n=>res.unmapped.add(n)); }
+      catch(e){ res.months.push({y,m,empty:true}); }        // a month with no schedule yet has no week rows
+    }
+    data=Object.assign({}, data, {lastSync:res.at, syncError:null, syncUnmapped:[...res.unmapped]}); fs.writeFileSync(FILE, JSON.stringify(data));
+    return Object.assign(res, {unmapped:[...res.unmapped]});
   }
   function summary(){
     if(!data||!data.days) return {loaded:false};
     const dates=Object.keys(data.days).sort(); const ops=new Set(); dates.forEach(x=>Object.keys(data.days[x]).forEach(n=>ops.add(n)));
     const hours={}; dates.forEach(x=>Object.values(data.days[x]).forEach(s=>{ if(!s.off){ const k=s.start+'–'+s.end; hours[k]=(hours[k]||0)+1; } }));
-    return {loaded:true, from:dates[0], to:dates[dates.length-1], days:dates.length, operators:ops.size, slots:hours, importedAt:data.importedAt, lastFile:data.lastFile};
+    return {loaded:true, from:dates[0], to:dates[dates.length-1], days:dates.length, operators:ops.size, slots:hours, importedAt:data.importedAt, lastFile:data.lastFile,
+      source:data.source||'excel', lastSync:data.lastSync||null, syncError:data.syncError||null, syncUnmapped:data.syncUnmapped||[]};
   }
   const forDay=iso=> (data && data.days && data.days[iso]) || null;
-  return {importXlsx, summary, forDay};
+  return {importXlsx, summary, forDay, syncFromApp, parse};
 };
