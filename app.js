@@ -1377,11 +1377,14 @@ function renderOrders(v){
   v.innerHTML = pagehead('Order Flow Observation',
     'Track a real order through Claim → Picking → Check-out/Packing → Boxing → Dispatch. Record a timestamp at each stage; durations and waiting between stages are computed automatically.',
     `<button class="btn primary" id="addOrder">＋ New order</button>`)
+    + ordersWmsHTML()
+    + `<h3 style="margin:18px 0 8px">Vëzhgime manuale <span class="sub">porosi të ndjekura me dorë (claim, picking, boxing, dispatch) — edhe mbi porositë e WMS-it</span></h3>`
     + `<div id="ordersBody"></div>`;
   $('#addOrder').onclick=()=>openOrderForm();
+  loadOrdersWms();
   drawOrders();
 }
-function openOrderForm(existing){
+function openOrderForm(existing, prefill){
   const fields=[
     {name:'orderRef',label:'Order reference',type:'text',required:true,row:'a'},
     {name:'date',label:'Date',type:'date',required:true,row:'a'},
@@ -1392,11 +1395,11 @@ function openOrderForm(existing){
     {name:'fulfillment',label:'Fulfillment path',type:'select',options:FULFILLMENT_TYPES,row:'c',hint:'How the order was fulfilled. Split = part picked from stock, part cross-docked straight to check-out.'},
     {name:'note',label:'Note',type:'text',ph:'e.g. late items from Seller B staged to check-out; early items picked from racks'},
   ];
-  openForm({title: existing?'Edit order':'New order flow', fields, values: existing||{date:todayStr()},
+  openForm({title: existing?'Edit order':(prefill&&prefill.wmsId?'Vëzhgim · porosia '+prefill.orderRef:'New order flow'), fields, values: existing||prefill||{date:todayStr()},
     onSave:(vals)=>{
       if(existing) Store.update('orders',existing.id,vals);
-      else Store.insert('orders',{...vals, stamps:{}});
-      closeModal(); drawOrders(); toast('Order saved');
+      else Store.insert('orders',{...vals, stamps:{}, ...(prefill&&prefill.wmsId?{wmsId:prefill.wmsId}:{})});
+      closeModal(); drawOrders(); if(typeof drawOrdersWms==='function') drawOrdersWms(); toast('Order saved');
     }});
 }
 function drawOrders(){
@@ -1427,7 +1430,7 @@ function orderCard(o){
   const isCross = o.fulfillment && o.fulfillment.startsWith('Cross-dock');
   const fBadge = o.fulfillment? `<span class="badge ${isSplit?'b-imp':(isCross?'b-new':'b-muted')}">${h(o.fulfillment)}</span>`:'';
   return `<div class="card" style="margin-bottom:14px">
-    <h3>🧾 ${h(o.orderRef)} <span class="sub">${h(o.date)} · ${o.lines||'—'} types · ${o.units||'—'} units · ${h(empName(o.picker))||'no owner'}</span></h3>
+    <h3>🧾 ${h(o.orderRef)} <span class="sub">${h(o.date)} · ${o.lines||'—'} types · ${o.units||'—'} units · ${h(empName(o.picker))||'no owner'}</span>${o.wmsId?` <span class="badge b-muted" title="Vëzhgim mbi një porosi të WMS-it">WMS</span>`:''}</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       ${o.seller?`<span class="small muted">🏷 ${h(o.seller)}</span>`:''} ${fBadge}
     </div>

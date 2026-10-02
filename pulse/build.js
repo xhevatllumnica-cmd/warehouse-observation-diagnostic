@@ -10,7 +10,7 @@
    Both outputs contain worker e-mails and pay → git-ignored, local only. */
 'use strict';
 const fs=require('fs'), path=require('path'), os=require('os');
-const DIR=__dirname, RAW=path.join(DIR,'raw'), GROUPS=['A','B','C','D','E'], OPTIONAL=['F'];   // F = inbound batches (Product / Inbound Flow)
+const DIR=__dirname, RAW=path.join(DIR,'raw'), GROUPS=['A','B','C','D','E'], OPTIONAL=['F','G'];   // F = inbound batches (Product / Inbound Flow), G = orders (Order Flow)
 const args=process.argv.slice(2), flag=f=>args.includes(f), opt=(f,d)=>{ const i=args.indexOf(f); return i>=0? args[i+1] : d; };
 
 function fromTranscripts(maxAgeMin){
@@ -23,7 +23,7 @@ function fromTranscripts(maxAgeMin){
     for(const line of fs.readFileSync(fp,'utf8').split('\n')){ if(!line) continue; let o; try{ o=JSON.parse(line); }catch(e){ continue; }
       const c=o.message&&o.message.content; if(!Array.isArray(c)) continue;
       for(const b of c){
-        if(b.type==='tool_use' && /queryWMSDb/.test(b.name||'')){ const m=/\/\*pulse:([A-F])\*\//.exec((b.input&&b.input.query)||''); if(m) uses[b.id]={g:m[1], ts:Date.parse(o.timestamp)||0}; }
+        if(b.type==='tool_use' && /queryWMSDb/.test(b.name||'')){ const m=/\/\*pulse:([A-G])\*\//.exec((b.input&&b.input.query)||''); if(m) uses[b.id]={g:m[1], ts:Date.parse(o.timestamp)||0}; }
         if(b.type==='tool_result' && uses[b.tool_use_id]){
           const u=uses[b.tool_use_id]; let t=Array.isArray(b.content)? b.content.map(x=>x.text||'').join('') : String(b.content||'');
           // a large result is not inlined: Claude Code saves it to a file and the tool result names that file
@@ -89,7 +89,10 @@ const inv=J(E.inv).map(r=>[r.m, r.n, r.s3, r.s1, r.qbo]);
 // inbound batches (block F, optional): kept as the query's compact objects — rendered by the app's Inbound Flow page
 const inb=rows.F? J(rows.F.inb) : null, inbDaily=rows.F? J(rows.F.inbDaily) : null;
 
-const data={ version:1, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
+// orders (block G, optional): checked out today, waiting (units reserved, not checked out), 14-day trend
+const ordG=rows.G? {at:rows.G._at||null, done:J(rows.G.ord), wait:J(rows.G.wait), daily:J(rows.G.daily), unmaps:J(rows.G.unmaps)} : null;
+
+const data={ version:1, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
   D:{week, bands, hour, pay, period, rates, daily, o2c, upo, status, state, dwell, sect, insp, diff, sup, car, pick, st, inv},
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };
@@ -98,4 +101,5 @@ const tpl=fs.readFileSync(path.join(DIR,'template.html'),'utf8');
 const embedded=JSON.stringify(data).replace(/</g,'\\u003c');
 fs.writeFileSync(path.join(DIR,'wms-pulse.html'), tpl.replace('<script id="pulse-data">window.PULSE=null;</script>', ()=>'<script id="pulse-data">window.PULSE='+embedded+';</script>'));
 console.log('WMS Pulse built: data from '+data.generatedAt+' · '+week.length+' workers (7d) · '+bands.length+' (30d) · avg '+r1(avg)+' sd '+r1(sd)
-  +' · inbound '+(inb? inb.length+' batches' : 'not included (block F missing)')+' → pulse/data.json, pulse/wms-pulse.html');
+  +' · inbound '+(inb? inb.length+' batches' : 'not included (block F missing)')
+  +' · orders '+(ordG? ordG.done.length+' checked out today, '+ordG.wait.length+' waiting' : 'not included (block G missing)')+' → pulse/data.json, pulse/wms-pulse.html');

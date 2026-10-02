@@ -158,3 +158,61 @@ SELECT /*pulse:F*/
        FROM ProductLogs WHERE LogTypeId IN (2,3,7) AND InsertDateTime>=DATEADD(day,-14,CAST(GETDATE() AS date)) GROUP BY ProductItemUniqueIdentifierId) x ON x.uid=c.ProductItemUniqueIdentifier
     WHERE s.WarehouseId=1 AND s.InsertDateTime>=DATEADD(day,-13,CAST(GETDATE() AS date)) GROUP BY CAST(s.InsertDateTime AS date), s.SupplyUniqueName) y
   GROUP BY d ORDER BY d FOR JSON PATH) inbDaily
+
+-- @G orders (Order Flow): warehouse 01. Stages per order: created (Orders.CreatedOnUtc, shown in local time) →
+--    items assigned (LogType 3 = a unit reserved for the order — at check-in for cross-dock units) → check-out
+--    (first LogType 27 scan → last of 27/9/4/18, all at the check-out station) → done. A unit scanned at check-out
+--    without a LogType 3 for that same order came from stock (picked from a rack). ord = orders checked out today;
+--    wait = orders with units reserved (unit status 3) but not yet checked out; daily = 14-day trend.
+--    LogType 3 rows and ProductCheckIns carry PlatformId 0, so cross-dock is matched per unit (same unit, same
+--    OrderId) and a waiting order's platform comes from Orders (the two platforms' order numbers do not overlap in
+--    practice; the newest order with that number wins).
+SELECT /*pulse:G*/
+ (SELECT k.OrderId id, k.PlatformId p, o.WmsStatusId st, CONVERT(varchar(16),DATEADD(minute,z.tz,o.CreatedOnUtc),120) cr,
+    CONVERT(varchar(16),a.f3,120) a1, CONVERT(varchar(16),a.l3,120) a2, ISNULL(a.u3,0) xu,
+    CONVERT(varchar(16),k.f27,120) c1, CONVERT(varchar(16),k.lco,120) c2, k.u27 u, dq.l, dq.q,
+    (SELECT TOP 1 LEFT(us.FirstName+' '+us.LastName,30) FROM ProductLogs x JOIN Users us ON us.UserId=x.UpdateBy WHERE x.Id=k.id27) w,
+    (SELECT COUNT(*) FROM OrderUnmaps um WHERE um.OrderId=k.OrderId AND um.PlatformId=k.PlatformId) um
+  FROM (SELECT pl.OrderId, pl.PlatformId, MIN(CASE WHEN pl.LogTypeId=27 THEN pl.InsertDateTime END) f27, MAX(pl.InsertDateTime) lco,
+         COUNT(DISTINCT CASE WHEN pl.LogTypeId=27 THEN pl.ProductItemUniqueIdentifierId END) u27, MIN(CASE WHEN pl.LogTypeId=27 THEN pl.Id END) id27
+        FROM ProductLogs pl WHERE pl.LogTypeId IN (27,9,4,18) AND pl.OrderId>0 AND pl.InsertDateTime>=CAST(GETDATE() AS date) GROUP BY pl.OrderId, pl.PlatformId
+        HAVING MIN(CASE WHEN pl.LogTypeId=27 THEN pl.InsertDateTime END) IS NOT NULL) k
+  JOIN Orders o ON o.OrderId=k.OrderId AND o.PlatformId=k.PlatformId AND o.WarehouseId=1
+  CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central European Standard Time') tz) z
+  LEFT JOIN (SELECT k2.OrderId, k2.PlatformId, MIN(x3.InsertDateTime) f3, MAX(x3.InsertDateTime) l3, COUNT(DISTINCT k2.uid) u3
+        FROM (SELECT DISTINCT OrderId, PlatformId, ProductItemUniqueIdentifierId uid FROM ProductLogs
+              WHERE LogTypeId=27 AND OrderId>0 AND InsertDateTime>=CAST(GETDATE() AS date)) k2
+        JOIN ProductLogs x3 ON x3.ProductItemUniqueIdentifierId=k2.uid AND x3.LogTypeId=3 AND x3.OrderId=k2.OrderId
+        GROUP BY k2.OrderId, k2.PlatformId) a ON a.OrderId=k.OrderId AND a.PlatformId=k.PlatformId
+  OUTER APPLY (SELECT COUNT(*) l, SUM(d.Quantity) q FROM OrderDetails d WHERE d.OrderId=k.OrderId AND d.PlatformId=k.PlatformId) dq
+  ORDER BY k.f27 DESC FOR JSON PATH, INCLUDE_NULL_VALUES) ord,
+ (SELECT TOP 300 w.OrderId id, o.PlatformId p, o.WmsStatusId st, CONVERT(varchar(16),DATEADD(minute,z.tz,o.CreatedOnUtc),120) cr, w.u,
+    CONVERT(varchar(16),w.f,120) a1, CONVERT(varchar(16),w.l,120) a2, dq.l, dq.q,
+    (SELECT COUNT(DISTINCT x.ProductItemUniqueIdentifierId) FROM ProductLogs x WHERE x.OrderId=w.OrderId AND x.PlatformId=o.PlatformId AND x.LogTypeId=27) dn,
+    (SELECT COUNT(*) FROM OrderUnmaps um WHERE um.OrderId=w.OrderId AND um.PlatformId=o.PlatformId) um
+  FROM (SELECT c.OrderId, COUNT(*) u, MIN(COALESCE(lp.InsertDateTime,c.UpdateDateTime)) f, MAX(COALESCE(lp.InsertDateTime,c.UpdateDateTime)) l
+        FROM ProductCheckIns c OUTER APPLY (SELECT TOP 1 x.InsertDateTime FROM ProductLogs x
+          WHERE x.ProductItemUniqueIdentifierId=c.ProductItemUniqueIdentifier AND x.LogTypeId=3 AND x.OrderId=c.OrderId ORDER BY x.Id DESC) lp
+        WHERE c.WarehouseId=1 AND c.StatusId=3 AND c.OrderId>0 GROUP BY c.OrderId) w
+  OUTER APPLY (SELECT TOP 1 o0.PlatformId, o0.WmsStatusId, o0.CreatedOnUtc FROM Orders o0 WHERE o0.OrderId=w.OrderId
+        ORDER BY CASE WHEN o0.WarehouseId=1 THEN 0 ELSE 1 END, o0.CreatedOnUtc DESC) o
+  CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central European Standard Time') tz) z
+  OUTER APPLY (SELECT COUNT(*) l, SUM(d.Quantity) q FROM OrderDetails d WHERE d.OrderId=w.OrderId AND d.PlatformId=o.PlatformId) dq
+  ORDER BY w.f ASC FOR JSON PATH, INCLUDE_NULL_VALUES) wait,
+ (SELECT CONVERT(varchar(10),d,120) d, COUNT(*) n, SUM(u) units, ROUND(AVG(h),1) h, ROUND(MAX(p50),1) h50,
+    SUM(CASE WHEN xu>0 AND xu<u THEN 1 ELSE 0 END) split, SUM(CASE WHEN xu>0 AND xu>=u THEN 1 ELSE 0 END) xd FROM (
+    SELECT CAST(k.f27 AS date) d, k.u27 u, ISNULL(a.u3,0) xu, k.h, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY k.h) OVER (PARTITION BY CAST(k.f27 AS date)) p50 FROM (
+      SELECT k0.OrderId, k0.PlatformId, k0.f27, k0.u27, DATEDIFF(minute, DATEADD(minute,z.tz,o.CreatedOnUtc), k0.f27)/60.0 h FROM
+        (SELECT OrderId, PlatformId, MIN(InsertDateTime) f27, COUNT(DISTINCT ProductItemUniqueIdentifierId) u27 FROM ProductLogs
+          WHERE LogTypeId=27 AND OrderId>0 AND InsertDateTime>=DATEADD(day,-13,CAST(GETDATE() AS date)) GROUP BY OrderId, PlatformId) k0
+        JOIN Orders o ON o.OrderId=k0.OrderId AND o.PlatformId=k0.PlatformId AND o.WarehouseId=1
+        CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central European Standard Time') tz) z) k
+    LEFT JOIN (SELECT k2.OrderId, k2.PlatformId, COUNT(DISTINCT k2.uid) u3
+        FROM (SELECT DISTINCT OrderId, PlatformId, ProductItemUniqueIdentifierId uid FROM ProductLogs
+              WHERE LogTypeId=27 AND OrderId>0 AND InsertDateTime>=DATEADD(day,-13,CAST(GETDATE() AS date))) k2
+        JOIN ProductLogs x3 ON x3.ProductItemUniqueIdentifierId=k2.uid AND x3.LogTypeId=3 AND x3.OrderId=k2.OrderId
+        GROUP BY k2.OrderId, k2.PlatformId) a ON a.OrderId=k.OrderId AND a.PlatformId=k.PlatformId
+    WHERE k.h>=0) y GROUP BY d ORDER BY d FOR JSON PATH) daily,
+ (SELECT CONVERT(varchar(10),CAST(um.InsertDateTime AS date),120) d, COUNT(*) n FROM OrderUnmaps um
+    JOIN Orders o ON o.OrderId=um.OrderId AND o.PlatformId=um.PlatformId AND o.WarehouseId=1
+  WHERE um.InsertDateTime>=DATEADD(day,-13,CAST(GETDATE() AS date)) GROUP BY CAST(um.InsertDateTime AS date) ORDER BY 1 FOR JSON PATH) unmaps
