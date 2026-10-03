@@ -15,7 +15,7 @@
 const fs=require('fs'), path=require('path'), os=require('os');
 
 const DIR=__dirname, SNAP=path.join(DIR,'snapshots');
-const BLOCKS=['D1','D1o','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','D12','D13'];
+const BLOCKS=['D1','D1o','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','D12','D13','D14'];
 const PARAMS={ wh:1, pf:0, nd:35, co:'17:30', mh:4, sh:24, gm:15, ma:30 };
 
 /* Settings → parameter values (derived ones included) */

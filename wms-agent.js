@@ -837,9 +837,102 @@ function pulseTick(){
 setInterval(pulseTick, 2*60*1000);
 setTimeout(pulseTick, 20000);
 
+/* WMS store names (StoreId → store name) and the return dispositions. The WMS database has no store table; the web app's
+   return-history page lists every store in its filter and the returns dashboard lists the dispositions (20 defect,
+   21 outlet, 22 back to stock, 29 auction). Read-only GETs with the WMS session, cached 12 h in memory and in
+   pulse/stores.json (git-ignored, never served statically). Used by the Shipments and Kthimet pages. */
+const STORES_FILE=path.join(APPDIR,'pulse','stores.json');
+let storeCache=(()=>{ try{ return JSON.parse(fs.readFileSync(STORES_FILE,'utf8')); }catch(e){ return {at:0, stores:{}, disp:{}, types:{}}; } })();
+function htmlOptions(html, marker){
+  const i=html.indexOf(marker); if(i<0) return [];
+  const start=html.lastIndexOf('<select', i), end=html.indexOf('</select>', i); if(start<0||end<0) return [];
+  const dec=s=>s.replace(/&#(x?)([0-9a-f]+);/gi,(m,x,n)=>String.fromCodePoint(parseInt(n,x?16:10))).replace(/&amp;/g,'&').replace(/<[^>]+>/g,'').trim();
+  const out=[], re=/<option[^>]*value="([^"]*)"[^>]*>([\s\S]*?)<\/option>/gi; let m; const body=html.slice(start,end);
+  while((m=re.exec(body))) if(m[1]!=='') out.push([m[1], dec(m[2])]);
+  return out;
+}
+async function wmsStores(force){
+  if(!force && storeCache.at && Date.now()-storeCache.at<12*3600e3 && Object.keys(storeCache.stores||{}).length) return storeCache;
+  try{
+    const a=await wmsFetch('/ReturnProcess/Returns?focusedMenu=ReturnHistory'); if(looksLoggedOut(a)) return Object.assign({}, storeCache, {error:'auth_expired'});
+    const b=await wmsFetch('/Product/ReturnsDashboard?focusedMenu=ReturnsDashboard');
+    const stores=Object.fromEntries(htmlOptions(a.body,'name="storeId"')), types=Object.fromEntries(htmlOptions(a.body,'id="transferTypeFilter"'));
+    const disp= looksLoggedOut(b)? (storeCache.disp||{}) : Object.fromEntries(htmlOptions(b.body,'id="dashboard-dropdown"'));
+    if(Object.keys(stores).length){ storeCache={at:Date.now(), stores, disp, types}; try{ fs.writeFileSync(STORES_FILE, JSON.stringify(storeCache)); }catch(e){} }
+  }catch(e){ return Object.assign({}, storeCache, {error:e.message}); }
+  return storeCache;
+}
+
 /* Problem / Bottleneck Register (bottleneck/): the WmsDataAdapter keeps bottleneck/queries.run.sql in step with the
    module's Settings (Store config.bottleneck.params), turns new D1–D13 query results found in the Claude Code
    transcripts into a snapshot, and the detectors turn the latest snapshot + thresholds into candidates on request. */
+/* Tabela ditore (page /tabela): live per-operator numbers from today's WMS log + the hourly cut-off figures (pulse block M).
+   See tabela-board.js. The live part is cached ~2 min so a board that refreshes often does not hammer the WMS. */
+const tabelaBoard=require('./tabela-board.js');
+const TABELA_DEFAULT_STATIONS=['CHECKOUT 1','CHECKOUT 2','CHECKOUT 3','CHECKOUT 4','CHECKOUT 5','CHECKOUT 6','CHECKIN & CHECKOUT','CHECKIN 1','CHECKIN 2','CHECKIN 3','CHECKIN SELLERS']
+  .map(n=>({name:n, co:/CHECKOUT/.test(n), ci:/CHECKIN/.test(n)}));
+let tabelaLive=null, tabelaLiveAt=0, tabelaLiveBusy=null;
+async function tabelaLiveData(force){
+  if(!force && tabelaLive && Date.now()-tabelaLiveAt<110000) return tabelaLive;
+  if(tabelaLiveBusy) return tabelaLiveBusy;
+  tabelaLiveBusy=(async()=>{ try{
+      const dl=await fetchDayProductLogs(isoToMdy(isoToday()), {noCache:true});
+      if(dl.error) return {error:dl.error};
+      const r=tabelaBoard.liveByOperator(dl.rows, warehouseStaffSet(), normName, parseWmsDate, STAFF_ALIASES);
+      tabelaLive=Object.assign(r,{reliable:dl.reliable, at:new Date().toISOString()}); tabelaLiveAt=Date.now(); return tabelaLive;
+    } finally { tabelaLiveBusy=null; } })();
+  return tabelaLiveBusy;
+}
+/* local overrides of the WMS station list (set by the warehouse lead, 03–04.10.2026): CHECKOUT 5 and CHECKIN 3 are not in use;
+   CHECKOUT 6 is used as the refusals/returns table — it counts processed customer-return units (dispositions 20/21/22/29) */
+const TABELA_STATION_CFG={'CHECKOUT 5':{hidden:true}, 'CHECKIN 3':{hidden:true}, 'CHECKOUT 6':{label:'Tavolina për refuzime/kthime', kind:'ret'}};
+function tabelaStations(){
+  let list=TABELA_DEFAULT_STATIONS;
+  try{ const b=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).board; if(b&&b.stations&&b.stations.length) list=b.stations.map(s=>({name:s.name, co:!!s.co, ci:!!s.ci})); }catch(e){}
+  return list.filter(s=>!(TABELA_STATION_CFG[s.name]||{}).hidden).map(s=>Object.assign({}, s, TABELA_STATION_CFG[s.name]||{})).concat(tabelaBoard.EXTRA_STATIONS);
+}
+/* POD for the board: the orders scanned for the couriers in the Delivery Platform ("Accept Delivery → Scanned Orders",
+   POST /AcceptDelivery/GetScannedOrders — the read the platform's own page makes). Only the scanner's name and the scan
+   time leave this function. The name is the account logged in on the POD scanner (found 04.10.2026: the POD station
+   stayed logged in as one person for weeks), so it is only per-person when each operator logs in with their own account.
+   One request per day, paged until recordsFiltered (the server may return fewer rows than asked). Cache: today 2 min. */
+const podScanCache={};
+async function fetchPodScans(iso){
+  const c=podScanCache[iso], ttl= iso>=isoToday()? 110000 : 6*3600000;
+  if(c && Date.now()-c.t<ttl) return c.v;
+  const rows=[], seen=new Set(); let total=null;
+  for(let start=0, guard=0; guard<60; guard++){
+    const r=await deliveryPostJson('/AcceptDelivery/GetScannedOrders',{draw:1, start, length:500, search:{value:'',regex:false}, order:[{column:0,dir:'desc'}],
+      columns:dtCols(5), filters:{startDate:iso, endDate:iso, groupId:''}});
+    if(r.error){ if(r.error==='auth_expired') deliverySessionExpired=true; return {error:r.error}; }
+    const d=r.data||[]; total=Number(r.recordsFiltered)||0;
+    d.forEach(x=>{ const k=x.orderId+'|'+x.platformName+'|'+x.scanDateTime; if(seen.has(k)) return; seen.add(k);
+      const s=String(x.scanDateTime||''), m=/\/Date\((\d+)\)\//.exec(s), t= m? Number(m[1]) : Date.parse(s.replace(' ','T'));
+      if(!isNaN(t)) rows.push({scanner:String(x.scannerName||'').replace(/\s+/g,' ').trim(), t}); });
+    start+=d.length; if(!d.length || start>=total) break;
+  }
+  const v={date:iso, rows, total, complete: total==null || rows.length>=total, at:new Date().toISOString()};
+  podScanCache[iso]={t:Date.now(), v}; return v;
+}
+/* a past day (?date=YYYY-MM-DD): the same board rebuilt from that day's WMS log — no cut-off figures (those are "now") */
+async function tabelaPastLive(iso){
+  const age=Math.round((new Date(isoToday()+'T00:00:00') - new Date(iso+'T00:00:00'))/86400000);
+  const dl=await fetchDayProductLogs(isoToMdy(iso), {noCache: age<CACHE_SETTLE_DAYS});
+  if(dl.error) return {error:dl.error};
+  return Object.assign(tabelaBoard.liveByOperator(dl.rows, warehouseStaffSet(), normName, parseWmsDate, STAFF_ALIASES), {reliable:dl.reliable, at:new Date().toISOString()});
+}
+async function tabelaData(force, date){
+  const past= date && date<isoToday(), today= past? date : isoToday(), yday=isoAddDays(today,-1);
+  let board=null; try{ board=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).board||null; }catch(e){}
+  const live0= past? await tabelaPastLive(date) : await tabelaLiveData(force), stations=tabelaStations(), rec=tabelaBoard.readAssign(APPDIR);
+  let pod=null; try{ pod=await fetchPodScans(today); }catch(e){ pod={error:String(e.message||e)}; }
+  const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES);
+  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, rec, live&&live.ops, today, day, normName, STAFF_ALIASES);
+  const shifts={}; Object.entries(day||{}).forEach(([n,sh])=>{ shifts[n]= sh.off? 'pushim' : sh.start+'–'+sh.end; });
+  const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; return c; })}) : live;
+  return {date:today, past:!!past, stations, assign:{tables:tabelaBoard.currentAssign(rec), updatedAt:rec.updatedAt}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+    roster:[...new Set(warehouseStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
+}
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
 let bnState={lastCheck:null, lastSnapshot:null, lastError:null}, bnCache=null;
 function bnConfig(){ const db=loadDb(); return (db&&db.config&&db.config.bottleneck)||{}; }
@@ -994,7 +1087,21 @@ http.createServer(async (req,resp)=>{
       let b; try{ b=fs.readFileSync(path.join(APPDIR,'pulse','data.json')); }catch(e){ resp.writeHead(404,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify({error:'WMS Pulse nuk është gjeneruar ende — pritet rifreskimi i parë nga databaza.'})); }
       resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(b);
     }
+    // Tabela ditore — same-origin only (no CORS header): operator names
+    if(q.pathname==='/tabela' || q.pathname==='/tabela/'){ return fs.readFile(path.join(APPDIR,'tabela.html'),(e,d)=>{ if(e){ resp.writeHead(404); return resp.end('not found'); } resp.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}); resp.end(d); }); }
+    if(q.pathname==='/tabela/data' || q.pathname==='/tabela/assign'){
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      const send=(c,o)=>{ resp.writeHead(c,{'Content-Type':'application/json','Cache-Control':'no-store'}); resp.end(JSON.stringify(o)); };
+      if(q.pathname==='/tabela/assign' && req.method==='POST'){ let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return send(400,{error:'bad json'}); }
+        tabelaBoard.saveAssign(APPDIR, body, tabelaStations()); return send(200, {ok:true}); }
+      const dq=String(q.query.date||''); if(dq && !/^\d{4}-\d{2}-\d{2}$/.test(dq)) return send(400,{error:'date: YYYY-MM-DD'});
+      return send(200, await tabelaData(!!q.query.refresh, dq||null));
+    }
     if(q.pathname==='/pulse/status'){ return json(200, Object.assign({building:pulseBuilding}, pulseState)); }
+    if(q.pathname==='/wms/stores'){   // store names + return dispositions — same-origin only (no CORS header)
+      const s=await wmsStores(!!q.query.refresh);
+      resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(s));
+    }
     // Bottleneck Register — same-origin only (no CORS header): staff initials and operational data
     if(q.pathname.startsWith('/bn/')){
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});

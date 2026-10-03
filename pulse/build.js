@@ -10,7 +10,7 @@
    Both outputs contain worker e-mails and pay → git-ignored, local only. */
 'use strict';
 const fs=require('fs'), path=require('path'), os=require('os');
-const DIR=__dirname, RAW=path.join(DIR,'raw'), GROUPS=['A','B','C','D','E'], OPTIONAL=['F','G','H','I','J','K'];   // F inbound (Inbound Flow), G orders (Order Flow), H/I/J capacity (Kapaciteti & Stafi), K shipments (Shipments)
+const DIR=__dirname, RAW=path.join(DIR,'raw'), GROUPS=['A','B','C','D','E'], OPTIONAL=['F','G','H','I','J','K','L','M'];   // M daily board (Tabela ditore), F inbound (Inbound Flow), G orders (Order Flow), H/I/J capacity (Kapaciteti & Stafi), K shipments (Shipments), L returns (Kthimet)
 const args=process.argv.slice(2), flag=f=>args.includes(f), opt=(f,d)=>{ const i=args.indexOf(f); return i>=0? args[i+1] : d; };
 
 function fromTranscripts(maxAgeMin){
@@ -23,7 +23,7 @@ function fromTranscripts(maxAgeMin){
     for(const line of fs.readFileSync(fp,'utf8').split('\n')){ if(!line) continue; let o; try{ o=JSON.parse(line); }catch(e){ continue; }
       const c=o.message&&o.message.content; if(!Array.isArray(c)) continue;
       for(const b of c){
-        if(b.type==='tool_use' && /queryWMSDb/.test(b.name||'')){ const m=/\/\*pulse:([A-K])\*\//.exec((b.input&&b.input.query)||''); if(m) uses[b.id]={g:m[1], ts:Date.parse(o.timestamp)||0}; }
+        if(b.type==='tool_use' && /queryWMSDb/.test(b.name||'')){ const m=/\/\*pulse:([A-M])\*\//.exec((b.input&&b.input.query)||''); if(m) uses[b.id]={g:m[1], ts:Date.parse(o.timestamp)||0}; }
         if(b.type==='tool_result' && uses[b.tool_use_id]){
           const u=uses[b.tool_use_id]; let t=Array.isArray(b.content)? b.content.map(x=>x.text||'').join('') : String(b.content||'');
           // a large result is not inlined: Claude Code saves it to a file and the tool result names that file
@@ -98,7 +98,9 @@ const capacity= rows.H? { at:rows.H._at||null, from:rows.H.wFrom, to:rows.H.wTo,
     sameDay: rows.J? J(rows.J.sameDay) : null, sameDayAt: rows.J? rows.J._at||null : null } : null;
 
 const shipments= rows.K? {at:rows.K._at||null, gen:rows.K.gen, stops:J(rows.K.stops), carriers:J(rows.K.carriers), trucks:J(rows.K.trucks)} : null;
-const data={ version:1, shipments, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
+const returns= rows.L? {at:rows.L._at||null, gen:rows.L.gen, batches:J(rows.L.batches), units:J(rows.L.units), disp:J(rows.L.disp), monthly:J(rows.L.monthly), dispMonthly:J(rows.L.dispMonthly), legacy:J(rows.L.legacy)} : null;
+const board= rows.M? {at:rows.M._at||null, gen:rows.M.gen, outd:J(rows.M.outd), openr:J(rows.M.openr), stations:J(rows.M.stations)} : null;
+const data={ version:1, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
   D:{week, bands, hour, pay, period, rates, daily, o2c, upo, status, state, dwell, sect, insp, diff, sup, car, pick, st, inv},
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };

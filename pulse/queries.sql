@@ -299,10 +299,13 @@ CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central 
 --    from the origin names). Per stop: carrier, origin, pickup / estimated / actual arrival, status (shown as a number),
 --    pallets, price, invoices linked to it (count only — local invoice numbers carry sellers' personal names) and the
 --    units checked in from those invoices' supplies with the first / last check-in. Carriers' contact info is not read.
+--    sup = the suppliers (Invoices.StoreId, distinct) of the stop: WMS has no store names, so the app maps the ids to
+--    names (Shipments → Furnizuesit); for national stops only their count is shown (local sellers may be individuals).
 SELECT /*pulse:K*/ CONVERT(varchar(19),GETDATE(),126) gen,
  (SELECT d.Id did, s.Id sid, d.WarehouseId w, CASE WHEN s.SupplierType=20 THEN 'I' ELSE 'K' END cat, s.SupplierType stp, s.CarrierId cid, LEFT(s.OriginWarehouseName,60) o, s.TruckId tr,
     d.DestinationOrder dor, d.Status st, CONVERT(varchar(16),s.PickupDateTime,120) pick, CONVERT(varchar(16),d.EstimatedArrivalDate,120) eta, CONVERT(varchar(16),d.ActualArrivalDate,120) arr,
-    d.PalletCount pal, d.Price pr, d.RouteDistanceKm km, iv.n inv, u.units, CONVERT(varchar(16),u.f,120) ci1, CONVERT(varchar(16),u.l,120) ci2
+    d.PalletCount pal, d.Price pr, d.RouteDistanceKm km, iv.n inv, u.units, CONVERT(varchar(16),u.f,120) ci1, CONVERT(varchar(16),u.l,120) ci2,
+    (SELECT STRING_AGG(CAST(x.StoreId AS varchar(12)),',') FROM (SELECT DISTINCT i2.StoreId FROM Invoices i2 WHERE i2.ShipmentDestinationId=d.Id) x) sup
   FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId
   LEFT JOIN (SELECT i.ShipmentDestinationId sd, COUNT(*) n FROM Invoices i
              WHERE i.ShipmentDestinationId IS NOT NULL AND i.InsertDateTime>=DATEADD(day,-75,GETDATE()) GROUP BY i.ShipmentDestinationId) iv ON iv.sd=d.Id
@@ -313,3 +316,75 @@ SELECT /*pulse:K*/ CONVERT(varchar(19),GETDATE(),126) gen,
   ORDER BY d.EstimatedArrivalDate DESC FOR JSON PATH, INCLUDE_NULL_VALUES) stops,
  (SELECT ca.Id id, ca.Name nm, ca.CountryCode cc, CAST(ca.IsActive AS int) act FROM Carriers ca FOR JSON PATH) carriers,
  (SELECT t.Id id, t.CarrierId car, t.TruckType tt, t.MaxPallets mp FROM Trucks t FOR JSON PATH) trucks
+
+-- @L returns (module "Kthimet"): the WMS "Product Transfer/Return" flow — Returns (one batch per store; TransferTypeId
+--    1 = Supplier Return, 2 = Warehouse Transfer, as the WMS web filter names them) and ReturnDetails (one row per unit,
+--    ReasonId, IsResolved) — plus the dispositions of products returned by customers from the WMS "Returns" dashboard
+--    (ProductLogs LogTypeId 20 Map as defect, 21 Map as outlet, 22 Return to stock, 29 Auction). batches: last 120 days;
+--    units and disp: last 90 days (product code; name only where GjirafaMall_Products has it — ProductName is too big);
+--    monthly / dispMonthly / legacy: trends (legacy = the old ReturnsToSupplier flow, which stopped in March 2026).
+--    Store names are read by the agent from the WMS web app (no store table in the database). Staff as initials.
+SELECT /*pulse:L*/ CONVERT(varchar(19),GETDATE(),126) gen,
+ (SELECT r.Id id, LEFT(LTRIM(RTRIM(r.Name)),60) nm, CONVERT(varchar(16),r.InsertDateTime,120) ins, r.StoreId st, r.TransferTypeId tt, r.DestinationWarehouseId dw, CAST(r.Active AS int) act,
+    LEFT(REPLACE(REPLACE(LTRIM(RTRIM(r.ReasonsToReturn)),CHAR(13),' '),CHAR(10),' '),160) rsn, ISNULL(x.n,0) n, ISNULL(x.res,0) res
+  FROM Returns r LEFT JOIN (SELECT ReturnId, COUNT(*) n, SUM(CASE WHEN IsResolved=1 THEN 1 ELSE 0 END) res FROM ReturnDetails GROUP BY ReturnId) x ON x.ReturnId=r.Id
+  WHERE r.InsertDateTime>=DATEADD(day,-120,GETDATE()) ORDER BY r.Id DESC FOR JSON PATH, INCLUDE_NULL_VALUES) batches,
+ (SELECT rd.Id id, rd.ReturnId rid, CONVERT(varchar(16),rd.InsertDateTime,120) ins, CAST(rd.IsResolved AS int) res, rd.ReasonId rr, CONVERT(varchar(16),rd.UpdateDateTime,120) upd,
+    c.ProductCode pc, c.StatusId cs, c.StoreId cst, c.WarehouseId w, LEFT(p.Name,70) pn
+  FROM ReturnDetails rd
+  OUTER APPLY (SELECT TOP 1 c0.ProductCode, c0.StatusId, c0.StoreId, c0.WarehouseId, c0.ProductId FROM ProductCheckIns c0 WHERE c0.ProductItemUniqueIdentifier=rd.ProductItemUniqueIdentifier ORDER BY c0.Id DESC) c
+  OUTER APPLY (SELECT TOP 1 gp.Name FROM GjirafaMall_Products gp WHERE gp.ProductId=c.ProductId) p
+  WHERE rd.InsertDateTime>=DATEADD(day,-90,GETDATE()) ORDER BY rd.Id DESC FOR JSON PATH, INCLUDE_NULL_VALUES) units,
+ (SELECT CONVERT(varchar(16),pl.InsertDateTime,120) ins, pl.LogTypeId t, pl.ProductCode pc, LEFT(p.Name,70) pn, c.StoreId cst, pl.OrderId oid, pl.PlatformId pf,
+    LEFT(ISNULL(u.FirstName,'?'),1)+'.'+LEFT(ISNULL(u.LastName,'?'),1)+'.' ui
+  FROM ProductLogs pl WITH (NOLOCK)
+  OUTER APPLY (SELECT TOP 1 c0.StoreId, c0.ProductId FROM ProductCheckIns c0 WHERE c0.ProductItemUniqueIdentifier=pl.ProductItemUniqueIdentifierId ORDER BY c0.Id DESC) c
+  OUTER APPLY (SELECT TOP 1 gp.Name FROM GjirafaMall_Products gp WHERE gp.ProductId=c.ProductId) p
+  LEFT JOIN Users u ON u.UserId=pl.UpdateBy
+  WHERE pl.LogTypeId IN (20,21,22,29) AND pl.InsertDateTime>=DATEADD(day,-90,GETDATE()) ORDER BY pl.InsertDateTime DESC FOR JSON PATH, INCLUDE_NULL_VALUES) disp,
+ (SELECT CONVERT(varchar(7),r.InsertDateTime,126) m, r.TransferTypeId tt, COUNT(*) b, SUM(ISNULL(x.n,0)) n, SUM(ISNULL(x.res,0)) res
+  FROM Returns r LEFT JOIN (SELECT ReturnId, COUNT(*) n, SUM(CASE WHEN IsResolved=1 THEN 1 ELSE 0 END) res FROM ReturnDetails GROUP BY ReturnId) x ON x.ReturnId=r.Id
+  GROUP BY CONVERT(varchar(7),r.InsertDateTime,126), r.TransferTypeId ORDER BY 1,2 FOR JSON PATH) monthly,
+ (SELECT CONVERT(varchar(7),InsertDateTime,126) m, LogTypeId t, COUNT(*) n FROM ProductLogs WITH (NOLOCK) WHERE LogTypeId IN (20,21,22,29) AND InsertDateTime>=DATEADD(month,-8,GETDATE())
+  GROUP BY CONVERT(varchar(7),InsertDateTime,126), LogTypeId ORDER BY 1,2 FOR JSON PATH) dispMonthly,
+ (SELECT CONVERT(varchar(7),InsertDateTime,126) m, COUNT(*) n, COUNT(DISTINCT StoreId) stores FROM ReturnsToSupplier WHERE InsertDateTime>=DATEADD(month,-18,GETDATE()) GROUP BY CONVERT(varchar(7),InsertDateTime,126) ORDER BY 1 FOR JSON PATH) legacy
+
+-- @M daily board ("Tabela ditore", page /tabela): orders READY in the warehouse (same definition as the Bottleneck Register
+--    D1/D1o: created, or the last unit reserved for it = LogType 3; complete = all ordered units reserved), by the cut-offs
+--    13:00 / 15:00 / 17:30 (b = 13 / 15 / 17, 24 = after 17:30). outd: orders first checked out (4/18) since yesterday, by
+--    ready day (rd, 'older' = before yesterday) × cut-off × checkout day (od). openr: orders still not checked out, by ready
+--    day × cut-off × complete (cmp 1) / still waiting for units (cmp 0). stations: the WMS stations of warehouse 1.
+SELECT /*pulse:M*/ CONVERT(varchar(19),GETDATE(),126) gen,
+ (SELECT CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END rd,
+    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END b,
+    CONVERT(varchar(10),CAST(c1 AS date),23) od, COUNT(*) n
+  FROM (SELECT k.c1, CASE WHEN a.l3>t.cr THEN a.l3 ELSE t.cr END r
+     FROM (SELECT OrderId, PlatformId, MIN(InsertDateTime) c1 FROM ProductLogs WITH (NOLOCK)
+           WHERE LogTypeId IN (4,18) AND OrderId>0 AND PlatformId IN (1,2) AND InsertDateTime>=DATEADD(day,-30,CAST(GETDATE() AS date))
+           GROUP BY OrderId, PlatformId HAVING MIN(InsertDateTime)>=DATEADD(day,-1,CAST(GETDATE() AS date))) k
+     JOIN Orders o ON o.OrderId=k.OrderId AND o.PlatformId=k.PlatformId AND o.WarehouseId=1
+     CROSS APPLY (SELECT CAST(o.CreatedOnUtc AT TIME ZONE 'UTC' AT TIME ZONE 'Central European Standard Time' AS datetime) cr) t
+     LEFT JOIN (SELECT k2.OrderId, k2.PlatformId, MAX(x3.InsertDateTime) l3 FROM
+          (SELECT DISTINCT OrderId, PlatformId, ProductItemUniqueIdentifierId uid FROM ProductLogs WITH (NOLOCK)
+           WHERE LogTypeId IN (4,18) AND OrderId>0 AND PlatformId IN (1,2) AND InsertDateTime>=DATEADD(day,-1,CAST(GETDATE() AS date))) k2
+          JOIN ProductLogs x3 WITH (NOLOCK) ON x3.ProductItemUniqueIdentifierId=k2.uid AND x3.LogTypeId=3 AND x3.OrderId=k2.OrderId AND x3.InsertDateTime>=DATEADD(day,-120,GETDATE())
+          GROUP BY k2.OrderId, k2.PlatformId) a ON a.OrderId=k.OrderId AND a.PlatformId=k.PlatformId) x
+  WHERE c1>=r
+  GROUP BY CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END,
+    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END, CAST(c1 AS date)
+  ORDER BY 1,2,3 FOR JSON PATH) outd,
+ (SELECT CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END rd,
+    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END b, cmp, COUNT(*) n
+  FROM (SELECT CASE WHEN w.l>t.cr THEN w.l ELSE t.cr END r, CASE WHEN dq.q IS NOT NULL AND w.u>=dq.q THEN 1 ELSE 0 END cmp
+     FROM (SELECT c.OrderId, COUNT(*) u, MAX(lp.t3) l FROM ProductCheckIns c
+           OUTER APPLY (SELECT TOP 1 x.InsertDateTime t3 FROM ProductLogs x WITH (NOLOCK) WHERE x.ProductItemUniqueIdentifierId=c.ProductItemUniqueIdentifier AND x.LogTypeId=3 AND x.OrderId=c.OrderId AND x.InsertDateTime>=DATEADD(day,-120,GETDATE()) ORDER BY x.Id DESC) lp
+           WHERE c.WarehouseId=1 AND c.StatusId=3 AND c.OrderId>0 GROUP BY c.OrderId) w
+     CROSS APPLY (SELECT TOP 1 o0.PlatformId, o0.CreatedOnUtc FROM Orders o0 WHERE o0.OrderId=w.OrderId AND o0.WarehouseId=1 ORDER BY o0.CreatedOnUtc DESC) o
+     CROSS APPLY (SELECT CAST(o.CreatedOnUtc AT TIME ZONE 'UTC' AT TIME ZONE 'Central European Standard Time' AS datetime) cr) t
+     OUTER APPLY (SELECT SUM(d.Quantity) q FROM OrderDetails d WHERE d.OrderId=w.OrderId AND d.PlatformId=o.PlatformId) dq
+     WHERE NOT EXISTS (SELECT 1 FROM ProductLogs y WITH (NOLOCK) WHERE y.OrderId=w.OrderId AND y.PlatformId=o.PlatformId AND y.LogTypeId IN (4,18) AND y.InsertDateTime>=DATEADD(day,-120,GETDATE()))) z
+  WHERE r>=DATEADD(day,-30,CAST(GETDATE() AS date))
+  GROUP BY CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END,
+    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END, cmp
+  ORDER BY 1,2,3 FOR JSON PATH) openr,
+ (SELECT Id id, Name name, IsCheckIn ci, IsCheckOut co FROM Stations WHERE WarehouseId=1 AND IsActive=1 AND Name<>'test' ORDER BY Id FOR JSON PATH) stations

@@ -129,7 +129,7 @@ function statusBadge(s){
 }
 function toast(msg){
   let t=$('#toast'); if(!t){ t=document.createElement('div'); t.id='toast';
-    t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0e3a2a;color:#5bd6a0;border:1px solid #1e4a34;padding:11px 18px;border-radius:10px;z-index:200;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4)'; document.body.appendChild(t); }
+    t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1e8449;color:#fff;border:1px solid #1e8449;padding:11px 18px;border-radius:10px;z-index:200;font-size:13px;box-shadow:0 6px 20px rgba(16,24,40,.18)'; document.body.appendChild(t); }
   t.textContent=msg; t.style.opacity='1';
   clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.transition='opacity .4s'; t.style.opacity='0'; },1800);
 }
@@ -341,7 +341,7 @@ const Store = {
 };
 const seedCollections = ['config','employees','departments','processes','observations','measurements',
   'orders','products','staffSkills','staffObs','problems','kpiRecords','hqInteractions','quickWins','briefings','validations',
-  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions'];
+  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions','planActions','planChecks','planKpis'];
 
 function audit(entity,recId,action,before,after){
   const changes=[];
@@ -459,6 +459,7 @@ const ROUTES = [
   {id:'inbound', title:'Product / Inbound Flow', ic:'⇩', render:renderInbound},
   {id:'pod', title:'POD — Proof of Delivery', ic:'🚚', render:renderPod},
   {id:'shipments', title:'Shipments', ic:'🚛', render:renderShipments},
+  {id:'returns', title:'Kthimet', ic:'↩️', render:renderReturns},
   {id:'maps', title:'Process Maps', ic:'🗺', render:renderMaps},
   {id:'flows', title:'Actual Process Flow', ic:'🔀', render:renderActualFlows},
   {sec:'People'},
@@ -468,6 +469,8 @@ const ROUTES = [
   {id:'orari', title:'Orari i punës', ic:'📅', render:renderOrari},
   {sec:'Diagnose'},
   {id:'problems', title:'Bottleneck Register', ic:'⚠', render:(typeof renderBottleneck==='function'? renderBottleneck : renderProblems)},
+  {id:'plan', title:'Plani i përmirësimit', ic:'🎯', render:renderPlan},
+  {id:'tabela', title:'Tabela ditore', ic:'📺', render:renderTabela},
   {id:'kpi', title:'KPI Baseline', ic:'📊', render:renderKPI},
   {id:'validation', title:'Validation', ic:'⚖', render:renderValidation},
   {id:'insights', title:'Insights & Alerts', ic:'💡', render:renderInsights},
@@ -2121,7 +2124,7 @@ function renderInsights(v){
 function insightCard(i){
   const lv={crit:'crit',imp:'warn',warn:'warn'}[i.level]||'';
   const dot={crit:'🔴',imp:'🟠',warn:'🟡'}[i.level]||'💡';
-  return `<div class="card" style="${i.level==='crit'?'border-color:#5a2a2a':''}">
+  return `<div class="card" style="${i.level==='crit'?'border-color:#f3c1c1':''}">
     <h3>${dot} ${h(i.kind)} <span class="sub"><span class="etag et-${i.tag==='hyp'?'hyp':'data'}">${i.tag==='hyp'?'hypothesis':'data-derived'}</span></span></h3>
     <div>${h(i.text)}</div>
     <div class="hint" style="margin-top:8px">Evidence: ${h(i.evidence)}</div></div>`;
@@ -2229,7 +2232,7 @@ function drawHQ(){
   }).join('');
   // orphans: interactions whose department was removed — show so nothing is ever hidden
   const orphan=all.filter(r=>!deps.some(d=>d.id===r.departmentId)).sort(byDate);
-  const orphanHtml = orphan.length? `<div class="card" style="margin-bottom:12px;border-color:#5a3a1a"><h3>⚠ Departament i hequr / i pacaktuar <span class="sub">${orphan.length}</span></h3>${orphan.map(hqRecordHTML).join('')}<div class="hint">Këto interaksione i takonin një departamenti që u fshi. Editoji për t'i ricaktuar te një departament ekzistues.</div></div>`:'';
+  const orphanHtml = orphan.length? `<div class="card" style="margin-bottom:12px;border-color:#f5c9a8"><h3>⚠ Departament i hequr / i pacaktuar <span class="sub">${orphan.length}</span></h3>${orphan.map(hqRecordHTML).join('')}<div class="hint">Këto interaksione i takonin një departamenti që u fshi. Editoji për t'i ricaktuar te një departament ekzistues.</div></div>`:'';
   box.innerHTML=html+orphanHtml;
   $$('#hqBody [data-add]').forEach(b=>b.onclick=()=>{ openHQForm({departmentId:b.dataset.add,date:todayStr()}); });
   $$('#hqBody [data-e]').forEach(b=>b.onclick=()=>openHQForm(Store.get('hqInteractions',b.dataset.e)));
@@ -2740,7 +2743,7 @@ function renderWMS(v){
     connBadge=`<span class="badge b-ok">🟢 Agjenti i lidhur</span>`
       + `<span class="badge ${cfg.autoSync?'b-ok':'b-muted'}">Auto-sync ${cfg.autoSync?('ON · çdo '+(cfg.interval||30)+' min'):'OFF'}</span>`;
     connHint=(cfg.lastError
-      ? `<div class="hint" style="margin-top:6px;color:#f2a">⚠ ${h(cfg.lastError)==='auth_expired'?'Sesioni i WMS ka skaduar (ndodh kur PC-ja rri i fikur / në sleep — serveri e mbyll sesionin). Ngjit cookie-n e re më poshtë; agjenti e provon dhe e ruan vetë.':h(cfg.lastError)}</div>`
+      ? `<div class="hint" style="margin-top:6px;color:var(--crit)">⚠ ${h(cfg.lastError)==='auth_expired'?'Sesioni i WMS ka skaduar (ndodh kur PC-ja rri i fikur / në sleep — serveri e mbyll sesionin). Ngjit cookie-n e re më poshtë; agjenti e provon dhe e ruan vetë.':h(cfg.lastError)}</div>`
       : `<div class="hint" style="margin-top:6px">Të dhënat merren <b>automatikisht</b> nga agjenti lokal (localhost) me sesionin tënd të autorizuar të WMS-it. S'ka hapa manualë.</div>`)
       + `<div class="hint" id="wmsHealthLine" style="margin-top:4px"></div>`
       + `<div id="wmsCookieBox" style="margin-top:8px;${cfg.lastError==='auth_expired'?'':'display:none'}">
@@ -3671,8 +3674,8 @@ async function boot(){
   if(location.protocol==='file:'){
     try{ fetch('http://localhost:8790/wms/health',{cache:'no-store'}).then(r=>{ if(r&&r.ok){
       const b=document.createElement('div');
-      b.style.cssText='position:sticky;top:0;z-index:9999;background:#123527;color:#7fe3b6;padding:10px 16px;font-size:14px;text-align:center;border-bottom:1px solid #1e4a34';
-      b.innerHTML='🟢 Agjenti është aktiv. Ky është versioni <b>file://</b> (pa sync). Për të dhëna live, hape këtu: <a href="http://localhost:8790/app.html" style="color:#b6f0d3;font-weight:700">http://localhost:8790/app.html</a>';
+      b.style.cssText='position:sticky;top:0;z-index:9999;background:#e7f5ec;color:#1e8449;padding:10px 16px;font-size:14px;text-align:center;border-bottom:1px solid #b9e0c6';
+      b.innerHTML='🟢 Agjenti është aktiv. Ky është versioni <b>file://</b> (pa sync). Për të dhëna live, hape këtu: <a href="http://localhost:8790/app.html" style="color:#115b92;font-weight:700">http://localhost:8790/app.html</a>';
       document.body.insertBefore(b, document.body.firstChild);
     }}).catch(()=>{}); }catch(e){}
   }

@@ -36,7 +36,7 @@ function statsShiftsFor(date, time){
    "WMS Pulse refresh" task rebuilds from the WMS database; the page re-reads it every 5 minutes. */
 function renderPulse(v){
   v.innerHTML = pagehead('WMS Pulse','Tabelat nga databaza e WMS-it (produktiviteti, pagesa për veprim, porositë, stoku, inbound). Rifreskohet automatikisht nga databaza; kjo faqe lexon versionin më të ri çdo 5 minuta.')
-    + (wmsOnAgent()? '<iframe id="pulseFrame" src="/pulse/template.html?embed=1&theme=dark" title="WMS Pulse" style="width:100%;height:calc(100vh - 150px);min-height:600px;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></iframe>'
+    + (wmsOnAgent()? '<iframe id="pulseFrame" src="/pulse/template.html?embed=1&theme=light" title="WMS Pulse" style="width:100%;height:calc(100vh - 150px);min-height:600px;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></iframe>'
                    : '<div class="card"><div class="empty">Hape app-in nga http://localhost:8790.</div></div>');
 }
 /* Orari i punës — the schedule editor "Orari i Warehouse" (warehouse-schedule/, its own server on :3000) shown inside the
@@ -167,7 +167,7 @@ function renderStatsBody(d){
   const hmax=Math.max(1,...t.heatmap.flat()), hrs=[...Array(24).keys()].filter(hh=>t.heatmap.some(r=>r[hh]));
   const heat=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Heatmap — ora × dita e javës</h3><button class="btn sm ghost no-print" data-csv="heatmap" style="margin-left:auto">⬇ CSV</button></div>
     <div style="overflow-x:auto"><table class="heat"><thead><tr><th></th>${hrs.map(hh=>`<th>${String(hh).padStart(2,'0')}</th>`).join('')}</tr></thead><tbody>
-    ${t.heatmap.map((r,i)=>`<tr><th>${STATS_WEEKDAYS[i]}</th>${hrs.map(hh=>`<td style="background:rgba(61,155,255,${(r[hh]/hmax*0.85).toFixed(2)})">${r[hh]||''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    ${t.heatmap.map((r,i)=>`<tr><th>${STATS_WEEKDAYS[i]}</th>${hrs.map(hh=>`<td style="background:rgba(17,91,146,${(r[hh]/hmax*0.85).toFixed(2)});color:${r[hh]/hmax>0.55?'#fff':'var(--text)'}">${r[hh]||''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
     ${statsMeta('porosi të dala gjithsej në periudhë, sipas orës së check-out-it të parë dhe ditës së javës.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
   const putaway=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.3 Check-in → map</h3><button class="btn sm ghost no-print" data-csv="putaway" style="margin-left:auto">⬇ CSV</button></div>
     <table style="font-size:12.5px;max-width:560px"><tbody>

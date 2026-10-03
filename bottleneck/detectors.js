@@ -491,6 +491,25 @@ function detect(snap, cfgIn){
     else note('D13',`Kosto/porosi: ${rows.map(r=>'periudha '+r.per+' (v'+r.v+'): '+r2(r.cpo)+' €').join('; ')}. ${prev? '' : 'Vetëm një periudhë e mbyllur për këtë version — krahasimi bëhet kur mbyllet tjetra.'}`);
   });
 
+  /* D14 daily KPIs of the improvement plan — metrics only (no candidates); the plan module compares them with its
+     frozen baseline and weekly targets. Orders out per day come from D3 (same definition as the analysis). */
+  run('D14', b=>{
+    const st=J(b.row.staff).filter(x=>x.d<today), fc=J(b.row.firstCo).filter(x=>x.d<today), fx=J(b.row.fixes);
+    const FX={}; fx.forEach(x=>FX[x.d]=x.n);
+    metric('K.coRate',{detector:'D14', kpi:true, label:'Check-out: porosi për orë aktive (staf)', unit:'porosi/orë', better:'higher', target:null,
+      series:st.filter(x=>x.coH>0).map(x=>({d:x.d, v:r1(x.coOrd/x.coH), n:x.coH, num:x.coOrd, den:x.coH}))});
+    metric('K.ciRate',{detector:'D14', kpi:true, label:'Check-in: njësi për orë aktive (staf)', unit:'njësi/orë', better:'higher', target:null,
+      series:st.filter(x=>x.ciH>0).map(x=>({d:x.d, v:r1(x.ci/x.ciH), n:x.ciH, num:x.ci, den:x.ciH}))});
+    metric('K.mpRate',{detector:'D14', kpi:true, label:'Mapping: njësi për orë aktive (staf, pa ditët e rimapimit masiv)', unit:'njësi/orë', better:'higher', target:null,
+      series:st.filter(x=>x.mpH>0 && x.mp<=3000).map(x=>({d:x.d, v:r1(x.mp/x.mpH), n:x.mpH, num:x.mp, den:x.mpH}))});
+    metric('K.firstCo',{detector:'D14', kpi:true, label:'Skanimi i parë i check-out-it në mëngjes (mediana)', unit:'ora', better:'lower', target:null, time:true,
+      series:fc.map(x=>({d:x.d, v:Math.round(+x.firstCoMed), n:x.n}))});
+    metric('K.fixPct',{detector:'D14', kpi:true, label:'Kode produkti të korrigjuara pas check-in-it', unit:'%', better:'lower', target:null,
+      series:st.filter(x=>x.ci>0).map(x=>({d:x.d, v:r2((FX[x.d]||0)/x.ci*100), num:FX[x.d]||0, den:x.ci}))});
+    if(B.D3){ const cells=J(B.D3.row.cell).filter(c=>c.d<today), od={}; cells.forEach(c=>{ od[c.d]=(od[c.d]||0)+(c.co||0); });
+      metric('K.out',{detector:'D3', kpi:true, label:'Porosi të dala (check-out) në ditë', unit:'porosi', better:'higher', target:null, series:Object.keys(od).sort().map(d=>({d, v:od[d]}))}); }
+  });
+
   /* age limit: a candidate whose evidence period ended more than maxAgeDays ago is history, not a current problem */
   const ageFrom=addDays(today,-cfg.maxAgeDays), isIso=x=>/^\d{4}-\d{2}-\d{2}$/.test(String(x||''));
   out.candidates=out.candidates.filter(c=>{ const end=c.period&&c.period.to; if(isIso(end) && end<ageFrom){ note(c.detector,`"${c.title}" — evidenca mbaron më ${fmtD(end)}, më e vjetër se ${cfg.maxAgeDays} ditë: nuk shfaqet si problem.`,'old'); return false; } return true; });

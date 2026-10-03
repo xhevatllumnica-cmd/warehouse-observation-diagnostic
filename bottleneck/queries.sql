@@ -322,3 +322,29 @@ SELECT /*bn:D13*/ CONVERT(varchar(19),GETDATE(),126) gen,
   GROUP BY p.SalaryPeriodId, p.PricingVersionId ORDER BY p.SalaryPeriodId, p.PricingVersionId FOR JSON PATH) cost,
  (SELECT Id id, PeriodYear y, PeriodMonth m, Status s, CONVERT(varchar(10),FromInclusive,23) f, CONVERT(varchar(10),ToExclusive,23) t, TotalActions ta, ROUND(TotalCost,2) tc
   FROM WarehouseSalaryPeriods WHERE WarehouseId=1/*wh*/ ORDER BY Id FOR JSON PATH) periods
+
+-- @D14 daily KPIs of the improvement plan ("Plani i përmirësimit"), last 49 days, warehouse-01 staff accounts (same
+--    definitions as the baseline analysis of 03.10.2026): staff = person-days with ≥ 10 scans; checkout rate = distinct
+--    orders with 4/18 ÷ clock hours with a 27/4/18 scan; check-in / map rate = units ÷ clock hours with a 2 / 7 scan;
+--    firstCo = per day, the median minute (after midnight) of each morning person's first check-out scan (persons whose
+--    first check-out scan is before 12:00); fixes = units whose product code was corrected (ProductCodeLogs).
+SELECT /*bn:D14*/ CONVERT(varchar(19),GETDATE(),126) gen,
+ (SELECT CONVERT(varchar(10),d,23) d, SUM(coOrd) coOrd, SUM(coH) coH, SUM(ci) ci, SUM(ciH) ciH, SUM(mp) mp, SUM(mpH) mpH, COUNT(*) ppl FROM (
+    SELECT CAST(pl.InsertDateTime AS date) d, pl.UpdateBy ub,
+      COUNT(DISTINCT CASE WHEN pl.LogTypeId IN (4,18) AND pl.OrderId>0 THEN CONCAT(pl.OrderId,'-',pl.PlatformId) END) coOrd,
+      COUNT(DISTINCT CASE WHEN pl.LogTypeId IN (27,4,18) THEN DATEPART(hour,pl.InsertDateTime) END) coH,
+      SUM(CASE WHEN pl.LogTypeId=2 THEN 1 ELSE 0 END) ci, COUNT(DISTINCT CASE WHEN pl.LogTypeId=2 THEN DATEPART(hour,pl.InsertDateTime) END) ciH,
+      SUM(CASE WHEN pl.LogTypeId=7 THEN 1 ELSE 0 END) mp, COUNT(DISTINCT CASE WHEN pl.LogTypeId=7 THEN DATEPART(hour,pl.InsertDateTime) END) mpH
+    FROM ProductLogs pl WITH (NOLOCK) JOIN Users u ON u.UserId=pl.UpdateBy
+    WHERE pl.InsertDateTime>=DATEADD(day,-49,CAST(GETDATE() AS date)) AND pl.LogTypeId IN (2,7,27,4,18) AND u.UserWarehouseId=1/*wh*/ AND u.UserId>0
+      AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+    GROUP BY CAST(pl.InsertDateTime AS date), pl.UpdateBy HAVING COUNT(*)>=10) x GROUP BY d ORDER BY d FOR JSON PATH) staff,
+ (SELECT CONVERT(varchar(10),d,23) d, MAX(p50) firstCoMed, MIN(f) firstCoMin, COUNT(*) n FROM (
+    SELECT d, f, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY f) OVER (PARTITION BY d) p50 FROM (
+      SELECT CAST(pl.InsertDateTime AS date) d, pl.UpdateBy ub, DATEDIFF(minute, CAST(CAST(pl.InsertDateTime AS date) AS datetime), MIN(pl.InsertDateTime)) f
+      FROM ProductLogs pl WITH (NOLOCK) JOIN Users u ON u.UserId=pl.UpdateBy
+      WHERE pl.InsertDateTime>=DATEADD(day,-49,CAST(GETDATE() AS date)) AND pl.LogTypeId IN (27,4,18) AND u.UserWarehouseId=1/*wh*/ AND u.UserId>0
+        AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+      GROUP BY CAST(pl.InsertDateTime AS date), pl.UpdateBy HAVING MIN(DATEPART(hour,pl.InsertDateTime))<12) a) b GROUP BY d ORDER BY d FOR JSON PATH) firstCo,
+ (SELECT CONVERT(varchar(10),CAST(InsertDateTime AS date),23) d, COUNT(DISTINCT ProductItemUniqueIdentifier) n FROM ProductCodeLogs
+  WHERE InsertDateTime>=DATEADD(day,-49,CAST(GETDATE() AS date)) GROUP BY CAST(InsertDateTime AS date) ORDER BY 1 FOR JSON PATH) fixes

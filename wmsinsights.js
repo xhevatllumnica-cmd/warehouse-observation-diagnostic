@@ -181,7 +181,7 @@ function drawWmsInsights(P, shifts, pod){
 }
 function wiCard(i){
   const dot={crit:'🔴',imp:'🟠',warn:'🟡',info:'💡'}[i.level]||'💡';
-  return `<div class="card" style="${i.level==='crit'?'border-color:#5a2a2a':''}">
+  return `<div class="card" style="${i.level==='crit'?'border-color:#f3c1c1':''}">
     <h3>${dot} ${h(i.kind)} <span class="sub"><span class="etag et-${i.tag==='hyp'?'hyp':'data'}">${i.tag==='hyp'?'hypothesis':'data-derived'}</span> ${h(i.area)}</span></h3>
     <div>${h(i.text)}</div>
     <div class="hint" style="margin-top:8px">Evidenca: ${h(i.evidence)}</div>
