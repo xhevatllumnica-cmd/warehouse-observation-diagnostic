@@ -843,6 +843,8 @@ setTimeout(pulseTick, 20000);
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
 let bnState={lastCheck:null, lastSnapshot:null, lastError:null}, bnCache=null;
 function bnConfig(){ const db=loadDb(); return (db&&db.config&&db.config.bottleneck)||{}; }
+// thresholds for the detectors; the problem age limit comes from the query parameter ma (one setting for both)
+function bnThresholds(cfg){ return Object.assign({}, cfg.thresholds||{}, {maxAgeDays:bnAdapter.paramValues(cfg.params||{}).ma}); }
 function bnTick(){
   try{ const cfg=bnConfig(); bnAdapter.writeRunFile(cfg.params||{});
     const r=bnAdapter.collect(360); bnState.lastCheck=new Date().toISOString();
@@ -854,15 +856,15 @@ function bnTick(){
    so a problem's effect can be followed over the 14 days the register requires before closing */
 const BN_HIST=path.join(APPDIR,'bottleneck','metric-history.json');
 function bnRecordHistory(snap, cfg){
-  try{ const det=bnDetectors.detect(snap, cfg.thresholds||{}); let hist={}; try{ hist=JSON.parse(fs.readFileSync(BN_HIST,'utf8')); }catch(e){}
+  try{ const det=bnDetectors.detect(snap, bnThresholds(cfg)); let hist={}; try{ hist=JSON.parse(fs.readFileSync(BN_HIST,'utf8')); }catch(e){}
     Object.values(det.metrics).forEach(m=>{ if((m.series||[]).length!==1) return; const p=m.series[0]; const a=(hist[m.key]=hist[m.key]||[]);
       const i=a.findIndex(x=>x.d===p.d); if(i>=0) a[i]=p; else a.push(p); a.sort((x,y)=>x.d<y.d?-1:1); if(a.length>180) a.splice(0,a.length-180); });
     fs.writeFileSync(BN_HIST, JSON.stringify(hist)); }catch(e){ console.log('[wms-agent] bottleneck history: '+e.message); }
 }
 function bnData(){
   const snap=bnAdapter.latestSnapshot(); if(!snap) return {empty:true, state:bnState};
-  const cfg=bnConfig(), key=snap.id+'|'+JSON.stringify(cfg.thresholds||{});
-  if(!bnCache || bnCache.key!==key){ const data=bnDetectors.detect(snap, cfg.thresholds||{}); let hist={}; try{ hist=JSON.parse(fs.readFileSync(BN_HIST,'utf8')); }catch(e){}
+  const cfg=bnConfig(), key=snap.id+'|'+JSON.stringify(bnThresholds(cfg));
+  if(!bnCache || bnCache.key!==key){ const data=bnDetectors.detect(snap, bnThresholds(cfg)); let hist={}; try{ hist=JSON.parse(fs.readFileSync(BN_HIST,'utf8')); }catch(e){}
     Object.values(data.metrics).forEach(m=>{ const hs=hist[m.key]; if(hs && (m.series||[]).length<=1){ const cur=(m.series||[])[0]; m.series=hs.filter(x=>!cur||x.d!==cur.d).concat(cur?[cur]:[]).sort((x,y)=>x.d<y.d?-1:1); m.history=true; } });
     bnCache={key, data}; }
   return Object.assign({state:bnState, defaults:bnDetectors.DET_DEFAULTS, params:bnAdapter.paramValues(cfg.params||{})}, bnCache.data);

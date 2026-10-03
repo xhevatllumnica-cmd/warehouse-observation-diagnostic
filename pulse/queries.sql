@@ -292,3 +292,24 @@ SELECT /*pulse:J*/
   GROUP BY wk ORDER BY MIN(d) FOR JSON PATH) sameDay
 FROM (SELECT DATEADD(day, -((DATEPART(weekday,GETDATE())+@@DATEFIRST-2)%7), CAST(GETDATE() AS date)) mon) m
 CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central European Standard Time') tz) z
+
+-- @K shipments (module "Shipments"): every inbound shipment stop (ShipmentDestinations × Shipments) of all warehouses
+--    that was picked up, due or arrived in the last 30 days, or is still on the way. Category from Shipments.SupplierType:
+--    10 = Kombëtare (local sellers, e.g. Beki), 20 = Ndërkombëtare (Poland, Czechia, Romania, Hungary … — meaning inferred
+--    from the origin names). Per stop: carrier, origin, pickup / estimated / actual arrival, status (shown as a number),
+--    pallets, price, invoices linked to it (count only — local invoice numbers carry sellers' personal names) and the
+--    units checked in from those invoices' supplies with the first / last check-in. Carriers' contact info is not read.
+SELECT /*pulse:K*/ CONVERT(varchar(19),GETDATE(),126) gen,
+ (SELECT d.Id did, s.Id sid, d.WarehouseId w, CASE WHEN s.SupplierType=20 THEN 'I' ELSE 'K' END cat, s.SupplierType stp, s.CarrierId cid, LEFT(s.OriginWarehouseName,60) o, s.TruckId tr,
+    d.DestinationOrder dor, d.Status st, CONVERT(varchar(16),s.PickupDateTime,120) pick, CONVERT(varchar(16),d.EstimatedArrivalDate,120) eta, CONVERT(varchar(16),d.ActualArrivalDate,120) arr,
+    d.PalletCount pal, d.Price pr, d.RouteDistanceKm km, iv.n inv, u.units, CONVERT(varchar(16),u.f,120) ci1, CONVERT(varchar(16),u.l,120) ci2
+  FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId
+  LEFT JOIN (SELECT i.ShipmentDestinationId sd, COUNT(*) n FROM Invoices i
+             WHERE i.ShipmentDestinationId IS NOT NULL AND i.InsertDateTime>=DATEADD(day,-75,GETDATE()) GROUP BY i.ShipmentDestinationId) iv ON iv.sd=d.Id
+  LEFT JOIN (SELECT i.ShipmentDestinationId sd, COUNT(DISTINCT c.ProductItemUniqueIdentifier) units, MIN(c.InsertDateTime) f, MAX(c.InsertDateTime) l FROM Invoices i
+             JOIN Supply_Invoice_Mapping m ON m.InvoiceNo=i.InvoiceUniqueId JOIN ProductCheckIns c ON c.SupplyUniqueId=m.SupplyUniqueId AND c.InsertDateTime>=DATEADD(day,-75,GETDATE())
+             WHERE i.ShipmentDestinationId IS NOT NULL AND i.InsertDateTime>=DATEADD(day,-75,GETDATE()) GROUP BY i.ShipmentDestinationId) u ON u.sd=d.Id
+  WHERE d.EstimatedArrivalDate>=DATEADD(day,-30,CAST(GETDATE() AS date)) OR s.PickupDateTime>=DATEADD(day,-30,GETDATE()) OR d.ActualArrivalDate>=DATEADD(day,-30,GETDATE())
+  ORDER BY d.EstimatedArrivalDate DESC FOR JSON PATH, INCLUDE_NULL_VALUES) stops,
+ (SELECT ca.Id id, ca.Name nm, ca.CountryCode cc, CAST(ca.IsActive AS int) act FROM Carriers ca FOR JSON PATH) carriers,
+ (SELECT t.Id id, t.CarrierId car, t.TruckType tt, t.MaxPallets mp FROM Trucks t FOR JSON PATH) trucks

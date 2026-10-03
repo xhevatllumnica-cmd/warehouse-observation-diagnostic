@@ -21,6 +21,16 @@ The "Bottleneck Register" module (Diagnose menu) identifies, quantifies and trac
 
 **Reproduction:** run the same SQL from the snapshot (read-only) on the WMS database. With the same parameters it gives the same numbers for the same period. Data from today changes until the day ends.
 
+## Problem age limit (30 calendar days)
+
+Only WMS events from **the last 30 calendar days** become candidates. This is the `ma` parameter, "Mosha maksimale e problemit", in Settings.
+
+- Lists of open items include only items from the last 30 days: units waiting for mapping, Started supplies, international shipments without an arrival, orders without a check-out, inspections, zones with missing items, and units on overloaded rows (mapped in the last 30 days).
+- Older backlog is only counted, and appears as a note in "Të dhënat & query-t". It never becomes a problem: e.g. 1,076 supplies Started for more than 30 days, sources stopped since 2022/2024/2025.
+- General rule: a candidate whose evidence period ended before the limit is dropped and noted.
+- The 4-week baseline (days 8–35) is still used **only as a reference** for comparison.
+- Problems already accepted into the register are not affected by the limit; they follow their own status.
+
 ## Rules the queries follow
 
 The automated check passes for all blocks: 14 blocks and 20 references to ProductLogs.
@@ -54,7 +64,7 @@ The automated check passes for all blocks: 14 blocks and 20 references to Produc
 | D8 | Inbound | Supplies still "Started" by age. Opening → first check-in. |
 | D9 | Inventory accuracy | When each source last received a row (a stopped source is reported as such). Missing items in the last full inspection. |
 | D10 | Space / location | Parked orders (if still recorded). Overloaded rows (× median). Zones with the most missing items. |
-| D11 | Transport | Inbound stops arriving after the expected date (compared by date). Per carrier. |
+| D11 | Transport | **Local** (`Shipments.SupplierType` 10, e.g. Beki — last week against the 4 before) and **international** (SupplierType 20: Poland, Czechia, Romania, Hungary… — last 30 days against the 90 before) kept apart: stops arriving after the expected date (compared by date), per carrier, with pickup → arrival days. Plus: international stops with no recorded arrival more than 2 days after the expected date (with the number of linked invoices), and the data gaps — pallet count (0 since August 2026) and transport price (e.g. CargoPartner – Apcom). 10 = local / 20 = international is inferred from the origin names (UNCONFIRMED). |
 | D12 | Order age | By WmsStatusId (0–4 h, 4–8 h, 8–24 h, 1–3 days, > 3 days), split by whether the order has been checked out. |
 | D13 | Cost per order | Σ Cost (already `CalculatedPrice × Quantity`) ÷ orders checked out in the same window. Compared only within the same PricingVersionId. |
 

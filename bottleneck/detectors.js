@@ -11,6 +11,7 @@
 
 const DET_DEFAULTS={
   roster:17, breakMin:30, minN:30,
+  maxAgeDays:30,         // a problem is shown only when its evidence is from the last N calendar days (= query parameter ma)
   carryMax:0,            // D1  orders/day carried over (ready by cut-off, out next day or later)
   leadP50Max:48,         // D2  hours, median order → first check-out
   leadRisePct:20,        // D2  p90 above baseline by more than this %
@@ -26,7 +27,11 @@ const DET_DEFAULTS={
   staleDays:60,                                                   // D9/D10 source not written for this long
   missPctMax:1,                                                   // D9 % missing in the last full inspection
   rowFactor:10,                                                   // D10 units on a row > median × this
-  lateMax:20,                                                     // D11 % of inbound stops arriving after the estimated date
+  lateMax:20,                                                     // D11 local: % of stops arriving after the estimated date (week)
+  lateIntlMax:20,                                                 // D11 international: same, last 30 days
+  openIntlMax:0,                                                  // D11 international stops with no arrival > 2 days after the estimated date
+  palletPctMin:80,                                                // D11 % of international stops with a pallet count
+  noPriceMax:0,                                                   // D11 international stops without a price (3 months)
   ageMax:50,                                                      // D12 orders without check-out older than 3 days, per status
   costMax:null, costRisePct:10,                                   // D13 €/order
   p1:64, p2:27                                                    // RPN thresholds for P1 / P2
@@ -191,7 +196,8 @@ function detect(snap, cfgIn){
     const over=sum(wt.map(w=>w.overX)), b3d=sum(wt.map(w=>w.b3d)), n=sum(wt.map(w=>w.n));
     const curP90=q(dw.filter(x=>inW(x.d,W.cur)).map(x=>+x.p90),0.5), baseP90=q(dw.filter(x=>inW(x.d,W.base)).map(x=>+x.p90),0.5);
     const nCur=sum(dw.filter(x=>inW(x.d,W.cur)).map(x=>x.n));
-    out.detail.D4={waiting:wt, oldest:old, dwell:dw};
+    out.detail.D4={waiting:wt, oldest:old, dwell:dw, older:+b.row.older||0};
+    if(+b.row.older>0) note('D4',`${b.row.older} njësi të tjera në status 2/6 janë pranuar para më shumë se ${cfg.maxAgeDays} ditësh — mbetje e vjetër, nuk numërohen në problem.`,'old');
     metric('D4.p90',{detector:'D4', label:'Koha check-in → mapping (p90 ditore)', unit:'min', better:'lower', target:cfg.mapP90Max, series:dw.map(x=>({d:x.d, v:Math.round(+x.p90)}))});
     metric('D4.waiting',{detector:'D4', label:'Njësi që presin mapping', unit:'njësi', better:'lower', target:cfg.mapWaitMax, series:[{d:today, v:over}]});
     const mh=(b.scope&&b.scope.mh)||4;
@@ -326,10 +332,8 @@ function detect(snap, cfgIn){
         gemba:[ 'Për 5 furnizimet më të vjetra: a është malli fizikisht në depo? Pse s\'është mbyllur?', 'Kush e mbyll furnizimin dhe kur?' ],
         suggest:{ sev:3, occ:5 } });
     }
-    if((+s.gt30||0)>cfg.supplyStaleMax) cand({ key:'D8.stale', detector:'D8', metricKey:null, blocks:['D8'], title:'Furnizime të pambyllura prej më shumë se 30 ditësh', phase:'Inbounding', category:'Të dhëna',
-      symptom:`${s.gt30} furnizime të depos janë ende "Started" pas më shumë se 30 ditësh.`, value:+s.gt30, baseline:null, threshold:cfg.supplyStaleMax, unit:'furnizime', better:'lower',
-      period:{from:'', to:today}, scope:scopeText(b), n:+s.n, confidence:'e lartë', impact:{objective:'Kosto për porosi', value:null, text:'Statuset e furnizimeve në WMS nuk pasqyrojnë realitetin — raportet e inbound-it janë të zhurmshme'},
-      hypotheses:['Mbyllja e furnizimit nuk është pjesë e procesit standard.','Furnizime testuese/të dyfishta.'], gemba:['A ka procedurë për mbylljen e furnizimeve? Kush e kontrollon?'], suggest:{sev:2, occ:5, det:2} });
+    // older than the problem age limit: backlog of the past, shown as a note only (never as a problem)
+    if(+s.gt30>0) note('D8',`${s.gt30} furnizime të tjera janë "Started" prej më shumë se ${cfg.maxAgeDays} ditësh — mbetje e vjetër, jashtë kufirit të moshës; nuk shfaqen si problem.`,'old');
     if(delay.length && q(delay.map(x=>+x.p50),0.5)===0) note('D8','Furnizimi hapet në momentin e check-in-it të parë (mediana e vonesës = 0 min): koha nga mbërritja fizike te check-in-i nuk regjistrohet në WMS — mateni në Gemba.','data');
   });
 
@@ -339,10 +343,8 @@ function detect(snap, cfgIn){
     const insp=J(r.insp);
     out.detail.D9={sdLast:r.sdLast, nfLast:r.nfLast, imLast:r.imLast, insp, sd:J(r.sd), nf:J(r.nf), sdRepeat:J(r.sdRepeat), nfRepeat:J(r.nfRepeat)};
     const st=[]; if(stale(r.sdLast)) st.push('StockDifferences (e fundit: '+(r.sdLast||'asnjë')+')'); if(stale(r.nfLast)) st.push('NotFoundProducts (e fundit: '+(r.nfLast||'asnjë')+')');
-    if(st.length) cand({ key:'D9.stale', detector:'D9', metricKey:null, blocks:['D9'], title:'Burimet e saktësisë së inventarit nuk përditësohen në WMS', phase:'Inventar', category:'Të dhëna',
-      symptom:`Nuk ka regjistrime të reja: ${st.join('; ')}. Saktësia e inventarit mund të ndiqet vetëm nga inspektimet.`, value:st.length, baseline:null, threshold:0, unit:'burime', better:'lower',
-      period:{from:'', to:today}, scope:scopeText(b), n:st.length, confidence:'e lartë', impact:{objective:'Kosto për porosi', value:null, text:'Mospërputhjet e stokut dhe produktet që s\'gjenden nuk maten çdo ditë'},
-      hypotheses:['Sinkronizimi WMS–QuickBooks është ndalur.','Raportimi i "produkt nuk u gjet" bëhet jashtë WMS-it.'], gemba:['Kur nuk gjendet një produkt në raft, si raportohet sot?'], suggest:{sev:2, occ:5, det:4} });
+    // sources that stopped long ago are a fact about the past, not a problem of the last maxAgeDays: note only
+    if(st.length) note('D9',`Burime të ndalura (pa regjistrime prej më shumë se ${cfg.staleDays} ditësh): ${st.join('; ')} — saktësia e inventarit ndiqet vetëm nga inspektimet. Nuk shfaqet si problem (më e vjetër se ${cfg.maxAgeDays} ditë).`,'old');
     const full=insp.find(i=>i.sc>=1000);
     if(full){ const pctMiss=full.ms/(full.sc+full.ms)*100;
       metric('D9.miss',{detector:'D9', label:'Mungesa në inspektimin e fundit të plotë', unit:'%', better:'lower', target:cfg.missPctMax, series:insp.filter(i=>i.sc>=1000).reverse().map(i=>({d:i.cd, v:r2(i.ms/(i.sc+i.ms)*100)}))});
@@ -375,22 +377,83 @@ function detect(snap, cfgIn){
     }
   });
 
-  /* D11 transport ------------------------------------------------------- */
+  /* D11 transport — local (SupplierType 10) and international (20) apart ------------------------------------ */
   run('D11', b=>{
-    const wk=J(b.row.week), car=J(b.row.carrier);
-    if(!wk.length) return;
-    out.detail.D11={week:wk, carrier:car};
-    metric('D11.late',{detector:'D11', label:'Ndalesa inbound që mbërrijnë pas datës së pritur', unit:'%', better:'lower', target:cfg.lateMax, series:wk.map(w=>({d:w.d1, v:w.n? r1(w.late/w.n*100) : 0}))});
-    const cur=wk[wk.length-1], base=wk.slice(-5,-1), pc=cur.n? cur.late/cur.n*100 : 0, pb=avg(base.map(w=>w.n? w.late/w.n*100 : 0));
-    if(pc>cfg.lateMax){ const worst=car.slice().sort((a,b)=>b.late-a.late)[0];
-      cand({ key:'D11.late', detector:'D11', metricKey:'D11.late', blocks:['D11'], title:'Transporti inbound mbërrin pas datës së pritur', phase:'Inbounding', category:'Transport',
-        symptom:`Java nga ${fmtD(cur.d1)}: ${cur.late} nga ${cur.n} ndalesa (${r1(pc)}%) mbërritën pas datës së pritur; ${cur.missing} ende pa mbërritje të regjistruar.`,
-        value:r1(pc), baseline:r1(pb), threshold:cfg.lateMax, unit:'%', better:'lower', period:{from:cur.d1, to:addDays(today,-1)}, scope:scopeText(b), n:cur.n, confidence:conf(cur.n),
-        impact:{objective:'Same-day', value:cur.late, text:`${cur.late} ndalesa me vonesë/javë — porositë që presin këtë mall shtyhen`},
-        tags:{fact:car.map(c=>`${c.nm}: ${c.late}/${c.n} me vonesë, mesatarisht ${c.delayDays} ditë, ${c.missing} pa mbërritje`), hyp:[], unconfirmed:['Krahasimi bëhet me datë (jo orë); data e pritur mund të jetë futur pa saktësi.']},
-        hypotheses:[`Kapaciteti/planifikimi i rrugës së ${worst? worst.nm : 'transportuesit'} nuk mjafton.`, 'Data e pritur vendoset optimiste në krijim.', 'Mbërritja regjistrohet me vonesë në WMS (jo transporti vetë).'],
-        gemba:['Për 5 ndalesa me vonesë: kur erdhi kamioni realisht dhe kur u regjistrua?'], suggest:{sev:3, occ:5} });
+    const wk=J(b.row.week), car=J(b.row.carrier), i30=J(b.row.intl30), iPrev=J(b.row.intlPrev), open=J(b.row.openIntl), dq=J(b.row.dataIntl);
+    const one=x=> Array.isArray(x)? (x[0]||{}) : (x||{});
+    const I30=one(i30), IP=one(iPrev);
+    const old=!wk.length || wk[0].t===undefined;                              // a snapshot taken before the split (no type column)
+    out.detail.D11={week:wk, carrier:car, intl30:I30, intlPrev:IP, openIntl:open, dataIntl:dq, olderOpenIntl:+b.row.olderOpenIntl||0};
+    if(+b.row.olderOpenIntl>0) note('D11',`${b.row.olderOpenIntl} ndalesa ndërkombëtare të tjera janë pa mbërritje me datë të pritur më të vjetër se ${cfg.maxAgeDays} ditë — mbetje e vjetër, nuk shfaqen si problem.`,'old');
+    const ageMonth=addDays(today,-cfg.maxAgeDays).slice(0,7);                // months that overlap the age window
+    const pct=(late,n)=> n? r1(late/n*100) : 0;
+    // local (Beki …): last ISO week against the 4 before
+    const loc=wk.filter(w=>old || w.t==='local');
+    if(loc.length){
+      metric('D11.late.local',{detector:'D11', label:'Transporti lokal: ndalesa që mbërrijnë pas datës së pritur', unit:'%', better:'lower', target:cfg.lateMax, series:loc.map(w=>({d:w.d1, v:pct(w.late,w.n)}))});
+      const cur=loc[loc.length-1], base=loc.slice(-5,-1), pc=pct(cur.late,cur.n), pb=r1(avg(base.map(w=>pct(w.late,w.n))));
+      const lc=car.filter(c=>old || c.t==='local');
+      if(pc>cfg.lateMax){ const worst=lc.slice().sort((a,b)=>b.late-a.late)[0];
+        cand({ key:'D11.late.local', detector:'D11', metricKey:'D11.late.local', blocks:['D11'], solo:true, title:`Transporti lokal${worst? ' ('+worst.nm+')' : ''} mbërrin pas datës së pritur`, phase:'Inbounding', category:'Transport',
+          symptom:`Java nga ${fmtD(cur.d1)}: ${cur.late} nga ${cur.n} ndalesa lokale (${pc}%) mbërritën pas datës së pritur; ${cur.missing} pa mbërritje të regjistruar.`,
+          value:pc, baseline:pb, threshold:cfg.lateMax, unit:'%', better:'lower', period:{from:cur.d1, to:addDays(today,-1)}, scope:scopeText(b)+' · furnitorë lokalë (SupplierType 10)', n:cur.n, confidence:conf(cur.n),
+          impact:{objective:'Same-day', value:cur.late, text:`${cur.late} ndalesa lokale me vonesë/javë — porositë cross-dock që presin këtë mall shtyhen`},
+          tags:{fact:lc.map(c=>`${c.nm}: ${c.late}/${c.n} me vonesë, mesatarisht ${c.delayDays} ditë, ${c.missing} pa mbërritje${c.transitDays!=null? ', marrja → mbërritja '+c.transitDays+' ditë' : ''}`), hyp:[],
+            unconfirmed:['Krahasimi bëhet me datë (jo orë). SupplierType 10 = lokal është nxjerrë nga emrat e origjinës, jo i dokumentuar.']},
+          hypotheses:[`Data e pritur vendoset e njëjta ditë me marrjen, ndërsa transporti lokal (${worst? worst.nm : 'transportuesi'}) mbërrin ditën tjetër.`, 'Mbërritja regjistrohet me vonesë në WMS (në check-in, jo kur vjen furgoni).', 'Kapaciteti i rrugës/furgonëve nuk mjafton në ditët e pikut.'],
+          gemba:['Për 5 ndalesa me vonesë: kur erdhi furgoni realisht, kur u regjistrua mbërritja dhe çfarë date të pritur kishte?', 'Kush e vendos datën e pritur dhe mbi çfarë baze?'], suggest:{sev:3, occ:5} });
+      }
     }
+    if(old){ note('D11','Snapshot-i i D11 është para ndarjes lokal / ndërkombëtar — ekzekuto sërish D11 për pjesën ndërkombëtare.','missing'); return; }
+    // international: last 30 days against the 90 days before (a week has too few stops)
+    const iw=wk.filter(w=>w.t==='intl');
+    metric('D11.late.intl',{detector:'D11', label:'Transporti ndërkombëtar: ndalesa që mbërrijnë pas datës së pritur', unit:'%', better:'lower', target:cfg.lateIntlMax, series:iw.map(w=>({d:w.d1, v:pct(w.late,w.n)}))});
+    const pi=pct(I30.late,I30.n), pp=pct(IP.late,IP.n), ic=car.filter(c=>c.t==='intl');
+    if(I30.n && pi>cfg.lateIntlMax){ const worst=ic.slice().sort((a,b)=>b.late-a.late)[0];
+      cand({ key:'D11.late.intl', detector:'D11', metricKey:'D11.late.intl', blocks:['D11'], solo:true, title:'Transporti ndërkombëtar mbërrin pas datës së pritur', phase:'Inbounding', category:'Transport',
+        symptom:`30 ditët e fundit: ${I30.late} nga ${I30.n} ndalesa ndërkombëtare (${pi}%) mbërritën pas datës së pritur (90 ditët para: ${pp}%).`,
+        value:pi, baseline:pp, threshold:cfg.lateIntlMax, unit:'%', better:'lower', period:{from:addDays(today,-30), to:addDays(today,-1)}, baselinePeriod:{from:addDays(today,-120), to:addDays(today,-31)},
+        scope:scopeText(b)+' · ndërkombëtare (SupplierType 20)', n:I30.n, confidence:conf(I30.n),
+        impact:{objective:'Same-day', value:I30.late, text:'Rreth gjysma e njësive të pranuara vijnë me dërgesa ndërkombëtare — vonesa e tyre shtyn porositë që presin këtë mall'},
+        tags:{fact:ic.map(c=>`${c.nm}: ${c.late}/${c.n} me vonesë, ${c.delayDays} ditë mesatarisht, marrja → mbërritja ${c.transitDays??'—'} ditë`), hyp:[], unconfirmed:['SupplierType 20 = ndërkombëtar është nxjerrë nga emrat e origjinës (Poloni, Çeki, Rumani, Hungari…).']},
+        hypotheses:[`Koha e tranzitit të ${worst? worst.nm : 'transportuesit'} është më e gjatë se ajo e planifikuar në datën e pritur.`, 'Vonesa në doganë / kufi.', 'Marrja te furnitori (Morele, Action…) bëhet më vonë se data e planifikuar.'],
+        gemba:['Për 3 dërgesat më të vonuara: data e marrjes, kalimi i kufirit dhe mbërritja reale — ku humbi koha?'], suggest:{sev:3, occ:4} });
+    } else if(I30.n) note('D11',`Transporti ndërkombëtar: ${I30.late}/${I30.n} me vonesë në 30 ditët e fundit (${pi}%), nga ${pp}% në 90 ditët para — brenda pragut ${cfg.lateIntlMax}%.`,'ok');
+    // international stops with no recorded arrival after the estimated date
+    metric('D11.open.intl',{detector:'D11', label:'Dërgesa ndërkombëtare pa mbërritje të regjistruar pas datës së pritur', unit:'ndalesa', better:'lower', target:cfg.openIntlMax, series:[{d:today, v:open.length}]});
+    if(open.length>cfg.openIntlMax){ const withInv=open.filter(o=>o.inv>0);
+      cand({ key:'D11.open.intl', detector:'D11', metricKey:'D11.open.intl', blocks:['D11'], solo:true, title:'Dërgesa ndërkombëtare pa mbërritje të regjistruar pas datës së pritur', phase:'Inbounding', category:'Të dhëna',
+        symptom:`${open.length} ndalesa ndërkombëtare të depos nuk kanë mbërritje të regjistruar 2–${cfg.maxAgeDays} ditë pas datës së pritur (më e vjetra: ${open[0].daysOver} ditë); ${withInv.length} prej tyre kanë faturë të lidhur.`,
+        value:open.length, baseline:null, threshold:cfg.openIntlMax, unit:'ndalesa', better:'lower', period:{from:addDays(today,-cfg.maxAgeDays), to:addDays(today,-3)}, scope:scopeText(b)+' · ndërkombëtare', n:open.length, confidence:'e lartë',
+        impact:{objective:'Same-day', value:open.length, text:'Statusi i transportit në WMS nuk tregon nëse malli erdhi — planifikimi i inbound-it dhe vonesat e transportuesve maten gabim'},
+        tags:{fact:open.slice(0,9).map(o=>`#${o.id} ${o.car} · ${o.o} · pritej ${fmtD(o.eta)} (${o.daysOver} ditë më parë) · status ${o.st} · ${o.inv} faturë`),
+          hyp:withInv.length? [`${withInv.length} me faturë: malli me shumë gjasë ka ardhur, por mbërritja s'është regjistruar.`] : [],
+          unconfirmed:['Statusi i ndalesës (10 → 20 → … → 60) nuk ka kuptim të dokumentuar; shfaqet si numër.']},
+        hypotheses:['Mbërritja nuk regjistrohet në WMS kur malli pranohet (hap procesi pa pronar).', 'Dërgesa u anulua ose u bashkua me një tjetër, por nuk u mbyll.', 'Malli nuk ka ardhur (pa faturë) — duhet ndjekur me transportuesin.'],
+        gemba:['Për çdo ndalesë në listë: a është malli në depo (kërko faturën / furnizimin)? Nëse po, regjistro mbërritjen; nëse jo, pyet transportuesin.', 'Kush e regjistron mbërritjen e transportit në WMS dhe kur?'],
+        suggest:{sev:2, occ:4, det:3} });
+    }
+    // data gaps on international stops: pallets and price
+    const full=dq.filter(m=>m.m>=ageMonth), nF=sum(full.map(m=>m.n)), palF=sum(full.map(m=>m.withPal));
+    metric('D11.pallets',{detector:'D11', label:'Ndalesa ndërkombëtare me numër paletash të regjistruar', unit:'%', better:'higher', target:cfg.palletPctMin, series:dq.map(m=>({d:m.m+'-01', v:m.n? r1(m.withPal/m.n*100) : 0}))});
+    if(nF && palF/nF*100<cfg.palletPctMin){ const since=dq.find(m=>m.n && m.withPal===0);
+      cand({ key:'D11.pallets', detector:'D11', metricKey:'D11.pallets', blocks:['D11'], solo:true, title:'Numri i paletave nuk regjistrohet te dërgesat ndërkombëtare', phase:'Inbounding', category:'Të dhëna',
+        symptom:`${full.map(m=>m.m+': '+m.withPal+'/'+m.n).join(', ')} ndalesa me palet të regjistruara${since? ' — 0 që nga '+since.m : ''}.`,
+        value:r1(palF/nF*100), baseline:null, threshold:cfg.palletPctMin, unit:'% me palet', better:'higher', period:{from:full[0].m+'-01', to:today}, scope:scopeText(b)+' · ndërkombëtare', n:nF, confidence:'e lartë',
+        impact:{objective:'Kosto për porosi', value:null, text:'Kostoja e transportit për paletë dhe shfrytëzimi i kamionit nuk mund të maten'},
+        tags:{fact:dq.map(m=>`${m.m}: ${m.withPal}/${m.n} me palet`), hyp:[], unconfirmed:[]},
+        hypotheses:['Fusha e paletave nuk kërkohet më / nuk plotësohet në krijimin e dërgesës (ndryshim rreth gushtit).', 'Personi që regjistron dërgesat ndryshoi dhe nuk e di që duhet.'],
+        gemba:['Kush krijon dërgesat në WMS dhe a e sheh fushën "PalletCount"?', 'A e jep transportuesi numrin e paletave në dokument (CMR)?'], suggest:{sev:2, occ:5, det:2} });
+    }
+    const rec3=dq.filter(m=>m.m>=ageMonth).length? dq.filter(m=>m.m>=ageMonth) : dq.slice(-1), np={}; rec3.forEach(m=>(m.noPrice||[]).forEach(x=>{ np[x.c]=(np[x.c]||0)+x.n; })); const npN=sum(Object.values(np));
+    metric('D11.noprice',{detector:'D11', label:'Ndalesa ndërkombëtare pa çmim transporti (muajt brenda kufirit të moshës)', unit:'ndalesa', better:'lower', target:cfg.noPriceMax, series:[{d:today, v:npN}]});
+    if(npN>cfg.noPriceMax) cand({ key:'D11.noprice', detector:'D11', metricKey:'D11.noprice', blocks:['D11'], solo:true, title:`Kostoja e transportit mungon për ${Object.keys(np).join(', ')}`, phase:'Inbounding', category:'Të dhëna',
+      symptom:`${npN} ndalesa ndërkombëtare të marra që nga ${fmtD(rec3[0].m+'-01')} nuk kanë çmim (Price = 0): ${Object.entries(np).map(([c,n])=>c+' '+n).join(', ')}.`,
+      value:npN, baseline:null, threshold:cfg.noPriceMax, unit:'ndalesa', better:'lower', period:{from:rec3[0].m+'-01', to:today}, scope:scopeText(b)+' · ndërkombëtare', n:sum(rec3.map(m=>m.n)), confidence:'e lartë',
+      impact:{objective:'Kosto për porosi', value:npN, text:'Kostoja e inbound-it për këtë transportues nuk hyn në koston për porosi dhe nuk krahasohet'},
+      tags:{fact:[], hyp:[], unconfirmed:['Ndoshta kostoja paguhet nga furnitori (p.sh. Apcom) — konfirmo me prokurimin para se ta trajtosh si gabim.']},
+      hypotheses:['Transporti paguhet nga furnitori dhe çmimi nuk vendoset.', 'Fatura e transportit vjen më vonë dhe çmimi nuk plotësohet pas.'],
+      gemba:['Kush e paguan transportin e Apcom-it? Nëse e paguajmë ne, ku është fatura?'], suggest:{sev:2, occ:5, det:2} });
   });
 
   /* D12 order age by status ------------------------------------------------ */
@@ -401,8 +464,8 @@ function detect(snap, cfgIn){
     const flagged=Object.values(byS).filter(x=>x.b3d>cfg.ageMax).sort((a,b)=>b.b3d-a.b3d);
     metric('D12.old',{detector:'D12', label:'Porosi pa check-out më të vjetra se 3 ditë', unit:'porosi', better:'lower', target:cfg.ageMax, series:[{d:today, v:sum(open.map(a=>a.b3d))}]});
     if(flagged.length) cand({ key:'D12.age', detector:'D12', metricKey:'D12.old', blocks:['D12'], title:'Porosi pa check-out më të vjetra se 3 ditë', phase:'Claim', category:'Sistem-WMS',
-      symptom:`Porosi të 60 ditëve të fundit pa asnjë check-out dhe më të vjetra se 3 ditë, sipas WmsStatusId: ${flagged.map(x=>x.s+(hints[x.s]? ' ('+hints[x.s]+')' : '')+': '+x.b3d).join(', ')}.`,
-      value:sum(flagged.map(x=>x.b3d)), baseline:null, threshold:cfg.ageMax, unit:'porosi', better:'lower', period:{from:addDays(today,-60), to:today}, scope:scopeText(b), n:sum(open.map(a=>a.n)), confidence:'e mesme',
+      symptom:`Porosi të krijuara në ${cfg.maxAgeDays} ditët e fundit, pa asnjë check-out dhe më të vjetra se 3 ditë, sipas WmsStatusId: ${flagged.map(x=>x.s+(hints[x.s]? ' ('+hints[x.s]+')' : '')+': '+x.b3d).join(', ')}.`,
+      value:sum(flagged.map(x=>x.b3d)), baseline:null, threshold:cfg.ageMax, unit:'porosi', better:'lower', period:{from:addDays(today,-cfg.maxAgeDays), to:today}, scope:scopeText(b), n:sum(open.map(a=>a.n)), confidence:'e mesme',
       impact:{objective:'Same-day', value:sum(flagged.map(x=>x.b3d)), text:'Porosi që mund të jenë ngecur, ose të anuluara pa status përfundimtar'},
       tags:{fact:[], hyp:[], unconfirmed:['Kuptimi i WmsStatusId nuk është i konfirmuar (vetëm 23, 25, 26, 37 kanë sugjerim); statusi 25 shfaqet edhe te porosi të dala, pra nuk përditësohet gjithmonë.']},
       hypotheses:['Porositë janë anuluar/kthyer por statusi nuk ndryshon (statuset përfundimtare të panjohura).', 'Porositë presin mallin nga shitësi.', 'Porosi të harruara/ngecura në depo (sidomos statusi me njësi të rezervuara — lidhe me D1).'],
@@ -428,9 +491,16 @@ function detect(snap, cfgIn){
     else note('D13',`Kosto/porosi: ${rows.map(r=>'periudha '+r.per+' (v'+r.v+'): '+r2(r.cpo)+' €').join('; ')}. ${prev? '' : 'Vetëm një periudhë e mbyllur për këtë version — krahasimi bëhet kur mbyllet tjetra.'}`);
   });
 
+  /* age limit: a candidate whose evidence period ended more than maxAgeDays ago is history, not a current problem */
+  const ageFrom=addDays(today,-cfg.maxAgeDays), isIso=x=>/^\d{4}-\d{2}-\d{2}$/.test(String(x||''));
+  out.candidates=out.candidates.filter(c=>{ const end=c.period&&c.period.to; if(isIso(end) && end<ageFrom){ note(c.detector,`"${c.title}" — evidenca mbaron më ${fmtD(end)}, më e vjetër se ${cfg.maxAgeDays} ditë: nuk shfaqet si problem.`,'old'); return false; } return true; });
+  out.ageLimit={days:cfg.maxAgeDays, from:ageFrom};
+
   /* duplicates: several symptoms of the same phase in the same period → one group, one problem with several evidences */
-  const groups={}; out.candidates.forEach(c=>{ const g=c.phase+'|'+c.category; (groups[g]=groups[g]||[]).push(c.key); });
-  out.candidates.forEach(c=>{ const g=groups[c.phase+'|'+c.category]; c.group= g.length>1? g.join('+') : null; });
+  // a candidate marked solo is a distinct problem even when it shares phase and category with another
+  const gk=c=> c.solo? 'solo|'+c.key : c.phase+'|'+c.category;
+  const groups={}; out.candidates.forEach(c=>{ (groups[gk(c)]=groups[gk(c)]||[]).push(c.key); });
+  out.candidates.forEach(c=>{ const g=groups[gk(c)]; c.group= g.length>1? g.join('+') : null; });
   return out;
 }
 

@@ -23,6 +23,7 @@ const BN_DET_NAMES={D1:'Carryover',D2:'Lead time porosi → check-out',D3:'Rrjed
   D7:'Cilësia e të dhënave',D8:'Inbound',D9:'Saktësia e inventarit',D10:'Hapësira / lokacioni',D11:'Transporti',D12:'Mosha e porosive sipas statusit',D13:'Kosto për porosi'};
 const BN_CLOSE_DAYS=14;
 const BN_PARAM_LABELS={wh:['Depoja (WarehouseId)','1 = Prishtinë'], pf:['Platforma','0 = të dyja, 1 = GjirafaMall, 2 = Gjirafa50'], nd:['Ditë historie','7 ditë aktuale + 4 javë baseline = 35'],
+  ma:['Mosha maksimale e problemit (ditë kalendarike)','vetëm ngjarjet e WMS-it të këtyre ditëve bëhen kandidatë; mbetjet më të vjetra shfaqen vetëm si shënim'],
   co:['Cut-off','HH:MM — pas kësaj ore nuk ka inbound'], mh:['Pritja për mapping (orë)','njësitë mbi këtë moshë numërohen si në pritje'], sh:['Furnizim i ngecur pas (orë)',''], gm:['Boshllëk (min)','pa skanime mes dy veprimeve']};
 const BN_TH_LABELS={ roster:'Ekipi i planifikuar (operatorë)', breakMin:'Pushimi për person-ditë (min)', minN:'n minimal për besueshmëri të lartë',
   carryMax:'D1 Carryover i lejuar (porosi/ditë)', leadP50Max:'D2 Mediana max porosi → check-out (orë)', leadRisePct:'D2 Rritja e p90 mbi baseline (%)', utilMax:'D3 Shfrytëzimi që shënon kufizimin (%)',
@@ -30,7 +31,8 @@ const BN_TH_LABELS={ roster:'Ekipi i planifikuar (operatorë)', breakMin:'Pushim
   gapMax:'D6 Boshllëqe/person-ditë pas pushimit (min)', bandHi:'D6 Banda "mbi" (× mesatarja)', bandLo:'D6 Banda "nën" (× mesatarja)', sharedMax:'D7 Skanime me llogari temp (%)',
   noUserMax:'D7 Skanime pa përdorues/ditë', only27Max:'D7 Porosi vetëm me 27', unknownTypePct:'D7 LogTypeId të panjohura (%)', supplyStuckMax:'D8 Furnizime të ngecura (max)',
   supplyStaleMax:'D8 Furnizime > 30 ditë (max)', staleDays:'D9/D10 Burim i ndalur pas (ditë)', missPctMax:'D9 Mungesa në inspektim (%)', rowFactor:'D10 Rresht i mbingarkuar (× mediana)',
-  lateMax:'D11 Ndalesa me vonesë (%)', ageMax:'D12 Porosi > 3 ditë pa check-out (për status)', costMax:'D13 Objektivi €/porosi (bosh = pa objektiv)', costRisePct:'D13 Rritja e lejuar (%)',
+  lateMax:'D11 Transport lokal: ndalesa me vonesë (%)', lateIntlMax:'D11 Transport ndërkombëtar: me vonesë, 30 ditë (%)', openIntlMax:'D11 Ndërkombëtare pa mbërritje pas datës (max)',
+  palletPctMin:'D11 Ndërkombëtare me palet të regjistruara (min %)', noPriceMax:'D11 Ndërkombëtare pa çmim, 3 muaj (max)', ageMax:'D12 Porosi > 3 ditë pa check-out (për status)', costMax:'D13 Objektivi €/porosi (bosh = pa objektiv)', costRisePct:'D13 Rritja e lejuar (%)',
   p1:'RPN për P1 (≥)', p2:'RPN për P2 (≥)' };
 
 let bnData=null, bnTab='register', bnFilt={status:'aktive', prio:'', phase:'', cat:'', owner:''}, bnLoading=false;
@@ -155,7 +157,7 @@ function bnTopHTML(){
         <span>${top? `<b>${h(top.name)}</b> — ${h(c.text.split(': ').slice(1).join(': '))}${top.wip!=null? ' · WIP '+bnFmtN(top.wip)+' '+h(top.unit) : ''}` : h(c? c.text : 'pa të dhëna')}</span>
         <span class="etag et-hyp">hipotezë e të dhënave — konfirmo në Gemba</span>
         <button class="btn sm ghost" data-bntab="constraint" style="margin-left:auto">Shiko heatmap-in →</button></div>
-      <div class="small faint" style="margin-top:4px">Përmirësimi jashtë kufizimit nuk e rrit output-in e depos. · Snapshot ${h(bnData.snapshotId||'—')} · të dhënat ${h(bnPeriod({from:bnData.windows&&bnData.windows.base.from,to:bnData.windows&&bnData.windows.cur.to}))}
+      <div class="small faint" style="margin-top:4px">Përmirësimi jashtë kufizimit nuk e rrit output-in e depos. · Problemet: vetëm ngjarje të ${bnData.ageLimit? bnData.ageLimit.days : 30} ditëve të fundit · Snapshot ${h(bnData.snapshotId||'—')} · të dhënat ${h(bnPeriod({from:bnData.windows&&bnData.windows.base.from,to:bnData.windows&&bnData.windows.cur.to}))}
         ${stale? ' · <span style="color:var(--warn)">⚠ disa blloqe janë më të vjetra se 26 orë</span>' : ''}</div></div>`;
 }
 
@@ -454,7 +456,7 @@ function bnDrawData(body){
         <label class="btn sm ghost" style="cursor:pointer">⬆ Importo rezultate (JSON/CSV)<input type="file" id="bnImport" accept=".json,.csv" style="display:none"></label></div>
       <div class="hint">Query-t ekzekutohen vetëm me SELECT nga detyra e planifikuar (07, 13, 18) përmes konektorit WMS; agjenti i merr rezultatet automatikisht dhe krijon një snapshot të ri. Pa konektor: ekzekuto queries.run.sql dhe importo rezultatet — JSON <code>{"D1":{"row":{…},"sql":"…"}}</code> ose CSV me kolonat <code>block,column,value</code>.</div></div>
     <div class="card"><h3>Shënime për të dhënat <span class="sub">fakte, burime të ndalura, ID të pakonfirmuara</span></h3>
-      ${(b.notes||[]).map(n=>`<div class="small" style="margin:5px 0"><span class="etag ${n.kind==='ok'?'et-data':n.kind==='data'||n.kind==='missing'?'et-obs':n.kind==='error'?'et-hyp':'et-fact'}">${h(n.detector)}</span> ${h(n.text)}</div>`).join('')||'<div class="small faint">—</div>'}</div>`;
+      ${(b.notes||[]).map(n=>`<div class="small" style="margin:5px 0"><span class="etag ${n.kind==='ok'?'et-data':n.kind==='data'||n.kind==='missing'||n.kind==='old'?'et-obs':n.kind==='error'?'et-hyp':'et-fact'}">${h(n.detector)}</span> ${h(n.text)}</div>`).join('')||'<div class="small faint">—</div>'}</div>`;
   $$('[data-bnsql]').forEach(a=>a.onclick=e=>{ e.preventDefault(); const [id,bl]=a.dataset.bnsql.split('|'); bnShowSql(id,bl); });
   const imp=$('#bnImport'); if(imp) imp.onchange=async e=>{ const f=e.target.files[0]; if(!f) return; const text=await f.text();
     try{ const r=await fetch('/bn/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text, name:f.name})}); const j=await r.json();
@@ -464,7 +466,7 @@ function bnDrawData(body){
 
 /* ------------------------------------------------------------- Settings */
 function bnDrawSettings(body){
-  const cfg=bnCfg(), P=Object.assign({wh:1,pf:0,nd:35,co:'17:30',mh:4,sh:24,gm:15}, cfg.params||{}), T=bnTh();
+  const cfg=bnCfg(), P=Object.assign({wh:1,pf:0,nd:35,ma:30,co:'17:30',mh:4,sh:24,gm:15}, cfg.params||{}), T=bnTh();
   body.innerHTML=`<div class="card" style="margin-bottom:12px"><h3>Parametrat e query-ve <span class="sub">vlejnë nga ekzekutimi i ardhshëm (queries.run.sql)</span></h3>
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">${Object.entries(BN_PARAM_LABELS).map(([k,[l,hint]])=>`<div class="field"><label>${h(l)}</label><input type="text" data-bnp="${k}" value="${h(P[k])}">${hint?`<div class="hint">${h(hint)}</div>`:''}</div>`).join('')}</div></div>
     <div class="card"><h3>Pragjet e detektorëve dhe të prioritetit <span class="sub">vlejnë menjëherë</span></h3>

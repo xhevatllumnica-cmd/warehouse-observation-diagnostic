@@ -6,6 +6,8 @@
 --   nd  days of history (35 = last 7 days + a 4-week baseline)   nd7  nd + 7 (look-back for orders checked out late)
 --   co  cut-off (no inbound after it)     mh  hours before a checked-in unit counts as waiting for mapping
 --   sh  hours before a started supply counts as stuck               gm  minutes of inactivity that count as a gap
+--   ma  maximum age of a problem in calendar days (30): lists of open items (units, supplies, shipments, orders,
+--       inspections, errors) only include events of the last ma days; older backlog is counted apart, never listed
 -- Rules (gjirafa-wms-data-analyst): no CTEs; ProductLogs always filtered on InsertDateTime and read WITH (NOLOCK);
 -- users joined on Users.UserId; orders on (OrderId, PlatformId). Exception, documented: LogType 3 rows and
 -- ProductCheckIns carry PlatformId 0, so a reserved unit is matched to its order on (unit, OrderId) — safe only because
@@ -122,9 +124,10 @@ SELECT /*bn:D4*/ CONVERT(varchar(19),GETDATE(),126) gen,
     SUM(CASE WHEN a>=480 AND a<1440 THEN 1 ELSE 0 END) b8_24, SUM(CASE WHEN a>=1440 AND a<4320 THEN 1 ELSE 0 END) b1_3d, SUM(CASE WHEN a>=4320 THEN 1 ELSE 0 END) b3d,
     SUM(CASE WHEN a>=4/*mh*/*60 THEN 1 ELSE 0 END) overX, COUNT(*) n
   FROM ProductCheckIns c CROSS APPLY (SELECT DATEDIFF(minute, ISNULL(c.UpdateDateTime,c.InsertDateTime), GETDATE()) a) t
-  WHERE c.WarehouseId=1/*wh*/ AND c.StatusId IN (2,6) AND c.InsertDateTime>=DATEADD(day,-180,GETDATE()) GROUP BY c.StatusId FOR JSON PATH) waiting,
+  WHERE c.WarehouseId=1/*wh*/ AND c.StatusId IN (2,6) AND c.InsertDateTime>=DATEADD(day,-30/*ma*/,GETDATE()) GROUP BY c.StatusId FOR JSON PATH) waiting,
+ (SELECT COUNT(*) FROM ProductCheckIns c WHERE c.WarehouseId=1/*wh*/ AND c.StatusId IN (2,6) AND c.InsertDateTime>=DATEADD(day,-365,GETDATE()) AND c.InsertDateTime<DATEADD(day,-30/*ma*/,GETDATE())) older,
  (SELECT TOP 15 c.ProductCode pc, c.StatusId s, c.SupplyUniqueId sup, DATEDIFF(minute, ISNULL(c.UpdateDateTime,c.InsertDateTime), GETDATE()) a FROM ProductCheckIns c
-  WHERE c.WarehouseId=1/*wh*/ AND c.StatusId IN (2,6) AND c.InsertDateTime>=DATEADD(day,-180,GETDATE()) ORDER BY ISNULL(c.UpdateDateTime,c.InsertDateTime) FOR JSON PATH) oldest,
+  WHERE c.WarehouseId=1/*wh*/ AND c.StatusId IN (2,6) AND c.InsertDateTime>=DATEADD(day,-30/*ma*/,GETDATE()) ORDER BY ISNULL(c.UpdateDateTime,c.InsertDateTime) FOR JSON PATH) oldest,
  (SELECT CONVERT(varchar(10),d,23) d, COUNT(*) n, MAX(p50) p50, MAX(p90) p90 FROM (
     SELECT CAST(f2 AS date) d, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY m) OVER (PARTITION BY CAST(f2 AS date)) p50,
       PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY m) OVER (PARTITION BY CAST(f2 AS date)) p90 FROM (
@@ -196,11 +199,11 @@ SELECT /*bn:D7*/ CONVERT(varchar(19),GETDATE(),126) gen,
 --    opening the supply to its first checked-in unit (median, p90 minutes).
 SELECT /*bn:D8*/ CONVERT(varchar(19),GETDATE(),126) gen,
  (SELECT SUM(CASE WHEN a<1440 THEN 1 ELSE 0 END) lt24, SUM(CASE WHEN a>=1440 AND a<4320 THEN 1 ELSE 0 END) d1_3, SUM(CASE WHEN a>=4320 AND a<10080 THEN 1 ELSE 0 END) d3_7,
-    SUM(CASE WHEN a>=10080 AND a<43200 THEN 1 ELSE 0 END) d7_30, SUM(CASE WHEN a>=43200 THEN 1 ELSE 0 END) gt30, SUM(CASE WHEN a>=24/*sh*/*60 AND a<43200 THEN 1 ELSE 0 END) stuck30, COUNT(*) n
+    SUM(CASE WHEN a>=10080 AND a<30/*ma*/*1440 THEN 1 ELSE 0 END) d7_30, SUM(CASE WHEN a>=30/*ma*/*1440 THEN 1 ELSE 0 END) gt30, SUM(CASE WHEN a>=24/*sh*/*60 AND a<30/*ma*/*1440 THEN 1 ELSE 0 END) stuck30, COUNT(*) n
   FROM (SELECT DATEDIFF(minute, s.InsertDateTime, GETDATE()) a FROM Supplies s WHERE s.WarehouseId=1/*wh*/ AND s.SupplyStatusId=1) x FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) started,
  (SELECT TOP 15 s.SupplyUniqueName id, CONVERT(varchar(16),s.InsertDateTime,120) at, CAST(s.IsFastLane AS int) fl,
     (SELECT COUNT(*) FROM ProductCheckIns c WHERE c.SupplyUniqueId=s.SupplyUniqueName) u
-  FROM Supplies s WHERE s.WarehouseId=1/*wh*/ AND s.SupplyStatusId=1 AND s.InsertDateTime>=DATEADD(day,-30,GETDATE()) AND s.InsertDateTime<DATEADD(hour,-24/*sh*/,GETDATE())
+  FROM Supplies s WHERE s.WarehouseId=1/*wh*/ AND s.SupplyStatusId=1 AND s.InsertDateTime>=DATEADD(day,-30/*ma*/,GETDATE()) AND s.InsertDateTime<DATEADD(hour,-24/*sh*/,GETDATE())
   ORDER BY s.InsertDateTime FOR JSON PATH) oldest,
  (SELECT CONVERT(varchar(10),d,23) d, COUNT(*) n, MAX(p50) p50, MAX(p90) p90 FROM (
     SELECT CAST(s.InsertDateTime AS date) d,
@@ -222,14 +225,15 @@ SELECT /*bn:D9*/ CONVERT(varchar(19),GETDATE(),126) gen,
   WHERE nf.InsertDateTime>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date)) GROUP BY DATEPART(iso_week,nf.InsertDateTime) ORDER BY MIN(nf.InsertDateTime) FOR JSON PATH) nf,
  (SELECT TOP 8 i.Id id, i.InspectName nm, CONVERT(varchar(10),i.ClosedDate,23) cd, (SELECT COUNT(*) FROM InspectedProducts p WHERE p.InspectId=i.Id) sc,
     (SELECT COUNT(*) FROM InspectMissingProducts m WHERE m.InspectId=i.Id AND m.InsertDateTime>=DATEADD(day,-400,GETDATE())) ms
-  FROM Inspects i WHERE i.WarehouseId=1/*wh*/ AND i.Closed=1 AND i.ClosedDate>=DATEADD(day,-180,GETDATE()) ORDER BY i.ClosedDate DESC FOR JSON PATH) insp,
+  FROM Inspects i WHERE i.WarehouseId=1/*wh*/ AND i.Closed=1 AND i.ClosedDate>=DATEADD(day,-30/*ma*/,GETDATE()) ORDER BY i.ClosedDate DESC FOR JSON PATH) insp,
  (SELECT TOP 15 ProductCode c, COUNT(*) n, MAX(ABS(WarehouseStock-QuickbooksStock)) mx FROM StockDifferences
-  WHERE InsertDateTime>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date)) GROUP BY ProductCode HAVING COUNT(*)>=3 ORDER BY COUNT(*) DESC FOR JSON PATH) sdRepeat,
+  WHERE InsertDateTime>=DATEADD(day,-30/*ma*/,CAST(GETDATE() AS date)) GROUP BY ProductCode HAVING COUNT(*)>=3 ORDER BY COUNT(*) DESC FOR JSON PATH) sdRepeat,
  (SELECT TOP 15 r.RowUniqueName row_, se.SectionName sec, COUNT(*) n FROM NotFoundProducts nf JOIN Rows r ON r.Id=nf.RowId JOIN Shelves sh ON sh.Id=r.ShelfId
     JOIN Sections se ON se.Id=sh.SectionId AND se.WarehouseId=1/*wh*/
-  WHERE nf.InsertDateTime>=DATEADD(day,-90,GETDATE()) GROUP BY r.RowUniqueName, se.SectionName HAVING COUNT(*)>=2 ORDER BY COUNT(*) DESC FOR JSON PATH) nfRepeat
+  WHERE nf.InsertDateTime>=DATEADD(day,-30/*ma*/,GETDATE()) GROUP BY r.RowUniqueName, se.SectionName HAVING COUNT(*)>=2 ORDER BY COUNT(*) DESC FOR JSON PATH) nfRepeat
 
--- @D10 space / locations (ormLast = last row written to OrderRowMapping; parking is not tracked when it is old) — orders parked on a row (OrderRowMapping, no PlatformId: matched on OrderId, unique per the
+-- @D10 space / locations (ormLast = last row written to OrderRowMapping; parking is not tracked when it is old). Rows: only
+--    units put on the shelf within the last ma days (UpdateDateTime), so old stock does not count as a new overload. — orders parked on a row (OrderRowMapping, no PlatformId: matched on OrderId, unique per the
 --    D7 check) that have no check-out after parking, by age; the fullest rows (units on shelf, status 7) against the
 --    median; sections by not-found / missing-in-inspection count (last nd days).
 SELECT /*bn:D10*/ CONVERT(varchar(19),GETDATE(),126) gen,
@@ -238,42 +242,72 @@ SELECT /*bn:D10*/ CONVERT(varchar(19),GETDATE(),126) gen,
     SUM(CASE WHEN a>=10080 THEN 1 ELSE 0 END) gt7, COUNT(*) n FROM (
     SELECT DATEDIFF(minute, m.InsertDateTime, GETDATE()) a FROM OrderRowMapping m
     JOIN Rows r ON r.Id=m.RowId JOIN Shelves sh ON sh.Id=r.ShelfId JOIN Sections se ON se.Id=sh.SectionId AND se.WarehouseId=1/*wh*/
-    WHERE m.InsertDateTime>=DATEADD(day,-90,GETDATE())
+    WHERE m.InsertDateTime>=DATEADD(day,-30/*ma*/,GETDATE())
       AND NOT EXISTS (SELECT 1 FROM ProductLogs y WITH (NOLOCK) WHERE y.OrderId=m.OrderId AND y.LogTypeId IN (4,18) AND y.InsertDateTime>=m.InsertDateTime)) x FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) parked,
  (SELECT TOP 15 r.RowUniqueName row_, se.SectionName sec, COUNT(*) n FROM ProductCheckIns c JOIN Rows r ON r.Id=c.RowId JOIN Shelves sh ON sh.Id=r.ShelfId
     JOIN Sections se ON se.Id=sh.SectionId AND se.WarehouseId=1/*wh*/
-  WHERE c.WarehouseId=1/*wh*/ AND c.StatusId=7 GROUP BY r.RowUniqueName, se.SectionName ORDER BY COUNT(*) DESC FOR JSON PATH) fullRows,
+  WHERE c.WarehouseId=1/*wh*/ AND c.StatusId=7 AND c.UpdateDateTime>=DATEADD(day,-30/*ma*/,GETDATE()) GROUP BY r.RowUniqueName, se.SectionName ORDER BY COUNT(*) DESC FOR JSON PATH) fullRows,
  (SELECT MAX(p50) FROM (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY n) OVER () p50 FROM (
-    SELECT COUNT(*) n FROM ProductCheckIns c WHERE c.WarehouseId=1/*wh*/ AND c.StatusId=7 AND c.RowId>0 GROUP BY c.RowId) a) b) rowMedian,
+    SELECT COUNT(*) n FROM ProductCheckIns c WHERE c.WarehouseId=1/*wh*/ AND c.StatusId=7 AND c.RowId>0 AND c.UpdateDateTime>=DATEADD(day,-30/*ma*/,GETDATE()) GROUP BY c.RowId) a) b) rowMedian,
  (SELECT TOP 15 se.SectionName sec, SUM(nf) nf, SUM(ms) ms FROM (
-    SELECT sh.SectionId sid, 1 nf, 0 ms FROM NotFoundProducts nf JOIN Rows r ON r.Id=nf.RowId JOIN Shelves sh ON sh.Id=r.ShelfId WHERE nf.InsertDateTime>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date))
+    SELECT sh.SectionId sid, 1 nf, 0 ms FROM NotFoundProducts nf JOIN Rows r ON r.Id=nf.RowId JOIN Shelves sh ON sh.Id=r.ShelfId WHERE nf.InsertDateTime>=DATEADD(day,-30/*ma*/,CAST(GETDATE() AS date))
     UNION ALL
-    SELECT sh.SectionId, 0, 1 FROM InspectMissingProducts m JOIN Rows r ON r.Id=m.RowId JOIN Shelves sh ON sh.Id=r.ShelfId WHERE m.InsertDateTime>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date))) x
+    SELECT sh.SectionId, 0, 1 FROM InspectMissingProducts m JOIN Rows r ON r.Id=m.RowId JOIN Shelves sh ON sh.Id=r.ShelfId WHERE m.InsertDateTime>=DATEADD(day,-30/*ma*/,CAST(GETDATE() AS date))) x
   JOIN Sections se ON se.Id=x.sid AND se.WarehouseId=1/*wh*/ GROUP BY se.SectionName ORDER BY SUM(nf)+SUM(ms) DESC FOR JSON PATH) errSections
 
--- @D11 transport — inbound shipment stops to the warehouse by week of estimated arrival: on time / late (dates compared,
---    not times) / still not arrived; per carrier over the window.
+-- @D11 transport — inbound shipment stops to the warehouse, split LOCAL (Shipments.SupplierType 10, e.g. Beki) and
+--    INTERNATIONAL (SupplierType 20: Poland, Czechia, Romania, Hungary … via Vokshi, MIKMIK, GoShipping, Apcom …).
+--    Late = actual arrival DATE after the estimated date. week: per type and ISO week of estimated arrival (window nd);
+--    intl30/intlPrev: international stops due in the last 30 days and the 90 days before (more n than a week);
+--    carrier: per type and carrier (window nd, plus pickup → arrival days); openIntl: international stops with no
+--    recorded arrival more than 2 days after the estimated date (estimated within the last ma days; older: olderOpenIntl); dataIntl: per month of pickup, how many
+--    international stops have a pallet count and a price recorded (SupplierType meanings: 10 local, 20 international —
+--    inferred from origin names, not documented).
 SELECT /*bn:D11*/ CONVERT(varchar(19),GETDATE(),126) gen,
- (SELECT DATEPART(iso_week,d.EstimatedArrivalDate) wk, MIN(CONVERT(varchar(10),d.EstimatedArrivalDate,23)) d1, COUNT(*) n,
+ (SELECT CASE WHEN s.SupplierType=20 THEN 'intl' ELSE 'local' END t, DATEPART(iso_week,d.EstimatedArrivalDate) wk, MIN(CONVERT(varchar(10),d.EstimatedArrivalDate,23)) d1, COUNT(*) n,
     SUM(CASE WHEN d.ActualArrivalDate IS NOT NULL AND CAST(d.ActualArrivalDate AS date)>CAST(d.EstimatedArrivalDate AS date) THEN 1 ELSE 0 END) late,
     SUM(CASE WHEN d.ActualArrivalDate IS NULL AND CAST(d.EstimatedArrivalDate AS date)<CAST(GETDATE() AS date) THEN 1 ELSE 0 END) missing
-  FROM ShipmentDestinations d WHERE d.WarehouseId=1/*wh*/ AND d.EstimatedArrivalDate>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date)) AND d.EstimatedArrivalDate<CAST(GETDATE() AS date)
-  GROUP BY DATEPART(iso_week,d.EstimatedArrivalDate) ORDER BY MIN(d.EstimatedArrivalDate) FOR JSON PATH) week,
- (SELECT ca.Name nm, COUNT(*) n, SUM(CASE WHEN d.ActualArrivalDate IS NOT NULL AND CAST(d.ActualArrivalDate AS date)>CAST(d.EstimatedArrivalDate AS date) THEN 1 ELSE 0 END) late,
+  FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId
+  WHERE d.WarehouseId=1/*wh*/ AND d.EstimatedArrivalDate>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date)) AND d.EstimatedArrivalDate<CAST(GETDATE() AS date)
+  GROUP BY CASE WHEN s.SupplierType=20 THEN 'intl' ELSE 'local' END, DATEPART(iso_week,d.EstimatedArrivalDate) ORDER BY 1, MIN(d.EstimatedArrivalDate) FOR JSON PATH) week,
+ (SELECT COUNT(*) n, SUM(CASE WHEN d.ActualArrivalDate IS NOT NULL AND CAST(d.ActualArrivalDate AS date)>CAST(d.EstimatedArrivalDate AS date) THEN 1 ELSE 0 END) late,
+    SUM(CASE WHEN d.ActualArrivalDate IS NOT NULL THEN 1 ELSE 0 END) arr, ROUND(AVG(CASE WHEN d.ActualArrivalDate IS NOT NULL THEN 1.0*DATEDIFF(day,d.EstimatedArrivalDate,d.ActualArrivalDate) END),2) delayDays
+  FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId AND s.SupplierType=20
+  WHERE d.WarehouseId=1/*wh*/ AND d.EstimatedArrivalDate>=DATEADD(day,-30,CAST(GETDATE() AS date)) AND d.EstimatedArrivalDate<CAST(GETDATE() AS date) FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) intl30,
+ (SELECT COUNT(*) n, SUM(CASE WHEN d.ActualArrivalDate IS NOT NULL AND CAST(d.ActualArrivalDate AS date)>CAST(d.EstimatedArrivalDate AS date) THEN 1 ELSE 0 END) late,
+    SUM(CASE WHEN d.ActualArrivalDate IS NOT NULL THEN 1 ELSE 0 END) arr
+  FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId AND s.SupplierType=20
+  WHERE d.WarehouseId=1/*wh*/ AND d.EstimatedArrivalDate>=DATEADD(day,-120,CAST(GETDATE() AS date)) AND d.EstimatedArrivalDate<DATEADD(day,-30,CAST(GETDATE() AS date)) FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) intlPrev,
+ (SELECT CASE WHEN s.SupplierType=20 THEN 'intl' ELSE 'local' END t, ca.Name nm, COUNT(*) n,
+    SUM(CASE WHEN d.ActualArrivalDate IS NOT NULL AND CAST(d.ActualArrivalDate AS date)>CAST(d.EstimatedArrivalDate AS date) THEN 1 ELSE 0 END) late,
     SUM(CASE WHEN d.ActualArrivalDate IS NULL THEN 1 ELSE 0 END) missing,
-    ROUND(AVG(CASE WHEN d.ActualArrivalDate IS NOT NULL THEN 1.0*DATEDIFF(day,d.EstimatedArrivalDate,d.ActualArrivalDate) END),2) delayDays
+    ROUND(AVG(CASE WHEN d.ActualArrivalDate IS NOT NULL THEN 1.0*DATEDIFF(day,d.EstimatedArrivalDate,d.ActualArrivalDate) END),2) delayDays,
+    ROUND(AVG(CASE WHEN d.ActualArrivalDate IS NOT NULL AND s.PickupDateTime IS NOT NULL THEN DATEDIFF(hour,s.PickupDateTime,d.ActualArrivalDate)/24.0 END),1) transitDays
   FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId JOIN Carriers ca ON ca.Id=s.CarrierId
   WHERE d.WarehouseId=1/*wh*/ AND d.EstimatedArrivalDate>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date)) AND d.EstimatedArrivalDate<CAST(GETDATE() AS date)
-  GROUP BY ca.Name ORDER BY COUNT(*) DESC FOR JSON PATH) carrier
+  GROUP BY CASE WHEN s.SupplierType=20 THEN 'intl' ELSE 'local' END, ca.Name ORDER BY 1, COUNT(*) DESC FOR JSON PATH) carrier,
+ (SELECT TOP 50 s.Id id, d.Id did, ca.Name car, LEFT(s.OriginWarehouseName,40) o, d.Status st, CONVERT(varchar(10),s.PickupDateTime,23) pick, CONVERT(varchar(10),d.EstimatedArrivalDate,23) eta,
+    DATEDIFF(day,d.EstimatedArrivalDate,GETDATE()) daysOver, (SELECT COUNT(*) FROM Invoices i WHERE i.ShipmentDestinationId=d.Id) inv
+  FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId AND s.SupplierType=20 JOIN Carriers ca ON ca.Id=s.CarrierId
+  WHERE d.WarehouseId=1/*wh*/ AND d.ActualArrivalDate IS NULL AND d.EstimatedArrivalDate<DATEADD(day,-2,CAST(GETDATE() AS date)) AND d.EstimatedArrivalDate>=DATEADD(day,-30/*ma*/,GETDATE())
+  ORDER BY d.EstimatedArrivalDate FOR JSON PATH) openIntl,
+ (SELECT COUNT(*) FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId AND s.SupplierType=20
+  WHERE d.WarehouseId=1/*wh*/ AND d.ActualArrivalDate IS NULL AND d.EstimatedArrivalDate>=DATEADD(day,-365,GETDATE()) AND d.EstimatedArrivalDate<DATEADD(day,-30/*ma*/,GETDATE())) olderOpenIntl,
+ (SELECT CONVERT(varchar(7),s.PickupDateTime,126) m, COUNT(*) n, SUM(CASE WHEN ISNULL(d.PalletCount,0)>0 THEN 1 ELSE 0 END) withPal, SUM(CASE WHEN ISNULL(d.Price,0)>0 THEN 1 ELSE 0 END) withPrice,
+    (SELECT ca2.Name c, COUNT(*) n FROM ShipmentDestinations d2 JOIN Shipments s2 ON s2.Id=d2.ShipmentId AND s2.SupplierType=20 JOIN Carriers ca2 ON ca2.Id=s2.CarrierId
+     WHERE d2.WarehouseId=1/*wh*/ AND ISNULL(d2.Price,0)=0 AND CONVERT(varchar(7),s2.PickupDateTime,126)=CONVERT(varchar(7),s.PickupDateTime,126) GROUP BY ca2.Name FOR JSON PATH) noPrice
+  FROM ShipmentDestinations d JOIN Shipments s ON s.Id=d.ShipmentId AND s.SupplierType=20
+  WHERE d.WarehouseId=1/*wh*/ AND s.PickupDateTime>=DATEADD(month,-6,DATEFROMPARTS(YEAR(GETDATE()),MONTH(GETDATE()),1))
+  GROUP BY CONVERT(varchar(7),s.PickupDateTime,126) ORDER BY 1 FOR JSON PATH) dataIntl
 
--- @D12 order age by current WmsStatusId (warehouse, last 60 days) — buckets 0–4 h, 4–8 h, 8–24 h, 1–3 d, > 3 d, split by
+-- @D12 order age by current WmsStatusId (warehouse, orders created in the last ma days) — buckets 0–4 h, 4–8 h, 8–24 h, 1–3 d, > 3 d, split by
 --    whether the order already has a check-out (4/18). Status meanings are unconfirmed (hints only): shown as numbers.
 SELECT /*bn:D12*/ CONVERT(varchar(19),GETDATE(),126) gen,
  (SELECT s, pf, co, SUM(CASE WHEN a<240 THEN 1 ELSE 0 END) b0_4, SUM(CASE WHEN a>=240 AND a<480 THEN 1 ELSE 0 END) b4_8, SUM(CASE WHEN a>=480 AND a<1440 THEN 1 ELSE 0 END) b8_24,
     SUM(CASE WHEN a>=1440 AND a<4320 THEN 1 ELSE 0 END) b1_3d, SUM(CASE WHEN a>=4320 THEN 1 ELSE 0 END) b3d, COUNT(*) n FROM (
     SELECT o.WmsStatusId s, o.PlatformId pf, DATEDIFF(minute, o.CreatedOnUtc, GETUTCDATE()) a,
       CASE WHEN EXISTS (SELECT 1 FROM ProductLogs y WITH (NOLOCK) WHERE y.OrderId=o.OrderId AND y.PlatformId=o.PlatformId AND y.LogTypeId IN (4,18) AND y.InsertDateTime>=DATEADD(day,-62,GETDATE())) THEN 1 ELSE 0 END co
-    FROM Orders o WHERE o.WarehouseId=1/*wh*/ AND (0/*pf*/=0 OR o.PlatformId=0/*pf*/) AND o.CreatedOnUtc>=DATEADD(day,-60,GETUTCDATE())) x
+    FROM Orders o WHERE o.WarehouseId=1/*wh*/ AND (0/*pf*/=0 OR o.PlatformId=0/*pf*/) AND o.CreatedOnUtc>=DATEADD(day,-30/*ma*/,GETUTCDATE())) x
   GROUP BY s, pf, co ORDER BY s, pf, co FOR JSON PATH) age,
  (SELECT WmsStatusId s, MIN(ShippingAttribute) a FROM OrderStatusMapping WHERE ShippingAttribute IS NOT NULL GROUP BY WmsStatusId FOR JSON PATH) hints
 

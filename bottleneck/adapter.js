@@ -16,14 +16,15 @@ const fs=require('fs'), path=require('path'), os=require('os');
 
 const DIR=__dirname, SNAP=path.join(DIR,'snapshots');
 const BLOCKS=['D1','D1o','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','D12','D13'];
-const PARAMS={ wh:1, pf:0, nd:35, co:'17:30', mh:4, sh:24, gm:15 };
+const PARAMS={ wh:1, pf:0, nd:35, co:'17:30', mh:4, sh:24, gm:15, ma:30 };
 
 /* Settings → parameter values (derived ones included) */
 function paramValues(cfg){
   const p=Object.assign({}, PARAMS, cfg||{});
   const nd=Math.max(14, Math.min(120, parseInt(p.nd,10)||35));
   return { wh:parseInt(p.wh,10)||1, pf:[0,1,2].includes(+p.pf)? +p.pf : 0, nd, nd7:nd+7, 'nd+1':nd+1,
-    co:/^\d{2}:\d{2}$/.test(p.co)? p.co : '17:30', mh:Math.max(1, +p.mh||4), sh:Math.max(1, +p.sh||24), gm:Math.max(5, +p.gm||15) };
+    co:/^\d{2}:\d{2}$/.test(p.co)? p.co : '17:30', mh:Math.max(1, +p.mh||4), sh:Math.max(1, +p.sh||24), gm:Math.max(5, +p.gm||15),
+    ma:Math.max(7, Math.min(120, parseInt(p.ma,10)||30)) };
 }
 /* rewrite every "<literal>/*name*\/" with the configured value (numbers stay numbers, strings stay quoted) */
 function renderSql(sql, cfg){
