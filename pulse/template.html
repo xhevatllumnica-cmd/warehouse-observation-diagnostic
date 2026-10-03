@@ -1,0 +1,456 @@
+<!doctype html><html lang="sq"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>WMS Pulse Prishtinë</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f3f6fa; --panel:#ffffff; --panel2:#eef2f7; --line:#d8e0ea; --text:#132033; --muted:#566b82; --faint:#8596aa;
+  --accent:#1f6fd6; --accentbg:#e3eefc;
+  --ok:#1d8f5c; --okbg:#e0f4ea; --warn:#a86b00; --warnbg:#fbf0d6; --crit:#c63434; --critbg:#fbe3e3;
+  --s1:#1f6fd6; --s2:#d98a1c; --s3:#2a9d8f; --s4:#8a63d2;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace; --sans:"IBM Plex Sans",system-ui,"Segoe UI",Arial,sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --bg:#0f1720; --panel:#172536; --panel2:#1e3045; --line:#2c4058; --text:#e8eef5; --muted:#93a7bd; --faint:#6b8199;
+  --accent:#4ea3ff; --accentbg:#16304d;
+  --ok:#3ecf8e; --okbg:#123527; --warn:#f2b134; --warnbg:#3a2f10; --crit:#ff6b6b; --critbg:#3a1414;
+  --s1:#4ea3ff; --s2:#f2a93b; --s3:#3cc5b5; --s4:#b08cff;
+}}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0f1720; --panel:#172536; --panel2:#1e3045; --line:#2c4058; --text:#e8eef5; --muted:#93a7bd; --faint:#6b8199;
+  --accent:#4ea3ff; --accentbg:#16304d;
+  --ok:#3ecf8e; --okbg:#123527; --warn:#f2b134; --warnbg:#3a2f10; --crit:#ff6b6b; --critbg:#3a1414;
+  --s1:#4ea3ff; --s2:#f2a93b; --s3:#3cc5b5; --s4:#b08cff;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);margin:0}
+.wrap{max-width:1240px;margin:0 auto;padding-inline:20px;padding-block:20px 60px}
+body.embed .wrap{padding-block:6px 40px}
+header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid var(--line)}
+h1{font-size:24px;margin:0;letter-spacing:-.01em;text-wrap:balance}
+h1 .code{font-family:var(--mono);font-weight:500;color:var(--accent);font-size:15px;margin-left:8px;padding:2px 7px;border:1px solid var(--line);border-radius:5px;vertical-align:3px}
+.sub{color:var(--muted);font-size:13px}
+.fresh{font-family:var(--mono);font-size:12px;color:var(--muted);text-align:right}
+.fresh b{color:var(--ok);font-weight:500}
+.fresh b.old{color:var(--warn)}
+nav{display:flex;gap:4px;overflow-x:auto;margin:16px 0 18px;border-bottom:1px solid var(--line)}
+nav button{background:none;border:0;border-bottom:2px solid transparent;padding:9px 13px;color:var(--muted);font:500 13.5px var(--sans);cursor:pointer;white-space:nowrap}
+nav button[aria-selected="true"]{color:var(--text);border-bottom-color:var(--accent)}
+nav button:focus-visible,th:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:18px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.kpi .l{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.kpi .v{font:600 22px var(--mono);font-variant-numeric:tabular-nums;margin-top:2px}
+.kpi .n{font-size:12px;color:var(--faint)}
+.kpi.w .v{color:var(--warn)} .kpi.c .v{color:var(--crit)} .kpi.g .v{color:var(--ok)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:16px}
+section.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:16px;min-width:0}
+.card h2{font-size:15px;margin:0 0 2px;text-wrap:balance}
+.card .meta{font-size:12px;color:var(--muted);margin-bottom:10px}
+.card .meta code,.note code,td code{font-family:var(--mono);font-size:11.5px;background:var(--panel2);padding:1px 5px;border-radius:4px}
+.tw{overflow-x:auto;max-height:520px;overflow-y:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{position:sticky;top:0;background:var(--panel);text-align:left;font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:7px 8px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;user-select:none}
+th.num,td.num{text-align:right}
+th[data-dir="asc"]::after{content:" ▲";font-size:9px} th[data-dir="desc"]::after{content:" ▼";font-size:9px}
+td{padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+tr:hover td{background:var(--panel2)}
+.bar{display:inline-block;height:6px;border-radius:3px;background:var(--accent);opacity:.75;vertical-align:middle;margin-left:6px}
+.pill{display:inline-block;font-size:11px;font-weight:600;padding:1px 8px;border-radius:10px;letter-spacing:.02em}
+.p-ok{background:var(--okbg);color:var(--ok)} .p-w{background:var(--warnbg);color:var(--warn)} .p-c{background:var(--critbg);color:var(--crit)} .p-a{background:var(--accentbg);color:var(--accent)} .p-n{background:var(--panel2);color:var(--muted)}
+.note{font-size:12.5px;color:var(--muted);background:var(--panel2);border-radius:6px;padding:9px 12px;margin-top:10px;line-height:1.55}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--muted);margin-bottom:6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+svg text{fill:var(--muted);font:11px var(--mono)}
+svg .gl{stroke:var(--line);stroke-width:1}
+.flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-family:var(--mono);font-size:12.5px;margin:6px 0}
+.flow span{padding:3px 9px;border:1px solid var(--line);border-radius:5px;background:var(--panel2)}
+.flow span.k{border-color:var(--accent);color:var(--accent)}
+.flow em{color:var(--faint);font-style:normal}
+.tabpanel[hidden]{display:none!important}
+.empty{padding:40px 10px;text-align:center;color:var(--muted)}
+@media (max-width:560px){h1{font-size:20px}.fresh{text-align:left}}
+@media (prefers-reduced-motion:no-preference){.tabpanel{animation:fi .18s ease-out}@keyframes fi{from{opacity:.4}to{opacity:1}}}
+</style></head><body>
+<script id="pulse-data">window.PULSE=null;</script>
+<div class="wrap">
+<header>
+  <div>
+    <h1>WMS Pulse <span class="code">01 · Prishtinë</span></h1>
+    <div class="sub">Tabelat dhe metrikat nga skill-i <code>gjirafa-wms-data-analyst</code>, të ekzekutuara në databazën WMS · rifreskohet automatikisht</div>
+  </div>
+  <div class="fresh" id="fresh"></div>
+</header>
+
+<nav role="tablist" id="tabs"></nav>
+<div id="app"><div class="empty">Po ngarkohen të dhënat…</div></div>
+</div>
+
+<template id="tpl">
+<!-- PRODUCTIVITY -->
+<div class="tabpanel" id="t-prod">
+  <div class="kpis" id="k-prod"></div>
+  <section class="card">
+    <h2>Operacione të peshuara për punëtor · 7 ditët e fundit (përfshirë sot)</h2>
+    <div class="meta">Formula: <code>1.0×check-out + 0.8×check-in + 0.6×map</code> · LogType 2 / 7 / 4,18 · punëtorë me depo shtëpie 01 (pa llogari shitësish)</div>
+    <div class="tw" id="tb-week"></div>
+  </section>
+  <section class="card">
+    <h2>Brezat e performancës · 30 ditët e fundit</h2>
+    <div class="meta">Ops të peshuara ÷ ditë aktive. Mesatarja e ekipit <b id="avgops"></b>, SD <b id="sdops"></b>. Above &gt; +25%, Below &lt; −25%, Spike &gt; +2 SD (<code>PerformanceSettings</code>). Të gjitha depot.</div>
+    <div class="tw" id="tb-bands"></div>
+    <div class="note">Punëtorët me 1–3 ditë aktive dalin shpesh "Spike" ose "Below" nga mostra e vogël. Llogaritë <code>temp…@</code> duken si login të përbashkët, ndaj një rresht mund të mbulojë disa njerëz.</div>
+  </section>
+  <section class="card">
+    <h2>Rrjedha sipas orës · 14 ditë</h2>
+    <div class="meta">Njësi të skanuara për orë lokale, të gjitha depot</div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>Check-in</span><span><i style="background:var(--s3)"></i>Map</span><span><i style="background:var(--s2)"></i>Check-out</span></div>
+    <div class="tw" id="ch-hour"></div>
+    <div class="note" id="n-hour"></div>
+  </section>
+</div>
+
+<!-- PAY -->
+<div class="tabpanel" id="t-pay" hidden>
+  <div class="kpis" id="k-pay"></div>
+  <div class="grid2">
+    <section class="card">
+      <h2>Kosto sipas veprimit · <span id="per-lbl"></span></h2>
+      <div class="meta">Periudha e fundit e mbyllur e pagave, depo 01</div>
+      <div class="tw" id="tb-period"></div>
+    </section>
+    <section class="card">
+      <h2>Tarifat sipas versionit</h2>
+      <div class="meta"><code>Çmimi = OrderCompletionPrice × Weight ÷ TotalWeight</code></div>
+      <div class="tw" id="tb-rates"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Pagesa për punëtor · <span id="per-lbl2"></span></h2>
+    <div class="meta">Nga <code>WarehouseActionPayments</code>. Orë standarde = sasia × <code>AverageTimeSeconds</code> ÷ 3600</div>
+    <div class="tw" id="tb-pay"></div>
+    <div class="note">Disa llogari janë email-e të shitësve (p.sh. gmail, pc-ks.net) që bëjnë check-in/out vetë te CHECKIN SELLERS. Ato nuk janë staf i magazinës. <code>Cost</code> është tashmë çmim × sasi, mos e shumëzo sërish. Periudha e muajit në vazhdim shfaqet kur WMS e llogarit (mujore).</div>
+  </section>
+</div>
+
+<!-- ORDERS -->
+<div class="tabpanel" id="t-ord" hidden>
+  <div class="kpis" id="k-ord"></div>
+  <section class="card">
+    <h2>Porosi të pranuara kundrejt porosive me check-out · 14 ditë, depo 01</h2>
+    <div class="meta">Pranuar sipas datës UTC, check-out sipas datës lokale. Check-out = porosi të dallueshme me LogType 4/18</div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>GjirafaMall</span><span><i style="background:var(--s4)"></i>Gjirafa50</span><span><i style="background:var(--s2)"></i>Me check-out</span></div>
+    <div class="tw" id="ch-daily"></div>
+  </section>
+  <div class="grid2">
+    <section class="card">
+      <h2>Koha porosi → check-out i parë</h2>
+      <div class="meta">Check-out-et e 14 ditëve, depo 01. Mesatarja anon nga porositë e gjata, shiko medianën dhe p90</div>
+      <div class="tw" id="tb-o2c"></div>
+    </section>
+    <section class="card">
+      <h2>Njësi për porosi · 30 ditë</h2>
+      <div class="meta">Nga <code>OrderDetails.Quantity</code>, join me <code>(OrderId, PlatformId)</code></div>
+      <div class="tw" id="tb-upo"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Porositë sipas statusit WMS · krijuar 30 ditët e fundit</h2>
+    <div class="meta">Të gjitha depot. Statuset nuk kanë tabelë lookup; emrat vijnë nga <code>OrderStatusMapping.ShippingAttribute</code> kur ekzistojnë</div>
+    <div class="tw" id="tb-status"></div>
+    <div class="note">"Backlog" nuk llogaritet sepse nuk dihet cilat statuse janë përfundimtare (dorëzuar/anuluar). Kolonat &gt;24h dhe &gt;72h tregojnë moshën e porosive në secilin status.</div>
+  </section>
+</div>
+
+<!-- STOCK -->
+<div class="tabpanel" id="t-stock" hidden>
+  <div class="kpis" id="k-stock"></div>
+  <div class="grid2">
+    <section class="card">
+      <h2>Gjendja aktuale e njësive · check-in 90 ditë</h2>
+      <div class="meta"><code>ProductCheckIns.StatusId</code> = LogType i fundit i njësisë · depo 01</div>
+      <div class="tw" id="tb-state"></div>
+    </section>
+    <section class="card">
+      <h2>Koha check-in → map · 14 ditë</h2>
+      <div class="meta">Mesatarja në orë nga check-in (2) te map-i i parë (7), sipas ditës së check-in, depo 01</div>
+      <div class="tw" id="ch-dwell"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Njësi të mapuara sipas seksionit · top 25</h2>
+    <div class="meta">StatusId 7, depo 01 · <code>Rows → Shelves → Sections</code></div>
+    <div class="tw" id="tb-sect"></div>
+    <div class="note" id="n-sect"></div>
+  </section>
+  <div class="grid2">
+    <section class="card">
+      <h2>Inventarizimet e mbyllura · depo 01</h2>
+      <div class="meta">Skanuar = <code>InspectedProducts</code>, mungon = <code>InspectMissingProducts</code></div>
+      <div class="tw" id="tb-insp"></div>
+      <div class="note">Seancat me shumë "missing" dhe pak "scanned" janë numërime të pjesshme: pritshmëria mbulon gjithë depon, por u skanua vetëm një zonë. Saktësia ka kuptim vetëm për numërimet e plota.</div>
+    </section>
+    <section class="card">
+      <h2>Diferenca WMS kundrejt QuickBooks · të pazgjidhura</h2>
+      <div class="meta"><code>StockDifferences</code>, grupuar sipas kodit (disa regjistrime për kod)</div>
+      <div class="tw" id="tb-diff"></div>
+    </section>
+  </div>
+</div>
+
+<!-- INBOUND -->
+<div class="tabpanel" id="t-in" hidden>
+  <div class="kpis" id="k-in"></div>
+  <div class="grid2">
+    <section class="card">
+      <h2>Furnizime dhe njësi sipas javës · 8 javë + java aktuale</h2>
+      <div class="meta"><code>Supplies</code> ⋈ <code>ProductCheckIns</code> në SupplyUniqueName · depo 01</div>
+      <div class="tw" id="tb-sup"></div>
+    </section>
+    <section class="card">
+      <h2>Mbërritja në kohë sipas transportuesit</h2>
+      <div class="meta">Ndalesat me datë të pritur deri sot · krahasim sipas datës (vlerësimet janë ndonjëherë vetëm datë)</div>
+      <div class="tw" id="tb-car"></div>
+    </section>
+  </div>
+  <div class="grid2">
+    <section class="card">
+      <h2>Pick sessions · që nga 10.08.2026</h2>
+      <div class="meta">Seancat e përfunduara (Status 2). Porositë dhe artikujt janë agreguar veçmas, pa fan-out</div>
+      <div class="tw" id="tb-pick"></div>
+      <div class="note">Kohëzgjatja mesatare prej ditësh do të thotë që seancat mbeten hapur pas punës. Vlerëso picking-un me <code>scanned ÷ required</code>, jo me minuta.</div>
+    </section>
+    <section class="card">
+      <h2>Stacionet</h2>
+      <div class="meta">Depo 01, pa stacionin <code>test</code> (Id 13)</div>
+      <div class="tw" id="tb-st"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Faturat sipas muajit · 6 muaj</h2>
+    <div class="meta"><code>Invoices</code> · StatusId 3 / 1 · SentToQbo = dërguar në QuickBooks Online</div>
+    <div class="tw" id="tb-inv"></div>
+    <div class="note" id="n-inv"></div>
+  </section>
+</div>
+
+<!-- MODEL -->
+<div class="tabpanel" id="t-model" hidden>
+  <div class="grid2">
+    <section class="card">
+      <h2>Entitetet dhe çelësat</h2>
+      <div class="meta">Nga <code>references/entities.md</code></div>
+      <div class="tw" id="tb-ent"></div>
+    </section>
+    <section class="card">
+      <h2>Kurthet e ID-ve</h2>
+      <div class="meta">Gabimet që japin 0 rreshta ose dyfishime</div>
+      <div class="tw" id="tb-trap"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Cikli i njësisë (LogTypeId)</h2>
+    <div class="meta">Konfirmuar: 2 check-in · 7 map · 4/18 check-out. Të tjerët janë vetëm numra deri sa të merren nga enum-i i WMS</div>
+    <div class="flow"><em>inbound</em><span class="k">2</span><em>→</em><span>6</span><em>→</em><span class="k">7</span><em>(7→7 = ri-map)</em></div>
+    <div class="flow"><em>outbound</em><span class="k">2</span><em>→</em><span>3</span><em>→</em><span>27</span><em>→</em><span>9</span><em>→</em><span class="k">18</span><em>· i vjetër 9→4 ose 3→4</em></div>
+    <div class="tw" id="tb-log"></div>
+  </section>
+  <div class="grid2">
+    <section class="card">
+      <h2>Depot</h2>
+      <div class="tw" id="tb-wh"></div>
+    </section>
+    <section class="card">
+      <h2>Freskia e të dhënave</h2>
+      <div class="tw" id="tb-fresh"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Pyetje të hapura</h2>
+    <div class="meta">Nga <code>references/open-questions.md</code>. Kur të plotësohen nga kodi i WMS, ky panel dhe etiketat e statuseve mund të emërtohen</div>
+    <div class="tw" id="tb-oq"></div>
+  </section>
+</div>
+</template>
+
+<script>
+const WH={1:"01 Prishtinë",5:"02 Tirana",6:"03 Skopje",11:"iGjirafa",12:"05 Prizren"};
+const PL={1:"GjirafaMall",2:"Gjirafa50"};
+const LT={2:"Check-in",7:"Map",4:"Check-out (i vjetër)",18:"Check-out"};
+const MONTHS=["janar","shkurt","mars","prill","maj","qershor","korrik","gusht","shtator","tetor","nëntor","dhjetor"];
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt=(v,d)=>v==null?"–":typeof v==="number"?v.toLocaleString("sq-AL",{minimumFractionDigits:d??0,maximumFractionDigits:d??2}):esc(v);
+const pill=(t,c)=>`<span class="pill p-${c}">${esc(t)}</span>`;
+const isTemp=u=>/^temp\d+@/.test(u);
+const isExt=u=>/@/.test(u)&&!/@gjirafa\.com$/.test(u);
+const who=u=>esc(u)+(isTemp(u)?" "+pill("temp","w"):isExt(u)?" "+pill("shitës","n"):"");
+const dt=s=>{ if(!s) return "–"; const [d,t]=s.split("T"); const [y,m,dd]=d.split("-"); return `${dd}.${m}.${y}${t?" "+t.slice(0,5):""}`; };
+const hh=h=>String(h).padStart(2,"0")+":00";
+
+function table(id,cols,rows){
+  const el=document.getElementById(id);
+  if(!rows.length){ el.innerHTML='<div class="empty" style="padding:14px">S\'ka të dhëna.</div>'; return; }
+  let sort={i:-1,dir:1};
+  const maxes=cols.map((c,i)=>c.bar?Math.max(...rows.map(r=>Math.abs(+r[i]||0))):0);
+  function draw(){
+    let rs=rows.slice();
+    if(sort.i>=0){rs.sort((a,b)=>{const x=a[sort.i],y=b[sort.i];if(x==null)return 1;if(y==null)return -1;return (typeof x==="number"?x-y:String(x).localeCompare(String(y)))*sort.dir;});}
+    el.innerHTML=`<table><thead><tr>${cols.map((c,i)=>`<th tabindex="0" class="${c.n?"num":""}" data-i="${i}" ${sort.i===i?`data-dir="${sort.dir>0?"asc":"desc"}"`:""}>${c.h}</th>`).join("")}</tr></thead><tbody>${
+      rs.map(r=>`<tr>${cols.map((c,i)=>{const v=r[i];let h=c.f?c.f(v,r):fmt(v,c.d);
+        if(c.bar&&maxes[i])h+=`<span class="bar" style="width:${Math.max(2,Math.abs(v||0)/maxes[i]*70)}px"></span>`;
+        return `<td class="${c.n?"num":""}">${h}</td>`;}).join("")}</tr>`).join("")}</tbody></table>`;
+    el.querySelectorAll("th").forEach(th=>{const go=()=>{const i=+th.dataset.i;sort=sort.i===i?{i,dir:-sort.dir}:{i,dir:typeof rows[0][i]==="number"?-1:1};draw();};th.onclick=go;th.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go();}};});
+  }
+  draw();
+}
+function kpis(id,items){document.getElementById(id).innerHTML=items.map(k=>`<div class="kpi ${k.c||""}"><div class="l">${k.l}</div><div class="v">${k.v}</div><div class="n">${k.n||""}</div></div>`).join("");}
+function bars(id,labels,series,{stacked=false,h=220,yfmt=v=>fmt(v)}={}){
+  if(!labels.length){ document.getElementById(id).innerHTML='<div class="empty" style="padding:14px">S\'ka të dhëna.</div>'; return; }
+  const W=Math.max(560,labels.length*44),H=h,pl=46,pr=10,pt=10,pb=26,iw=W-pl-pr,ih=H-pt-pb;
+  const totals=labels.map((_,i)=>stacked?series.reduce((s,se)=>s+(se.data[i]||0),0):Math.max(...series.map(se=>se.data[i]||0)));
+  const raw=Math.max(...totals),step=Math.pow(10,Math.floor(Math.log10(raw||1)));const nice=[1,2,2.5,5,10].map(m=>m*step).find(s=>raw/s<=5)||step*10;const max=Math.ceil(raw/nice)*nice||1;
+  const y=v=>pt+ih-v/max*ih,bw=iw/labels.length;
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" style="min-width:${Math.min(W,560)}px;max-width:${W}px" role="img">`;
+  for(let t=0;t<=max;t+=nice)s+=`<line class="gl" x1="${pl}" x2="${W-pr}" y1="${y(t)}" y2="${y(t)}"/><text x="${pl-6}" y="${y(t)+4}" text-anchor="end">${yfmt(t)}</text>`;
+  labels.forEach((lab,i)=>{const x0=pl+i*bw;
+    if(stacked){let acc=0;series.forEach(se=>{const v=se.data[i]||0;if(v>0){s+=`<rect x="${x0+bw*.18}" y="${y(acc+v)}" width="${bw*.64}" height="${y(acc)-y(acc+v)}" fill="${se.c}"><title>${lab} · ${se.n}: ${fmt(v)}</title></rect>`;}acc+=v;});}
+    else{const gw=bw*.72/series.length;series.forEach((se,j)=>{const v=se.data[i]||0;s+=`<rect x="${x0+bw*.14+j*gw}" y="${y(v)}" width="${gw-1.5}" height="${y(0)-y(v)}" rx="1.5" fill="${se.c}"><title>${lab} · ${se.n}: ${yfmt(v)}</title></rect>`;});}
+    s+=`<text x="${x0+bw/2}" y="${H-8}" text-anchor="middle">${lab}</text>`;});
+  document.getElementById(id).innerHTML=s+"</svg>";
+}
+const median=a=>{ const s=a.filter(x=>x!=null).slice().sort((x,y)=>x-y); if(!s.length) return null; const m=Math.floor(s.length/2); return s.length%2? s[m] : (s[m-1]+s[m])/2; };
+
+function render(P){
+  const D=P.D, K=P.K;
+  const age=(Date.now()-new Date(P.generatedAt).getTime())/60000;
+  document.getElementById("fresh").innerHTML=`Log-u i fundit: <b>${dt(P.lastLog)}</b><br>Porosia e fundit (UTC): ${dt(P.lastOrder)}<br>Rifreskuar: <b class="${age>150?"old":""}">${dt(P.generatedAt)}</b> (ora lokale)`;
+  const app=document.getElementById("app"); app.innerHTML=document.getElementById("tpl").innerHTML;
+
+  // ---------- PRODUCTIVITY
+  const wkOps=D.week.reduce((a,r)=>a+r[5],0), avg=K.avg;
+  kpis("k-prod",[
+   {l:"Ops të peshuara · 7d",v:fmt(Math.round(wkOps)),n:`${D.week.length} punëtorë aktivë në 01`},
+   {l:"Check-in · 7d",v:fmt(D.week.reduce((a,r)=>a+r[1],0)),n:"LogType 2"},
+   {l:"Map · 7d",v:fmt(D.week.reduce((a,r)=>a+r[2],0)),n:"LogType 7"},
+   {l:"Check-out · 7d",v:fmt(D.week.reduce((a,r)=>a+r[3],0)),n:"LogType 4 + 18"},
+   {l:"Mesatarja e ekipit · 30d",v:fmt(avg,1),n:"ops të peshuara / ditë aktive"},
+   {l:"Nën mesatare · 30d",v:D.bands.filter(r=>r[3]==="Below").length,c:"w",n:`nga ${D.bands.length} punëtorë`}]);
+  table("tb-week",[{h:"Punëtori",f:who},{h:"Check-in",n:1},{h:"Map",n:1},{h:"Check-out",n:1},{h:"Ditë",n:1},{h:"Ops të peshuara",n:1,d:1,bar:1},{h:"Ops / ditë",n:1,f:(v,r)=>fmt(r[5]/r[4],1)}],D.week.map(r=>[...r,0]));
+  document.getElementById("avgops").textContent=fmt(avg,1);document.getElementById("sdops").textContent=fmt(K.sd,1);
+  const BC={Spike:"a",Above:"ok",Average:"n",Below:"w"};
+  table("tb-bands",[{h:"Punëtori",f:who},{h:"Ops / ditë",n:1,d:1,bar:1},{h:"Ditë aktive",n:1,f:v=>v<=3?`${v} ${pill("mostër e vogël","n")}`:v},{h:"vs mesatares",n:1,f:(v,r)=>{const p=(r[1]/avg-1)*100;return (p>0?"+":"")+fmt(p,0)+"%";}},{h:"Brezi",f:v=>pill(v,BC[v])}],D.bands.map(r=>[r[0],r[1],r[2],r[1],r[3]]));
+  bars("ch-hour",D.hour.map(r=>String(r[0]).padStart(2,"0")),[{n:"Check-in",c:"var(--s1)",data:D.hour.map(r=>r[1])},{n:"Map",c:"var(--s3)",data:D.hour.map(r=>r[2])},{n:"Check-out",c:"var(--s2)",data:D.hour.map(r=>r[3])}],{stacked:true});
+  { const top=(i)=>D.hour.slice().sort((a,b)=>b[i]-a[i]).slice(0,3).map(r=>r[0]).sort((a,b)=>a-b);
+    const mapLate=D.hour.filter(r=>r[0]>=20).reduce((a,r)=>a+r[2],0), mapAll=D.hour.reduce((a,r)=>a+r[2],0);
+    document.getElementById("n-hour").innerHTML=`Orët kulmore: check-in ${top(1).map(hh).join(", ")} · check-out ${top(3).map(hh).join(", ")} · map ${top(2).map(hh).join(", ")}. ${mapAll?`${fmt(mapLate/mapAll*100,0)}% e mapimeve bëhen pas 20:00`:""}${mapAll&&mapLate/mapAll>0.15?" — sistemimi në rafte shtyhet në mbrëmje.":"."}`; }
+
+  // ---------- PAY
+  const per=K.per||{}, perLbl=per.m? `${MONTHS[per.m-1]} ${per.y}` : "–";
+  document.getElementById("per-lbl").textContent=perLbl; document.getElementById("per-lbl2").textContent=perLbl;
+  const pTot=D.period.reduce((a,r)=>a+r[3],0),pAct=D.period.reduce((a,r)=>a+r[1],0),pHrs=D.pay.reduce((a,r)=>a+r[5],0);
+  const open=D.rates.find(r=>r[7]===1);
+  kpis("k-pay",[
+   {l:"Kosto totale · "+perLbl,v:"€"+fmt(pTot,2),n:"periudha e fundit e mbyllur"},
+   {l:"Veprime",v:fmt(pAct),n:"rreshta në WarehouseActionPayments"},
+   {l:"Orë standarde",v:fmt(pHrs,0),n:"sasia × koha mesatare"},
+   {l:"Kosto / orë standarde",v:pHrs?"€"+fmt(pTot/pHrs,2):"–"},
+   {l:"Persona të paguar",v:D.pay.length,n:`${D.pay.filter(r=>isExt(r[0])).length} llogari shitësish`},
+   {l:"Çmimi aktual",v:open?"v"+open[0]:"–",c:"g",n:open?"që nga "+esc(open[6].replace(/^(\d{4})-(\d\d)-(\d\d)/,"$3.$2.$1")):""}]);
+  table("tb-period",[{h:"Veprimi"},{h:"Rreshta",n:1},{h:"Sasia",n:1},{h:"Kosto €",n:1,d:2,bar:1},{h:"Çmim mesatar",n:1,d:6},{h:"Pjesa",n:1,f:(v,r)=>fmt(r[3]/pTot*100,1)+"%"}],D.period.map(r=>[...r,0]));
+  table("tb-rates",[{h:"v",n:1},{h:"Veprimi"},{h:"Çmim porosie",n:1,d:2},{h:"Pesha totale",n:1,d:2},{h:"Pesha",n:1,d:2},{h:"€ / veprim",n:1,d:6},{h:"Vlefshmëria",f:(v,r)=>r[7]===1?pill(v,"ok"):esc(v)}],D.rates.map(r=>[r[0],r[1],r[2],r[3],r[4],r[5],r[8],r[7]]));
+  table("tb-pay",[{h:"Punëtori",f:who},{h:"Check-in",n:1},{h:"Map",n:1},{h:"Picking",n:1},{h:"Checkout",n:1},{h:"Orë std.",n:1,d:1},{h:"Pagesa €",n:1,d:2,bar:1},{h:"€ / orë std.",n:1,f:(v,r)=>r[5]?fmt(r[6]/r[5],2):"–"}],D.pay.map(r=>[...r,0]));
+
+  // ---------- ORDERS
+  const rec=D.daily.slice(0,-1), recTot=rec.reduce((a,r)=>a+r[1]+r[2],0), coTot=rec.reduce((a,r)=>a+r[3],0);
+  const st30=D.status.reduce((a,r)=>a+r[3],0), o2c=p=>D.o2c.find(r=>r[0]===PL[p]);
+  const m1=o2c(1), m2=o2c(2);
+  kpis("k-ord",[
+   {l:"Porosi / ditë · 01",v:rec.length?fmt(Math.round(recTot/rec.length)):"–",n:rec.length?`${rec[0][0]}–${rec[rec.length-1][0]}, ditë të plota`:""},
+   {l:"Check-out / ditë · 01",v:rec.length?fmt(Math.round(coTot/rec.length)):"–",n:"porosi të dallueshme"},
+   {l:"Mediana → check-out",v:m1?fmt(Math.round(m1[3]))+" h":"–",n:m1?`GjirafaMall · p90 ${fmt(Math.round(m1[4]))} h`:""},
+   {l:"Mediana → check-out",v:m2?fmt(Math.round(m2[3]))+" h":"–",c:m2&&m1&&m2[3]>m1[3]*1.5?"w":"",n:m2?`Gjirafa50 · p90 ${fmt(Math.round(m2[4]))} h`:""},
+   {l:"Porosi · 30d",v:fmt(st30),n:"të gjitha depot"},
+   {l:"Status 25 &gt;72h",v:fmt(D.status.filter(r=>r[2]===25).reduce((a,r)=>a+r[5],0)),c:"w",n:`"${esc(K.statusNames[25]||"25")}", krijuar 3–30 ditë më parë`}]);
+  bars("ch-daily",D.daily.map(r=>r[0]),[{n:"GjirafaMall",c:"var(--s1)",data:D.daily.map(r=>r[1])},{n:"Gjirafa50",c:"var(--s4)",data:D.daily.map(r=>r[2])},{n:"Me check-out",c:"var(--s2)",data:D.daily.map(r=>r[3])}]);
+  table("tb-o2c",[{h:"Platforma"},{h:"Porosi",n:1},{h:"Mesatare h",n:1,d:1},{h:"Mediana h",n:1,d:1},{h:"p90 h",n:1,d:1}],D.o2c);
+  table("tb-upo",[{h:"Platforma"},{h:"Porosi",n:1},{h:"Njësi mesatare",n:1,d:2},{h:"Maks.",n:1}],D.upo);
+  table("tb-status",[{h:"Depo",f:v=>WH[v]||v},{h:"Platforma",f:v=>PL[v]||v},{h:"Status",n:1,f:v=>`<code>${v}</code>${K.statusNames[v]?" "+pill(K.statusNames[v],"a"):""}`},{h:"Porosi",n:1,bar:1},{h:"&gt;24h",n:1},{h:"&gt;72h",n:1},{h:"% &gt;72h",n:1,f:(v,r)=>fmt(r[5]/r[3]*100,0)+"%"}],D.status.map(r=>[...r,0]));
+
+  // ---------- STOCK
+  const stTot=D.state.reduce((a,r)=>a+r[1],0), dwMed=median(D.dwell.map(r=>r[2]));
+  const dwMin=Math.min(...D.dwell.map(r=>r[2]))/60, dwMax=Math.max(...D.dwell.map(r=>r[2]))/60;
+  kpis("k-stock",[
+   {l:"Njësi në rafte · 01",v:fmt(K.onShelf),n:"StatusId 7, të gjitha kohët"},
+   {l:"Rreshta me stok",v:fmt(K.rowsStock),n:`nga ${fmt(K.rowsTotal)} rreshta në 01 (${fmt(K.rowsStock/K.rowsTotal*100,0)}%)`},
+   {l:"Diferenca QBO të hapura",v:fmt(K.diffOpen),c:"w",n:`nga ${fmt(K.diffTotal)} regjistrime`},
+   {l:"Not-found të pazgjidhura",v:fmt(K.nfOpen),c:"c",n:`nga ${fmt(K.nfTotal)} raportime`},
+   {l:"Njësi kthimi të hapura",v:fmt(K.retOpen),n:"ReturnDetails.IsResolved = 0"},
+   {l:"Check-in → map mediana ditore",v:dwMed!=null?fmt(dwMed/60,1)+" h":"–",n:D.dwell.length?`mesatare ditore ${fmt(dwMin,0)}–${fmt(dwMax,0)} h`:""}]);
+  table("tb-state",[{h:"StatusId",n:1,f:v=>`<code>${v}</code>${LT[v]?" "+pill(LT[v],"a"):""}`},{h:"Njësi",n:1,bar:1},{h:"Pjesa",n:1,f:(v,r)=>fmt(r[1]/stTot*100,1)+"%"}],D.state.map(r=>[...r,0]));
+  bars("ch-dwell",D.dwell.map(r=>r[0]),[{n:"Orë deri te map",c:"var(--s3)",data:D.dwell.map(r=>+(r[2]/60).toFixed(1))}],{h:200,yfmt:v=>fmt(v,0)+"h"});
+  table("tb-sect",[{h:"Id",n:1},{h:"Seksioni"},{h:"Njësi",n:1,bar:1},{h:"Rreshta",n:1},{h:"Njësi / rresht",n:1,f:(v,r)=>{const x=r[2]/r[3];return x>100?pill(fmt(x,0),"w"):fmt(x,0);}}],D.sect.map(r=>[...r,0]));
+  { const dense=D.sect.filter(r=>r[3]&&r[2]/r[3]>100);
+    document.getElementById("n-sect").innerHTML= dense.length? dense.map(r=>`"${esc(r[1])}" mban ${fmt(r[2])} njësi në vetëm ${r[3]} rreshta`).join("; ")+" — duket si zonë bulk ose staging dhe jo rafte normale." : "Asnjë seksion me mbi 100 njësi për rresht."; }
+  table("tb-insp",[{h:"Id",n:1},{h:"Emri"},{h:"Stili",n:1},{h:"Mbyllur"},{h:"Skanuar",n:1},{h:"Mungon",n:1},{h:"Mungon %",n:1,f:(v,r)=>{const t=r[4]+r[5];if(!t)return"–";const p=r[5]/t*100;return pill(fmt(p,1)+"%",p<2?"ok":p<10?"w":"c");}}],D.insp.map(r=>[...r,0]));
+  table("tb-diff",[{h:"Kodi",f:v=>`<code>${esc(v)}</code>`},{h:"Sku",f:v=>v==="NotFound"?pill("NotFound","c"):esc(v)},{h:"Regj.",n:1},{h:"Maks. |diff|",n:1,bar:1},{h:"Σ diff",n:1}],D.diff);
+
+  // ---------- INBOUND
+  const car=D.car.reduce((a,r)=>[a[0]+r[1],a[1]+r[2]],[0,0]), fullWeeks=D.sup.slice(0,-1);
+  kpis("k-in",[
+   {l:"Furnizime / javë · 01",v:fullWeeks.length?fmt(Math.round(fullWeeks.reduce((a,r)=>a+r[2],0)/fullWeeks.length)):"–",n:`mesatare ${fullWeeks.length} javë të plota`},
+   {l:"Njësi / javë",v:fullWeeks.length?fmt(Math.round(fullWeeks.reduce((a,r)=>a+r[4],0)/fullWeeks.length)):"–",n:"check-in nga furnizimet"},
+   {l:"Fast lane",v:fmt(D.sup.reduce((a,r)=>a+r[3],0)/Math.max(1,D.sup.reduce((a,r)=>a+r[2],0))*100,0)+"%",n:"e furnizimeve"},
+   {l:"Mbërritje në kohë",v:car[0]?fmt(car[1]/car[0]*100,0)+"%":"–",c:"w",n:`${fmt(car[0])} ndalesa, të gjithë transportuesit`},
+   {l:"Ndalesa me vonesë, pa mbërritje",v:fmt(K.lateOpen),c:"c",n:"ETA kaluar, ActualArrival bosh"},
+   {l:"Furnizime \"Started\"",v:fmt(K.supStarted),n:"SupplyStatusId 1, depo 01, të pambyllura"}]);
+  table("tb-sup",[{h:"Java",n:1},{h:"Fillon"},{h:"Furnizime",n:1},{h:"Fast lane",n:1},{h:"Njësi",n:1,bar:1},{h:"Njësi / furn.",n:1,f:(v,r)=>fmt(r[4]/r[2],1)}],D.sup.map(r=>[...r,0]));
+  table("tb-car",[{h:"Transportuesi"},{h:"Ndalesa",n:1},{h:"Në kohë",n:1},{h:"% në kohë",n:1,f:(v,r)=>{const p=r[2]/r[1]*100;return pill(fmt(p,0)+"%",p>=80?"ok":p>=50?"w":"c");}},{h:"Vonesë mes. (ditë)",n:1,d:2},{h:"Paleta",n:1},{h:"Çmimi",n:1,d:0}],D.car.map(r=>[r[0],r[1],r[2],0,r[3],r[4],r[5]]));
+  table("tb-pick",[{h:"Punëtori",f:who},{h:"Seanca",n:1,bar:1},{h:"Porosi",n:1},{h:"Skanuar / kërkuar",n:1,f:(v,r)=>`${r[3]} / ${r[6]}`},{h:"Plotësimi",n:1,f:(v,r)=>{if(!r[6])return"–";const p=v*100;return pill(fmt(p,0)+"%",p>=80?"ok":p>=50?"w":"c");}},{h:"Min. mes.",n:1}],D.pick.map(r=>[r[0],r[1],r[3],r[4],r[5]?r[4]/r[5]:0,r[2],r[5]]));
+  table("tb-st",[{h:"Stacioni"},{h:"Check-in",f:v=>v?pill("po","ok"):"–"},{h:"Check-out",f:v=>v?pill("po","ok"):"–"},{h:"Print agent",f:v=>v?pill("po","a"):"–"},{h:"Pick sessions",n:1,bar:1}],D.st);
+  table("tb-inv",[{h:"Muaji"},{h:"Fatura",n:1,bar:1},{h:"Status 3",n:1},{h:"Status 1",n:1},{h:"Në QBO",n:1},{h:"% QBO",n:1,f:(v,r)=>fmt(r[4]/r[1]*100,0)+"%"}],D.inv.map(r=>[...r,0]));
+  { const n=D.inv.reduce((a,r)=>a+r[1],0), q=D.inv.reduce((a,r)=>a+r[4],0);
+    document.getElementById("n-inv").innerHTML=`Vetëm rreth ${fmt(n?q/n*100:0,0)}% e faturave të 6 muajve shënohen si të dërguara në QBO. Dërgesat me shofer (<code>Deliveries</code>) nuk kanë të dhëna pas 03.07.2020.`; }
+
+  // ---------- MODEL (static reference from the skill)
+  table("tb-ent",[{h:"Entiteti"},{h:"Tabela",f:v=>`<code>${v}</code>`},{h:"Çelësi",f:v=>`<code>${v}</code>`}],[
+   ["Porosi","Orders","(OrderId, PlatformId)"],["Rresht porosie","OrderDetails","parent (OrderId, PlatformId)"],["Njësi fizike","ProductCheckIns","ProductItemUniqueIdentifier"],["Historia e njësisë","ProductLogs","ProductItemUniqueIdentifierId"],["Punëtor","Users","UserId (jo Id)"],["Depo","Warehouses","Id 1,5,6,11,12"],["Seksion/Raft/Rresht","Sections/Shelves/Rows","Id"],["Furnizim","Supplies","SupplyUniqueName"],["Faturë","Invoices","InvoiceUniqueId"],["Transport","Shipments → ShipmentDestinations","Id (FK)"],["Pick session","PickSession → PickSessionOrder/Item","Id (bigint)"],["Periudhë page","WarehouseSalaryPeriods","Id"]]);
+  table("tb-trap",[{h:"Kurthi"},{h:"Join i saktë",f:v=>`<code>${v}</code>`}],[
+   ["Users.Id ≠ Users.UserId","u.UserId = pl.UpdateBy"],["Orders.Id është i brendshëm","OrderId + PlatformId"],["OrderId përsëritet në 2 platforma","gjithmonë shto PlatformId"],["Barkodi është string","c.ProductItemUniqueIdentifier = pl.ProductItemUniqueIdentifierId"],["Gabim shkrimi","ReceivedProducts.SuplyUniqueId"],["UpdateBy nchar","OrderRowMappingLogs.UpdateBy"],["SourceId polimorfik","lexo me SourceTable"],["CreatedOnUtc është UTC","DATEADD(hour, offset, CreatedOnUtc)"],["CTE refuzohen","përdor derived tables"]]);
+  table("tb-log",[{h:"LogTypeId",n:1,f:v=>`<code>${v}</code>`},{h:"Kuptimi"},{h:"Siguria",f:v=>pill(v,v==="Konfirmuar"?"ok":v==="E nxjerrë"?"w":"n")},{h:"Vëllimi"}],[
+   [2,"Check-in","Konfirmuar","–"],[7,"Map në rresht","Konfirmuar","–"],[18,"Check-out (rrjedha aktuale)","Konfirmuar","–"],[4,"Check-out (i vjetër)","Konfirmuar","–"],[3,"Hap fulfilment-i pas 2","E nxjerrë","1.5M"],[27,"Hap fulfilment-i para 9","E nxjerrë","1.4M"],[9,"Hap fulfilment-i para 18","E nxjerrë","1.8M"],[6,"Hap stoku para map-it","E nxjerrë","1.1M"],[13,"?","E panjohur","86k, deri 05.2026"],[40,"?","E panjohur","103k, me porosi"],[100,"?","E panjohur","114k"],[99,"?","E panjohur","22k, pas 7 ose 6"],[32,"?","E panjohur","~800 njësi aktualisht"]]);
+  table("tb-wh",[{h:"Id",n:1},{h:"Emri"},{h:"Kodi",f:v=>`<code>${v}</code>`},{h:"Qyteti"},{h:"CountryId",n:1}],[[1,"Prishtinë","01","Prishtinë",1],[5,"Gjirafa AL","02","Tirana",2],[6,"Gjirafa MK","03","Skopje",3],[11,"iGjirafa","6","Prishtinë",4],[12,"Prizren","05","Prizren",1]]);
+  table("tb-fresh",[{h:"Tabela"},{h:"Gjendja",f:v=>pill(v,v==="Real-time"?"ok":v==="Bosh"?"n":"w")}],[["Orders, ProductLogs, ProductCheckIns","Real-time"],["PickSession*","Real-time"],["WarehouseActionPayments","Mujore"],["OrderLogs","E vjetër (10.2024)"],["Deliveries","E vjetër (07.2020)"],["PerformanceSnapshots","Bosh"],["ShipmentCostLines","Bosh"],["InspectScopes","Bosh"]]);
+  table("tb-oq",[{h:"Fusha"},{h:"Vlerat"},{h:"Pse ka rëndësi"}],[
+   ["ProductLogs.LogTypeId","3, 6, 9, 27, 13, 40, 99, 100 …","Emërtimi i hapave të fulfilment-it"],["Orders.WmsStatusId","0, 2–7, 21, 23–26, 29, 31, 37","Cilat janë përfundimtare → metrika e backlog-ut"],["Rows.RowType / RowStatusId / StoreType","0–5","Rreshta porosish kundrejt stokut"],["Inspects.InspectStyle","1, 6, 7","Numërim i plotë apo i pjesshëm"],["ShipmentDestinations.Status","10, 20, 50, 60","Statusi i mbërritjes"],["OrderUnmaps.UnmapStatusId, ReasonId","1–4","Arsyet e lirimit të njësive"],["InvoiceRequests.InvoiceStatus","0–3","Faturat e ngecura"],["Llogaritë temp…@","temp1–temp9","A janë të përbashkëta?"],["Picking në score","–","Cilët LogType numërohen si picking"]]);
+
+  showTab(current);
+}
+
+// ---------- TABS
+const TABS=[["t-prod","Produktiviteti"],["t-pay","Pagesa për veprim"],["t-ord","Porositë"],["t-stock","Stoku & lokacionet"],["t-in","Inbound & logjistika"],["t-model","Modeli i të dhënave"]];
+const nav=document.getElementById("tabs");
+let current="t-prod";
+function showTab(id){ current=id; TABS.forEach(([t])=>{const el=document.getElementById(t); if(el) el.hidden=t!==id;}); nav.querySelectorAll("button").forEach(b=>b.setAttribute("aria-selected",b.dataset.t===id)); try{localStorage.setItem("wmsTab",id)}catch(e){} }
+nav.innerHTML=TABS.map(([t,l])=>`<button role="tab" data-t="${t}">${l}</button>`).join("");
+nav.querySelectorAll("button").forEach(b=>b.onclick=()=>showTab(b.dataset.t));
+try{const s=localStorage.getItem("wmsTab");if(s&&TABS.some(([t])=>t===s))current=s;}catch(e){}
+{ const h=location.hash.slice(1); if(h&&TABS.some(([t])=>t==="t-"+h)) current="t-"+h; }
+if(/[?&]embed=1/.test(location.search)) document.body.classList.add("embed");
+{ const m=/[?&]theme=(dark|light)/.exec(location.search); if(m) document.documentElement.dataset.theme=m[1]; }
+
+// Data: embedded (published page) or from the local agent (app tab), re-read every 5 min.
+let lastGen=null;
+async function load(){
+  if(window.PULSE){ if(lastGen!==window.PULSE.generatedAt){ lastGen=window.PULSE.generatedAt; render(window.PULSE); } return; }
+  try{ const r=await fetch("/pulse/data",{cache:"no-store"}); const j=await r.json();
+    if(!r.ok||j.error){ document.getElementById("app").innerHTML=`<div class="empty">${esc(j.error||("HTTP "+r.status))}</div>`; return; }
+    if(lastGen!==j.generatedAt){ lastGen=j.generatedAt; render(j); }
+  }catch(e){ document.getElementById("app").innerHTML=`<div class="empty">Agjenti s'përgjigjet (${esc(e.message)}).</div>`; }
+}
+load();
+if(!window.PULSE) setInterval(load, 5*60*1000);
+</script>
+</body></html>

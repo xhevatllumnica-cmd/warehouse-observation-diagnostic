@@ -64,3 +64,26 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ── WODS shared database + archived daily reports (local runtime data) ──
+wods-db.json
+wods-db.json.tmp
+reports/
+wms-agent.log
+wms-agent.log.1
+flow-chat-state.json
+stats-day-cache.json
+shift-schedule.json
+pulse/data.json
+pulse/raw/
+pulse/wms-pulse.html
+
+# local databases (Orari i Warehouse SQLite — employee data)
+data/
+
+# Bottleneck Register: WMS snapshots (staff initials, operational data), rendered queries and metric history stay local
+bottleneck/snapshots/
+bottleneck/queries.run.sql
+bottleneck/metric-history.json
+# WMS store names (StoreId → store), read by the agent from the WMS web app
+pulse/stores.json
