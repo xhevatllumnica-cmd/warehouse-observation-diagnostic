@@ -915,6 +915,30 @@ async function fetchPodScans(iso){
   const v={date:iso, rows, total, complete: total==null || rows.length>=total, at:new Date().toISOString()};
   podScanCache[iso]={t:Date.now(), v}; return v;
 }
+/* POD orders per day for Kapaciteti & Stafi (the "Boxing / POD" process volume): only the day's total (recordsFiltered of
+   one 1-row request), all accounts. Days older than 2 days do not change any more and are kept in data/pod-daily.json, so
+   the 12-week range is read from the Delivery Platform once and afterwards only the recent days are re-read. */
+const POD_DAILY_FILE=path.join(APPDIR,'data','pod-daily.json');
+let podDailyMem=null, podDailyBusy=null;
+async function podDailyCounts(from, to){
+  if(podDailyBusy) return podDailyBusy;
+  return podDailyBusy=(async()=>{ try{
+    let store={}; try{ store=JSON.parse(fs.readFileSync(POD_DAILY_FILE,'utf8')); }catch(e){}
+    if(podDailyMem && podDailyMem.key===from+'|'+to && Date.now()-podDailyMem.t<10*60000) return podDailyMem.v;
+    const days={}, settledBefore=isoAddDays(isoToday(),-2); let error=null, changed=false;
+    for(let d=from; d<=to && d<=isoToday(); d=isoAddDays(d,1)){
+      if(d<settledBefore && store[d]!=null){ days[d]=store[d]; continue; }
+      const r=await deliveryPostJson('/AcceptDelivery/GetScannedOrders',{draw:1, start:0, length:1, search:{value:'',regex:false}, order:[{column:0,dir:'desc'}],
+        columns:dtCols(5), filters:{startDate:d, endDate:d, groupId:''}});
+      if(r.error){ error=r.error; if(r.error==='auth_expired'){ deliverySessionExpired=true; break; } continue; }
+      days[d]=Number(r.recordsFiltered)||0; if(d<settledBefore){ store[d]=days[d]; changed=true; }
+    }
+    if(changed){ try{ fs.mkdirSync(path.dirname(POD_DAILY_FILE),{recursive:true}); fs.writeFileSync(POD_DAILY_FILE, JSON.stringify(store)); }catch(e){} }
+    const v={from, to, days, error, at:new Date().toISOString()};
+    if(!error) podDailyMem={key:from+'|'+to, t:Date.now(), v};
+    return v;
+  } finally { podDailyBusy=null; } })();
+}
 /* Refusals for the board: the refused orders a courier brings back, collected at the warehouse (Delivery Platform
    "Refusals → Scanned Refusals", POST /Refusals/FilterScannedRefusals — the read the platform's own page makes). One row
    per collection; only the collector ("Collecter Responsible"), the number of orders and the scan time leave here. */
@@ -1120,6 +1144,11 @@ http.createServer(async (req,resp)=>{
         tabelaBoard.saveAssign(APPDIR, body, tabelaStations(), isoToday()); return send(200, {ok:true}); }
       const dq=String(q.query.date||''); if(dq && !/^\d{4}-\d{2}-\d{2}$/.test(dq)) return send(400,{error:'date: YYYY-MM-DD'});
       return send(200, await tabelaData(!!q.query.refresh, dq||null));
+    }
+    if(q.pathname==='/cap/pod'){   // POD orders per day (counts only) — same-origin only, no CORS header
+      const f=String(q.query.from||''), t=String(q.query.to||''), ok=s=>/^\d{4}-\d{2}-\d{2}$/.test(s);
+      if(!ok(f)||!ok(t)||f>t) return json(400,{error:'from/to: YYYY-MM-DD'});
+      const r=await podDailyCounts(f,t); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r));
     }
     if(q.pathname==='/pulse/status'){ return json(200, Object.assign({building:pulseBuilding}, pulseState)); }
     if(q.pathname==='/wms/stores'){   // store names + return dispositions — same-origin only (no CORS header)

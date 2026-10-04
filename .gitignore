@@ -87,3 +87,4 @@ bottleneck/queries.run.sql
 bottleneck/metric-history.json
 # WMS store names (StoreId → store), read by the agent from the WMS web app
 pulse/stores.json
+pulse/queries.bn.sql

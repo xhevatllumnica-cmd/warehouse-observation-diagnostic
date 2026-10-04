@@ -255,22 +255,39 @@ SELECT /*pulse:H*/
 FROM (SELECT DATEADD(day, -((DATEPART(weekday,GETDATE())+@@DATEFIRST-2)%7), CAST(GETDATE() AS date)) mon) m
 CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central European Standard Time') tz) z
 
--- @I capacity — operators (Kapaciteti & Stafi): per warehouse-01 staff account over the same 12 weeks: units and
---    active hours (distinct clock hours with at least one scan) per process, active days, total active hours. Shown
---    in the app as initials + the last 3 digits of the WMS UserId; temp (shared) accounts flagged. Sellers excluded.
-SELECT /*pulse:I*/
- (SELECT LEFT(ISNULL(u.FirstName,'?'),1)+'.'+LEFT(ISNULL(u.LastName,'?'),1)+'.' i, RIGHT(CAST(u.UserId AS varchar(12)),3) id, CASE WHEN u.Username LIKE 'temp%' THEN 1 ELSE 0 END tmp,
+-- @I capacity — operators (Kapaciteti & Stafi), PER DAY so the page can show any week or month: every warehouse-01 staff
+--    account from the 1st of the month three months back up to yesterday. opsMeta: the account (UserId, full name,
+--    initials + last 3 digits of the id as fallback, temp = shared account). opsDay: per account × day — units and active
+--    hours (distinct clock hours with at least one scan) per process, and the day's active hours. Sellers excluded.
+--    opsOrd: orders out per day (distinct orders with check-out 4/18 by warehouse-01 accounts). rates: the piece-rate price
+--    per action of each pricing version (CheckIn / Map / CheckoutShipping / Picking) and its validity, so the cost per
+--    order of any week or month = units × the price valid that day ÷ orders (checked against August: −1.3%).
+SELECT /*pulse:I*/ CONVERT(varchar(10),m.st,23) dFrom, CONVERT(varchar(10),DATEADD(day,-1,m.td),23) dTo,
+ (SELECT u.UserId u, LTRIM(RTRIM(ISNULL(u.FirstName,'')+' '+ISNULL(u.LastName,''))) n, LEFT(ISNULL(u.FirstName,'?'),1)+'.'+LEFT(ISNULL(u.LastName,'?'),1)+'.' i,
+    RIGHT(CAST(u.UserId AS varchar(12)),3) id, CASE WHEN u.Username LIKE 'temp%' THEN 1 ELSE 0 END tmp
+  FROM Users u WHERE u.UserWarehouseId=1 AND u.UserId>0 AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+    AND u.UserId IN (SELECT DISTINCT pl.UpdateBy FROM ProductLogs pl WITH (NOLOCK) WHERE pl.InsertDateTime>=m.st AND pl.InsertDateTime<m.td AND pl.LogTypeId IN (2,7,4,18))
+  FOR JSON PATH) opsMeta,
+ (SELECT x.ub u, CONVERT(varchar(10),CAST(x.hh AS date),23) d,
     SUM(CASE WHEN x.t=2 THEN x.n ELSE 0 END) ci, SUM(CASE WHEN x.t=2 THEN 1 ELSE 0 END) ciH, SUM(CASE WHEN x.t=7 THEN x.n ELSE 0 END) mp, SUM(CASE WHEN x.t=7 THEN 1 ELSE 0 END) mpH,
-    SUM(CASE WHEN x.t=4 THEN x.n ELSE 0 END) co, SUM(CASE WHEN x.t=4 THEN 1 ELSE 0 END) coH, COUNT(DISTINCT CAST(x.hh AS date)) days, COUNT(DISTINCT x.hh) hrs
+    SUM(CASE WHEN x.t=4 THEN x.n ELSE 0 END) co, SUM(CASE WHEN x.t=4 THEN 1 ELSE 0 END) coH, COUNT(DISTINCT x.hh) h
   FROM (SELECT pl.UpdateBy ub, CASE WHEN pl.LogTypeId IN (4,18) THEN 4 ELSE pl.LogTypeId END t, DATEADD(hour,DATEDIFF(hour,0,pl.InsertDateTime),0) hh, COUNT(*) n
-        FROM ProductLogs pl WITH (NOLOCK) WHERE pl.InsertDateTime>=DATEADD(week,-12,m.mon) AND pl.InsertDateTime<m.mon AND pl.LogTypeId IN (2,7,4,18)
+        FROM ProductLogs pl WITH (NOLOCK) WHERE pl.InsertDateTime>=m.st AND pl.InsertDateTime<m.td AND pl.LogTypeId IN (2,7,4,18)
         GROUP BY pl.UpdateBy, CASE WHEN pl.LogTypeId IN (4,18) THEN 4 ELSE pl.LogTypeId END, DATEADD(hour,DATEDIFF(hour,0,pl.InsertDateTime),0)) x
   JOIN Users u ON u.UserId=x.ub
   WHERE u.UserWarehouseId=1 AND u.UserId>0 AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
-  GROUP BY u.UserId, u.FirstName, u.LastName, u.Username HAVING SUM(x.n)>=300 ORDER BY SUM(x.n) DESC FOR JSON PATH) ops
-FROM (SELECT DATEADD(day, -((DATEPART(weekday,GETDATE())+@@DATEFIRST-2)%7), CAST(GETDATE() AS date)) mon) m
+  GROUP BY x.ub, CAST(x.hh AS date) ORDER BY 2, 1 FOR JSON PATH) opsDay,
+ (SELECT CONVERT(varchar(10),CAST(pl.InsertDateTime AS date),23) d, COUNT(DISTINCT CONCAT(pl.OrderId,'-',pl.PlatformId)) n FROM ProductLogs pl WITH (NOLOCK) JOIN Users u ON u.UserId=pl.UpdateBy
+  WHERE pl.InsertDateTime>=m.st AND pl.InsertDateTime<m.td AND pl.LogTypeId IN (4,18) AND pl.OrderId>0 AND u.UserWarehouseId=1
+  GROUP BY CAST(pl.InsertDateTime AS date) ORDER BY 1 FOR JSON PATH) opsOrd,
+ (SELECT v.Id id, CONVERT(varchar(10),v.ValidFrom,23) f, CONVERT(varchar(10),v.ValidTo,23) t, MAX(CASE WHEN a.Code='CheckIn' THEN r.Price END) ci, MAX(CASE WHEN a.Code='Map' THEN r.Price END) mp,
+    MAX(CASE WHEN a.Code='CheckoutShipping' THEN r.Price END) co, MAX(CASE WHEN a.Code='Picking' THEN r.Price END) pk
+  FROM WarehousePricingVersions v JOIN WarehouseActionRates r ON r.PricingVersionId=v.Id JOIN WarehouseActions a ON a.Id=r.WarehouseActionId
+  GROUP BY v.Id, v.ValidFrom, v.ValidTo FOR JSON PATH) rates
+FROM (SELECT DATEADD(month, DATEDIFF(month,0,GETDATE())-3, 0) st, CAST(CAST(GETDATE() AS date) AS datetime) td) m
 
--- @J capacity — same-day dispatch (Kapaciteti & Stafi): the last 8 full weeks. Ready = the order's last item in the
+-- @J capacity — same-day dispatch (Kapaciteti & Stafi): the last 8 full weeks plus the current week up to yesterday
+--    (orders ready today are left out until their day is over). Ready = the order's last item in the
 --    warehouse (order created, or the last cross-dock unit reserved for it — LogType 3, matched per unit); out = the
 --    first check-out scan (27). Cut-off 17:30 = no inbound after that, so ready by 17:30 should leave the same day.
 SELECT /*pulse:J*/
@@ -288,7 +305,7 @@ SELECT /*pulse:J*/
            WHERE LogTypeId=27 AND OrderId>0 AND InsertDateTime>=DATEADD(day,-7,DATEADD(week,-8,m.mon))) k2
           JOIN ProductLogs x3 WITH (NOLOCK) ON x3.ProductItemUniqueIdentifierId=k2.uid AND x3.LogTypeId=3 AND x3.OrderId=k2.OrderId
           GROUP BY k2.OrderId, k2.PlatformId) a ON a.OrderId=k.OrderId AND a.PlatformId=k.PlatformId) y
-    WHERE r>=DATEADD(week,-8,m.mon) AND r<m.mon AND c1>=r) q
+    WHERE r>=DATEADD(week,-8,m.mon) AND r<CAST(GETDATE() AS date) AND c1>=r) q
   GROUP BY wk ORDER BY MIN(d) FOR JSON PATH) sameDay
 FROM (SELECT DATEADD(day, -((DATEPART(weekday,GETDATE())+@@DATEFIRST-2)%7), CAST(GETDATE() AS date)) mon) m
 CROSS JOIN (SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET() AT TIME ZONE 'Central European Standard Time') tz) z

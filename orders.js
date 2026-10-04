@@ -89,7 +89,9 @@ function drawOrdersWms(){
   const views=[['done','Me check-out sot',done.length],['wait','Në pritje',wait.length],['issues','Me probleme',done.filter(o=>o.flags.length).length+wait.filter(o=>o.flags.some(f=>f[0]!=='info')).length]];
   const chips=`<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
       ${views.map(([k,l,n])=>`<span class="chip ${ordView===k?'on':''}" data-ordv="${k}">${l} <b style="margin-left:5px">${n}</b></span>`).join('')}
-      <input id="ordSearch" placeholder="Kërko porosi / operator…" value="${h(ordQuery)}" style="margin-left:auto;max-width:240px;min-height:38px"></div>`;
+      <input id="ordSearch" placeholder="Kërko porosi / operator…" value="${h(ordQuery)}" style="margin-left:auto;max-width:240px;min-height:38px">
+      <button class="btn sm" id="ordPrint" title="Printo listën e plotë të kësaj pamjeje">🖨 Printo</button>
+      <button class="btn sm" id="ordMail" title="Dërgo listën e plotë të kësaj pamjeje me email">✉ Dërgo në email</button></div>`;
   const q=ordQuery.trim().toLowerCase(), match=o=>!q || [o.id, o.w, ORD_PL[o.p]].join(' ').toLowerCase().includes(q);
   const notes=Store.col('orders').filter(o=>o.wmsId);
   const stName=s=> s==null? '—' : s+(ORD_ST[s]?' · '+ORD_ST[s]:'');
@@ -124,6 +126,8 @@ function drawOrdersWms(){
   $$('[data-ordv]').forEach(c=>c.onclick=()=>{ ordView=c.dataset.ordv; ordOpen=null; drawOrdersWms(); });
   const si=$('#ordSearch'); if(si){ si.oninput=e=>{ ordQuery=e.target.value; clearTimeout(si._t); si._t=setTimeout(()=>{ drawOrdersWms(); const n=$('#ordSearch'); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length); } },250); }; }
   $$('[data-ord]').forEach(r=>r.onclick=()=>{ ordOpen= ordOpen===r.dataset.ord? null : r.dataset.ord; drawOrdersWms(); });
+  const pb=$('#ordPrint'); if(pb) pb.onclick=()=>ordPrintList();
+  const mb=$('#ordMail'); if(mb) mb.onclick=()=>ordMailList();
   $$('[data-ordnote]').forEach(btn=>btn.onclick=e=>{ e.stopPropagation(); const o=done.concat(wait).find(x=>ordKey(x)===btn.dataset.ordnote); if(o) openOrderNote(o); });
 }
 function ordDetail(o, isDone, notes){
@@ -151,4 +155,77 @@ function openOrderNote(o){
   const src= !o.xu? 'From stock (picked)' : o.xu>=o.u? 'Cross-dock (staged to check-out)' : 'Split — stock + cross-dock';
   openOrderForm(null, { wmsId:ordKey(o), orderRef:String(o.id)+' ('+(ORD_PL[o.p]||o.p)+')', date:todayStr(), lines:o.l||null, units:o.q!=null? o.q : o.u, fulfillment:src,
     note: o.w? 'Check-out në WMS: '+o.w+' '+inbWhen(o.c1) : '' });
+}
+
+/* Print / e-mail the FULL list of the current view (every row, not only the first 250 on screen; the search filter
+   applies). The app has no mail account and never sends on its own: "Dërgo në email" copies the list as a formatted table
+   to the clipboard and opens a new message (Gmail or the PC's mail program) to paste it into; a CSV can be attached. */
+const ORD_VIEW_LBL={done:'Porosi me check-out sot', wait:'Porosi në pritje', issues:'Porosi me probleme'};
+function ordExportData(){
+  if(!ordWms) return null;
+  const now=new Date(), q=ordQuery.trim().toLowerCase(), match=o=>!q || [o.id, o.w, ORD_PL[o.p]].join(' ').toLowerCase().includes(q);
+  const done=ordWms.done.map(o=>Object.assign({}, o, {flags:ordDoneFlags(o)})), wait=ordWms.wait.map(o=>Object.assign({}, o, {flags:ordWaitFlags(o, now)}));
+  const dt=s=> s? s.slice(8,10)+'.'+s.slice(5,7)+' '+s.slice(11,16) : '—';
+  const stName=s=> s==null? '—' : s+(ORD_ST[s]?' · '+ORD_ST[s]:'');
+  const flagsTxt=o=> o.flags.filter(f=>f[0]!=='info').map(f=>f[1]).join('; ') || '';
+  const doneCols=['Porosia','Platforma','Statusi WMS','Njësi / porosia','Burimi','Krijuar','Artikujt gati','Check-out','Operatori','Porosi → check-out','Problemet'];
+  const doneRow=o=>[String(o.id), ORD_PL[o.p]||String(o.p||''), stName(o.st), o.q!=null? o.u+' / '+o.q : String(o.u), ordSource(o), dt(o.cr), o.xu? dt(o.a2) : 'nga stoku',
+    dt(o.c1)+(o.c2&&o.c2!==o.c1? '–'+inbHM(o.c2) : ''), o.w||'—', inbDur(inbMin(o.cr,o.c1)), flagsTxt(o)];
+  const waitCols=['Porosia','Platforma','Statusi WMS','Njësi në depo / porosia','Dalë','Krijuar','Caktuar','Pret prej','Lirime','Problemet'];
+  const waitRow=o=>{ const ageH=o.a1? (now-inbT(o.a1))/3600000 : null;
+    return [String(o.id), ORD_PL[o.p]||String(o.p||''), stName(o.st), o.u+(o.q!=null? ' / '+o.q : ''), String(o.dn||0), dt(o.cr), dt(o.a1)+(o.a2&&o.a2!==o.a1? ' – '+dt(o.a2) : ''),
+      ageH!=null? inbDur(ageH*60) : '—', String(o.um||0), flagsTxt(o)]; };
+  const sections=[];
+  if(ordView==='wait') sections.push({title:'Në pritje', cols:waitCols, rows:wait.filter(match).map(waitRow)});
+  else if(ordView==='issues'){
+    sections.push({title:'Me check-out sot, me probleme', cols:doneCols, rows:done.filter(o=>o.flags.length).filter(match).map(doneRow)});
+    sections.push({title:'Në pritje me probleme', cols:waitCols, rows:wait.filter(o=>o.flags.some(f=>f[0]!=='info')).filter(match).map(waitRow)});
+  } else sections.push({title:'Me check-out sot', cols:doneCols, rows:done.filter(match).map(doneRow)});
+  const total=sections.reduce((s,x)=>s+x.rows.length,0);
+  return {title:ORD_VIEW_LBL[ordView]||'Porositë', sections, total, query:ordQuery.trim(), at:ordWms.at? new Date(ordWms.at).toLocaleString() : '', printedAt:new Date().toLocaleString()};
+}
+function ordExportHTML(d, forMail){
+  const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const th='style="text-align:left;padding:5px 7px;border-bottom:2px solid #cdd3db;background:#f4f5f7;font-size:12px"', td='style="padding:4px 7px;border-bottom:1px solid #e2e5ea;font-size:12px;vertical-align:top"';
+  const tables=d.sections.map(s=>`<h3 style="font:600 14px Arial,sans-serif;margin:14px 0 6px">${esc(s.title)} · ${s.rows.length}</h3>`
+    + (s.rows.length? `<table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif"><thead><tr>${s.cols.map(c=>`<th ${th}>${esc(c)}</th>`).join('')}</tr></thead><tbody>`
+      + s.rows.map(r=>`<tr>${r.map((v,i)=>`<td ${td}>${i===0? '<b>'+esc(v)+'</b>' : esc(v)}</td>`).join('')}</tr>`).join('') + '</tbody></table>' : '<p style="font:12px Arial">— asnjë porosi —</p>')).join('');
+  const head=`<h2 style="font:700 17px Arial,sans-serif;margin:0 0 4px">${esc(d.title)} — Depo 01 Prishtinë</h2>
+    <div style="font:12px Arial,sans-serif;color:#5d6876">Gjithsej <b>${d.total}</b> porosi${d.query? ' · filtri: "'+esc(d.query)+'"' : ''} · lexuar nga WMS: ${esc(d.at)} · ${forMail? 'dërguar' : 'printuar'}: ${esc(d.printedAt)}</div>`;
+  return head+tables;
+}
+function ordPrintList(){
+  const d=ordExportData(); if(!d) return toast('Lista nuk është ngarkuar ende');
+  const w=window.open('', '_blank'); if(!w) return toast('Shfletuesi e bllokoi dritaren e printimit — lejo pop-up për këtë faqe');
+  w.document.write('<!doctype html><html lang="sq"><head><meta charset="utf-8"><title>'+d.title+'</title>'
+    + '<style>@page{size:A4 landscape;margin:12mm} body{margin:0;color:#2b2f36;background:#fff} tr{page-break-inside:avoid} thead{display:table-header-group}</style></head>'
+    + '<body>'+ordExportHTML(d,false)+'<scr'+'ipt>window.onload=function(){ setTimeout(function(){ window.print(); }, 150); };</scr'+'ipt></body></html>');
+  w.document.close();
+}
+function ordCsv(d){
+  const q=v=>{ const s=String(v==null?'':v); return /[";\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
+  return '﻿'+d.sections.map(s=>[s.title].concat([s.cols.map(q).join(';')], s.rows.map(r=>r.map(q).join(';'))).join('\r\n')).join('\r\n\r\n');
+}
+async function ordCopyRich(html, text){
+  try{ if(navigator.clipboard && window.ClipboardItem){ await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([html],{type:'text/html'}), 'text/plain':new Blob([text],{type:'text/plain'})})]); return true; } }catch(e){}
+  try{ const div=document.createElement('div'); div.contentEditable='true'; div.style.cssText='position:fixed;left:-9999px;top:0'; div.innerHTML=html; document.body.appendChild(div);
+    const r=document.createRange(); r.selectNodeContents(div); const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); const ok=document.execCommand('copy'); sel.removeAllRanges(); div.remove(); return ok; }catch(e){ return false; }
+}
+function ordMailList(){
+  const d=ordExportData(); if(!d) return toast('Lista nuk është ngarkuar ende');
+  const subject=d.title+' — '+d.total+' porosi — '+new Date().toLocaleDateString('de-DE');
+  const plain=d.sections.map(s=>s.title+' ('+s.rows.length+')\n'+s.cols.join('\t')+'\n'+s.rows.map(r=>r.join('\t')).join('\n')).join('\n\n');
+  openModal('Dërgo listën me email', `<div class="small" style="margin-bottom:8px"><b>${h(d.title)}</b> · ${d.total} porosi${d.query? ' · filtri "'+h(d.query)+'"' : ''}</div>
+    <div class="field"><label>Për (email, opsionale)</label><input type="email" id="omTo" placeholder="emri@gjirafa.com"></div>
+    <div class="hint">1) Lista e plotë kopjohet si tabelë · 2) hapet një email i ri me subjektin · 3) në trupin e email-it shtyp <b>Ctrl+V</b>. Për bashkëngjitje, shkarko edhe CSV-në. Email-i dërgohet nga ti — app-i nuk dërgon vetë.</div>`,
+    `<button class="btn ghost" id="omCsv">⬇ Shkarko CSV</button><button class="btn" id="omMailto">Hap programin e email-it</button><button class="btn primary" id="omGmail">Kopjo + hap Gmail</button>`);
+  const go=async(kind)=>{ const ok=await ordCopyRich(ordExportHTML(d,true), plain); const to=($('#omTo').value||'').trim();
+    const body=(ok? 'Lista e plotë ('+d.total+' porosi) — ngjite këtu me Ctrl+V.' : 'Lista nuk u kopjua automatikisht — bashkëngjit CSV-në.')+'\n';
+    const url= kind==='gmail'? 'https://mail.google.com/mail/?view=cm&fs=1'+(to? '&to='+encodeURIComponent(to) : '')+'&su='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body)
+      : 'mailto:'+encodeURIComponent(to)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+    if(kind==='gmail') window.open(url,'_blank'); else location.href=url;
+    toast(ok? 'Lista u kopjua — ngjite me Ctrl+V në email' : 'Kopjimi dështoi — përdor CSV-në'); };
+  $('#omGmail').onclick=()=>go('gmail'); $('#omMailto').onclick=()=>go('mailto');
+  $('#omCsv').onclick=()=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([ordCsv(d)],{type:'text/csv;charset=utf-8'}));
+    a.download='porosite-'+ordView+'-'+todayStr()+'.csv'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500); };
 }

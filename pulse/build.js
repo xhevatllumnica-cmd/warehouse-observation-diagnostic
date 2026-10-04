@@ -94,7 +94,9 @@ const ordG=rows.G? {at:rows.G._at||null, done:J(rows.G.ord), wait:J(rows.G.wait)
 
 // capacity (blocks H/I/J, optional): 12-week demand + volumes + hourly coverage + piece-rate, operators, same-day
 const capacity= rows.H? { at:rows.H._at||null, from:rows.H.wFrom, to:rows.H.wTo, created:J(rows.H.created), vol:J(rows.H.vol), coOrd:J(rows.H.coOrd),
-    hourly:J(rows.H.hourly), pay:J(rows.H.pay), std:J(rows.H.std), ops: rows.I? J(rows.I.ops) : null, opsAt: rows.I? rows.I._at||null : null,
+    hourly:J(rows.H.hourly), pay:J(rows.H.pay), std:J(rows.H.std), ops: rows.I&&rows.I.ops? J(rows.I.ops) : null, opsMeta: rows.I? J(rows.I.opsMeta) : null, opsDay: rows.I? J(rows.I.opsDay) : null,
+    opsOrd: rows.I? J(rows.I.opsOrd) : null, rates: rows.I? J(rows.I.rates) : null,
+    opsFrom: rows.I? rows.I.dFrom||null : null, opsTo: rows.I? rows.I.dTo||null : null, opsAt: rows.I? rows.I._at||null : null,
     sameDay: rows.J? J(rows.J.sameDay) : null, sameDayAt: rows.J? rows.J._at||null : null } : null;
 
 const shipments= rows.K? {at:rows.K._at||null, gen:rows.K.gen, stops:J(rows.K.stops), carriers:J(rows.K.carriers), trucks:J(rows.K.trucks)} : null;
