@@ -884,7 +884,8 @@ async function tabelaLiveData(force){
   return tabelaLiveBusy;
 }
 /* local overrides of the WMS station list (set by the warehouse lead, 03–04.10.2026): CHECKOUT 5 and CHECKIN 3 are not in use;
-   CHECKOUT 6 is used as the refusals/returns table — it counts processed customer-return units (dispositions 20/21/22/29) */
+   CHECKOUT 6 is used as the refusals/returns table — it counts the refused orders collected (Delivery Platform Scanned
+   Refusals) and, as a second figure, processed customer-return units (WMS dispositions 20/21/22/29) */
 const TABELA_STATION_CFG={'CHECKOUT 5':{hidden:true}, 'CHECKIN 3':{hidden:true}, 'CHECKOUT 6':{label:'Tavolina për refuzime/kthime', kind:'ret'}};
 function tabelaStations(){
   let list=TABELA_DEFAULT_STATIONS;
@@ -914,6 +915,27 @@ async function fetchPodScans(iso){
   const v={date:iso, rows, total, complete: total==null || rows.length>=total, at:new Date().toISOString()};
   podScanCache[iso]={t:Date.now(), v}; return v;
 }
+/* Refusals for the board: the refused orders a courier brings back, collected at the warehouse (Delivery Platform
+   "Refusals → Scanned Refusals", POST /Refusals/FilterScannedRefusals — the read the platform's own page makes). One row
+   per collection; only the collector ("Collecter Responsible"), the number of orders and the scan time leave here. */
+const refScanCache={};
+async function fetchRefusalScans(iso){
+  const c=refScanCache[iso], ttl= iso>=isoToday()? 110000 : 6*3600000;
+  if(c && Date.now()-c.t<ttl) return c.v;
+  const rows=[], seen=new Set(); let total=null;
+  for(let start=0, guard=0; guard<20; guard++){
+    const r=await deliveryPostJson('/Refusals/FilterScannedRefusals',{draw:1, start, length:500, search:{value:'',regex:false}, order:[{column:0,dir:'desc'}],
+      columns:dtCols(8), filters:{StartDate:iso, EndDate:iso, GroupId:'', OrderId:'', RefusalStatusId:''}});
+    if(r.error){ if(r.error==='auth_expired') deliverySessionExpired=true; return {error:r.error}; }
+    const d=r.data||[]; total=Number(r.recordsFiltered)||0;
+    d.forEach(x=>{ const k=String(x.refusalCollectionUniqueId||'')+'|'+x.scanningDate; if(seen.has(k)) return; seen.add(k);
+      const s=String(x.scanningDate||''), m=/\/Date\((\d+)\)\//.exec(s), t= m? Number(m[1]) : Date.parse(s.replace(' ','T'));
+      if(!isNaN(t)) rows.push({receiver:String(x.collectionReceiver||'').replace(/\s+/g,' ').trim(), n:Number(x.nrOrders)||0, t}); });
+    start+=d.length; if(!d.length || start>=total) break;
+  }
+  const v={date:iso, rows, total, complete: total==null || rows.length>=total, at:new Date().toISOString()};
+  refScanCache[iso]={t:Date.now(), v}; return v;
+}
 /* a past day (?date=YYYY-MM-DD): the same board rebuilt from that day's WMS log — no cut-off figures (those are "now") */
 async function tabelaPastLive(iso){
   const age=Math.round((new Date(isoToday()+'T00:00:00') - new Date(iso+'T00:00:00'))/86400000);
@@ -925,12 +947,14 @@ async function tabelaData(force, date){
   const past= date && date<isoToday(), today= past? date : isoToday(), yday=isoAddDays(today,-1);
   let board=null; try{ board=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).board||null; }catch(e){}
   const live0= past? await tabelaPastLive(date) : await tabelaLiveData(force), stations=tabelaStations(), rec=tabelaBoard.readAssign(APPDIR);
-  let pod=null; try{ pod=await fetchPodScans(today); }catch(e){ pod={error:String(e.message||e)}; }
-  const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES);
-  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, rec, live&&live.ops, today, day, normName, STAFF_ALIASES);
+  let pod=null, ref=null;
+  try{ pod=await fetchPodScans(today); }catch(e){ pod={error:String(e.message||e)}; }
+  try{ ref=await fetchRefusalScans(today); }catch(e){ ref={error:String(e.message||e)}; }
+  const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES, ref);
+  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:tabelaBoard.tablesFor(rec, today)}, live&&live.ops, today, day, normName, STAFF_ALIASES);   // that day's assignment
   const shifts={}; Object.entries(day||{}).forEach(([n,sh])=>{ shifts[n]= sh.off? 'pushim' : sh.start+'–'+sh.end; });
-  const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; return c; })}) : live;
-  return {date:today, past:!!past, stations, assign:{tables:tabelaBoard.currentAssign(rec), updatedAt:rec.updatedAt}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+  const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
+  return {date:today, past:!!past, stations, assign:{tables:tabelaBoard.currentAssign(rec, today), updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
     roster:[...new Set(warehouseStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
@@ -1093,7 +1117,7 @@ http.createServer(async (req,resp)=>{
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
       const send=(c,o)=>{ resp.writeHead(c,{'Content-Type':'application/json','Cache-Control':'no-store'}); resp.end(JSON.stringify(o)); };
       if(q.pathname==='/tabela/assign' && req.method==='POST'){ let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return send(400,{error:'bad json'}); }
-        tabelaBoard.saveAssign(APPDIR, body, tabelaStations()); return send(200, {ok:true}); }
+        tabelaBoard.saveAssign(APPDIR, body, tabelaStations(), isoToday()); return send(200, {ok:true}); }
       const dq=String(q.query.date||''); if(dq && !/^\d{4}-\d{2}-\d{2}$/.test(dq)) return send(400,{error:'date: YYYY-MM-DD'});
       return send(200, await tabelaData(!!q.query.refresh, dq||null));
     }

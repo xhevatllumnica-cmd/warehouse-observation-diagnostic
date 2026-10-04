@@ -79,7 +79,7 @@ dialog select{ flex:1; background:var(--bg); color:var(--text); border:1px solid
     <div class="note" id="note"></div></div>
 </div>
 <dialog id="dlg1"><div class="h2" id="d1Title">Tavolina</div>
-  <div class="note" style="margin:0 0 8px">Operatorët e kësaj tavoline. Çdo ditë secili numërohet vetëm brenda ndërrimit të vet sipas <b>Orarit të punës</b>; kush ka pushim atë ditë nuk shfaqet.</div>
+  <div class="note" style="margin:0 0 8px">Operatorët e kësaj tavoline. Ndryshimi ruhet për datën që po shikon dhe vazhdon ditët në vijim derisa ta ndryshosh; për një ditë të kaluar, vlen vetëm për atë ditë. Çdo ditë secili numërohet brenda ndërrimit të vet sipas <b>Orarit të punës</b>; kush ka pushim atë ditë nuk shfaqet.</div>
   <div id="d1List"></div>
   <div class="row" style="margin-top:10px"><select id="d1Add"></select><button class="btn" id="d1AddBtn">+ Shto</button></div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" id="d1Cancel">Anulo</button><button class="btn primary" id="d1Save">Ruaj</button></div></dialog>
@@ -132,8 +132,8 @@ function draw(){
   const row=(label,name,st)=>{ const o=name? byName[name] : null; if(name) used.add(name);
     if(!o) return `<tr class="idle"><td><span class="st">${esc(label)}</span></td><td>${name? esc(name) : '<span class="faint">— e lirë —</span>'}</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td></td></tr>`;
     const co= st.co && (!st.ci || o.orders>0 || !(o.ci>0));
-    const [tot,unit,rate,m]= st.kind==='pod'? [o.pod||0,'POD',null,o.podByHour||{}] : st.kind==='map'? [o.mp||0,'njësi',o.mpRate,o.mpByHour||{}] : st.kind==='ret'? [o.ret||0,'kthime',null,o.retByHour||{}] : co? [o.orders,'porosi',o.coRate,o.byHour||{}] : [o.ci,'njësi',o.ciRate,o.ciByHour||{}];
-    return `<tr><td><span class="st">${esc(label)}</span></td><td>${esc(o.name)}</td><td class="num"><b>${tot}</b> <span class="faint" style="font-size:.6em">${unit}</span></td><td class="num">${fmt(rate)}</td><td class="num">${m[H]||0}</td><td class="num">${m[H-1]||0}</td><td>${spark(o, st.kind==='pod'?'podByHour':st.kind==='map'?'mpByHour':st.kind==='ret'?'retByHour':co?'byHour':'ciByHour')}</td></tr>`; };
+    const [tot,unit,rate,m]= st.kind==='pod'? [o.pod||0,'POD',null,o.podByHour||{}] : st.kind==='map'? [o.mp||0,'njësi',o.mpRate,o.mpByHour||{}] : st.kind==='ret'? [o.ref||0,'refuzime',null,o.refByHour||{}] : co? [o.orders,'porosi',o.coRate,o.byHour||{}] : [o.ci,'njësi',o.ciRate,o.ciByHour||{}];
+    return `<tr><td><span class="st">${esc(label)}</span></td><td>${esc(o.name)}</td><td class="num"><b>${tot}</b> <span class="faint" style="font-size:.6em">${unit}</span></td><td class="num">${fmt(rate)}</td><td class="num">${m[H]||0}</td><td class="num">${m[H-1]||0}</td><td>${spark(o, st.kind==='pod'?'podByHour':st.kind==='map'?'mpByHour':st.kind==='ret'?'refByHour':co?'byHour':'ciByHour')}</td></tr>`; };
   let html=`<thead><tr><th>Tavolina</th><th>Operatori</th><th class="num">Sot</th><th class="num">Në orë aktive</th><th class="num">Kjo orë</th><th class="num">Ora e kaluar</th><th>${hrs[0]}:00 → tani</th></tr></thead><tbody>`;
   const free=[]; (D.stations||[]).forEach(s=>{ if(A[s.name]) html+=row(stLabel(s.name), A[s.name], s); else free.push(stLabel(s.name)); });
   const rest=ops.filter(o=>!used.has(o.name) && (o.orders>0 || o.ci>0)).sort((a,b)=>b.orders-a.orders || b.ci-a.ci);
@@ -141,7 +141,7 @@ function draw(){
   if(free.length) html+=`<tr><td colspan="7" class="faint" style="font-size:13px;white-space:normal">TAVOLINA TË LIRA (pa operator të caktuar): ${free.map(esc).join(' · ')}</td></tr>`;
   $('#tbl').innerHTML=html+'</tbody>';
   $('#note').innerHTML=`Live nga WMS: ${hm(L.at)}${L.lastScan? ' (skanimi i fundit '+hm(L.lastScan)+')' : ''}${L.reliable===false? ' · <b>log-u i sotëm u lexua jo i plotë</b>' : ''} · Carryover dhe porositë e gatshme: ${C.gen? C.gen.slice(11,16) : '—'} (databaza, çdo orë).
-    Porosi = porosi të përfunduara në check-out (si AI Operator); "në orë aktive" = porosi ÷ orët me të paktën një skanim. Tavolinat caktohen këtu — WMS nuk e regjistron tavolinën e operatorit.`;
+    Porosi = porosi me check-out (Checked out + Ready for delivery), si te Statistikat e WH; "në orë aktive" = porosi ÷ orët me të paktën një skanim. Tavolinat caktohen këtu — WMS nuk e regjistron tavolinën e operatorit.`;
 }
 /* station cards: the table's total today (largest), the operator on shift now with their number, and below, smaller,
    the operators whose shift at this table already ended (N1 after N2 starts) or starts later */
@@ -155,14 +155,16 @@ function firstNames(){ const cnt={}; allNames().forEach(n=>{ const f=n.split(' '
 function drawStations(){
   const fn=firstNames(), cards=(D.cards||[]).slice().sort((a,b)=>stOrder(a)-stOrder(b));
   $('#stcards').innerHTML=cards.map(c=>{ const K=c.kind, ret=K==='ret', co=c.co&&!ret;
-    const big= K==='pod'? (c.pod||0) : K==='map'? c.map : ret? c.ret : co? c.out : c.units;
-    const unit= K==='pod'? 'porosi të skanuara sot për kurierët (Delivery Platform)' : K==='map'? 'njësi të mapuara sot (në raft)' : ret? 'produkte të kthyera të procesuara sot' : co? 'check-out sot (produkte, si te Statistikat 5.4)' : 'njësi të pranuara sot (check-in)';
-    const metric= K==='pod'? 'pod' : K==='map'? 'map' : ret? 'ret' : co? 'out' : 'units';
-    const num=p=> !metric? '—' : p.countedAt&&p.countedAt[metric]? '<span class="faint" style="font-weight:400;font-size:.8em">numërohet te '+esc(stTitle(p.countedAt[metric]))+'</span>' : p[metric], cur=(c.people||[]).find(p=>p.op===c.current);
+    const big= K==='pod'? (c.pod||0) : K==='map'? c.map : ret? (c.ref||0) : co? c.out : c.units;
+    const unit= K==='pod'? 'porosi të skanuara sot për kurierët (Delivery Platform)' : K==='map'? 'njësi të mapuara sot (në raft)' : ret? 'porosi të refuzuara të pranuara sot (Scanned Refusals)' : co? 'check-out sot (produkte, si te Statistikat 5.4)' : 'njësi të pranuara sot (check-in)';
+    const metric= K==='pod'? 'pod' : K==='map'? 'map' : ret? 'ref' : co? 'out' : 'units';
+    const num=p=> ret && p.ret && !(p.countedAt&&p.countedAt.ret)? numBase(p)+' <span class="faint" style="font-weight:400;font-size:.75em">· kthime '+p.ret+'</span>' : numBase(p);
+    const numBase=p=> !metric? '—' : p.countedAt&&p.countedAt[metric]? '<span class="faint" style="font-weight:400;font-size:.8em">numërohet te '+esc(stTitle(p.countedAt[metric]))+'</span>' : p[metric], cur=(c.people||[]).find(p=>p.op===c.current);
     const done=(c.people||[]).filter(p=>p!==cur && p.state!=='later').reverse(), later=(c.people||[]).filter(p=>p!==cur && p.state==='later');
-    const P=(D.live&&D.live.pod)||{};
-    const podNote= K!=='pod'? '' : P.error? '<div class="foot" style="color:var(--warn)">'+(P.error==='auth_expired'? 'Sesioni i Delivery Platform ka skaduar — numrat e POD nuk rifreskohen.' : 'POD nuk u lexua nga Delivery Platform ('+esc(P.error)+').')+'</div>'
-      : '<div class="foot faint">emri = llogaria e kyçur në skanerin e POD'+(P.otherAccounts? ' · '+P.otherAccounts+' skanime me llogari jashtë listës së stafit' : '')+'</div>';
+    const P=(D.live&&(K==='ret'? D.live.ref : D.live.pod))||{};
+    const podNote= K!=='pod'&&K!=='ret'? '' : P.error? '<div class="foot" style="color:var(--warn)">'+(P.error==='auth_expired'? 'Sesioni i Delivery Platform ka skaduar — numrat e '+(K==='ret'? 'refuzimeve' : 'POD')+' nuk rifreskohen.' : (K==='ret'? 'Refuzimet' : 'POD')+' nuk u lexua nga Delivery Platform ('+esc(P.error)+').')+'</div>'
+      : '<div class="foot faint">emri = llogaria e kyçur në Delivery Platform'+(P.otherAccounts? ' · '+P.otherAccounts+(K==='ret'? ' porosi' : ' skanime')+' me llogari jashtë listës së stafit' : '')+'</div>'
+      + (K==='ret'? '<div class="foot">kthime të procesuara në WMS: <b>'+(c.ret||0)+'</b> produkte</div>' : '');
     const extra= podNote+(co? '<div class="foot">porosi të përfunduara: '+c.orders+'</div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
     const top= cur? `<div class="who">${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${cur.shift? '<div class="foot">ndërrimi '+cur.shift+(c.weekend? ' · fundjavë: numërohet gjithë dita' : '')+'</div>' : ''}`
       : (c.people||[]).length? '' : '<div class="who"><span class="free">— e lirë —</span></div>';
@@ -178,21 +180,21 @@ let d1Ops=[];
 function shiftTxt(n){ const sh=(D.shifts||{})[n]; return sh? (sh==='pushim'? 'pushim' : sh) : 'pa orar'; }
 function d1Draw(){
   const fn=firstNames();
-  $('#d1List').innerHTML= d1Ops.length? d1Ops.map((n,i)=>`<div class="row"><span style="width:auto;flex:1">${esc(n)} <span class="faint" style="font-weight:400">· sot ${esc(shiftTxt(n))}</span></span><button class="btn" data-rm="${i}">✕</button></div>`).join('')
+  $('#d1List').innerHTML= d1Ops.length? d1Ops.map((n,i)=>`<div class="row"><span style="width:auto;flex:1">${esc(n)} <span class="faint" style="font-weight:400">· ${D.past? "atë ditë" : "sot"} ${esc(shiftTxt(n))}</span></span><button class="btn" data-rm="${i}">✕</button></div>`).join('')
     : '<div class="faint">— e lirë —</div>';
   document.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{ d1Ops.splice(+b.dataset.rm,1); d1Draw(); });
   const tables=(D.assign&&D.assign.tables)||{}, st=$('#dlg1').dataset.st, elsewhere={}; Object.entries(tables).forEach(([t,ops])=>{ if(t!==st) ops.forEach(o=>elsewhere[o]=t); });
   const names=allNames().filter(n=>!d1Ops.includes(n)).sort((a,b)=>{ const wa=/–/.test(shiftTxt(a)), wb=/–/.test(shiftTxt(b)); return wa!==wb? (wa?-1:1) : a.localeCompare(b); });
-  $('#d1Add').innerHTML='<option value="">— zgjidh operatorin —</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)} — sot ${esc(shiftTxt(n))}${elsewhere[n]? ' · edhe te '+esc(stTitle(elsewhere[n])) : ''}</option>`).join('');
+  $('#d1Add').innerHTML='<option value="">— zgjidh operatorin —</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)} — ${D.past? "atë ditë" : "sot"} ${esc(shiftTxt(n))}${elsewhere[n]? ' · edhe te '+esc(stTitle(elsewhere[n])) : ''}</option>`).join('');
 }
 function openStation(st){
-  $('#d1Title').textContent=stTitle(st); $('#dlg1').dataset.st=st;
+  $('#d1Title').textContent=stTitle(st)+(D.past? ' · për datën '+dmy(D.date)+'.'+D.date.slice(0,4) : ' · nga sot'); $('#dlg1').dataset.st=st;
   d1Ops=(((D.assign&&D.assign.tables)||{})[st]||[]).slice(); d1Draw(); $('#dlg1').showModal();
 }
 $('#d1AddBtn').onclick=()=>{ const v=$('#d1Add').value; if(v && !d1Ops.includes(v)){ d1Ops.push(v); d1Draw(); } };
 $('#d1Cancel').onclick=()=>$('#dlg1').close();
 $('#d1Save').onclick=async()=>{ const st=$('#dlg1').dataset.st;
-  try{ await fetch('/tabela/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:st, ops:d1Ops})}); }catch(e){}
+  try{ await fetch('/tabela/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:st, ops:d1Ops, date:D.past? D.date : undefined})}); }catch(e){}
   $('#dlg1').close(); load(false); };
 $('#btnRefresh').onclick=()=>load(true);
 $('#btnFull').onclick=()=>{ const el=document.documentElement; if(document.fullscreenElement) document.exitFullscreen(); else if(el.requestFullscreen) el.requestFullscreen(); };
