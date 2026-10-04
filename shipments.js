@@ -23,7 +23,12 @@ const shpStore=id=> shpStores&&shpStores[id] || null;
 function shpSupName(id){ const c=shpSupCfg()[id]; return c&&c.name? c.name : SHP_SUP_SEED[id]? SHP_SUP_SEED[id] : shpStore(id) || '#'+id; }
 const shpSupInferred=id=> !(shpSupCfg()[id]&&shpSupCfg()[id].name) && !!SHP_SUP_SEED[id];
 const shpSupUnknown=id=> !(shpSupCfg()[id]&&shpSupCfg()[id].name) && !SHP_SUP_SEED[id] && !shpStore(id);
-const SHP_STATES=[['arrived','Mbërritur në kohë','b-ok'],['late','Mbërritur me vonesë','b-warn'],['overdue','Pa mbërritje pas datës','b-crit'],['transit','Në rrugë','b-new'],['planned','Planifikuar','b-muted']];
+const SHP_STATES=[['arrived','Mbërritur në kohë','b-ok'],['late','Mbërritur me vonesë','b-warn'],['overdue','Pa mbërritje pas datës','b-crit'],['customs','Në doganë','b-warn'],['transit','Në rrugë','b-new'],['planned','Planifikuar','b-muted']];
+/* ShipmentDestinations.Status — the names the WMS itself uses ("Track Shipments" status filter, read 05.10.2026) */
+const SHP_WMS_ST={10:'Scheduled · planifikuar',20:'In Transit · në rrugë',30:'In Customs · në doganë',40:'Customs Clearance · zhdoganim',50:'Arrived · mbërritur',60:'Completed · përfunduar',70:'Delayed · me vonesë'};
+const shpStName=st=> SHP_WMS_ST[+st]||'';
+// the badge comes from the dates; when the pickup date has passed but the WMS still says Scheduled, the WMS was not updated
+const shpStStale=x=> !x.arr && +x.st===10 && (x.state==='transit'||x.state==='overdue');
 const shpT=s=>s? new Date(s.replace(' ','T')) : null;
 const shpD=s=>s? s.slice(8,10)+'.'+s.slice(5,7) : '—';
 const shpDT=s=>s? s.slice(8,10)+'.'+s.slice(5,7)+(s.slice(11,16)&&s.slice(11,16)!=='00:00'? ' '+s.slice(11,16) : '') : '—';
@@ -36,6 +41,7 @@ function shpCountry(o){ const s=String(o||'');
   return s? s.slice(0,24) : 'E panjohur'; }
 function shpState1(x, now){
   if(x.arr) return x.eta && x.arr.slice(0,10)>x.eta.slice(0,10)? 'late' : 'arrived';      // dates compared, not times
+  if((+x.st===30 || +x.st===40) && !(x.eta && x.eta.slice(0,10)<todayStr())) return 'customs';   // WMS: In Customs / Customs Clearance
   if(x.pick && shpT(x.pick)>now) return 'planned';
   if(x.eta && x.eta.slice(0,10)<todayStr()) return 'overdue';
   return 'transit';
@@ -62,7 +68,7 @@ function shpRows(){
   if(!shpData||!shpData.stops) return [];
   const C={}; (shpData.carriers||[]).forEach(c=>C[c.id]=c); const now=new Date();
   return shpData.stops.map(x=>{ const sups=String(x.sup||'').split(',').filter(Boolean);
-    return Object.assign({}, x, {sups, supplier: x.cat==='I'? (sups.length? sups.map(shpSupName).join(' + ') : 'Pa faturë') : (sups.length+' shitës'), carrier:(C[x.cid]||{}).nm||('#'+x.cid), country: x.cat==='K'? 'Kosovë' : shpCountry(x.o), state:shpState1(x, now),
+    return Object.assign({}, x, {sups, supplier: sups.length? sups.map(shpSupName).join(' + ') : (x.cat==='I'? 'Pa faturë' : 'Pa shitës'), carrier:(C[x.cid]||{}).nm||('#'+x.cid), country: x.cat==='K'? 'Kosovë' : shpCountry(x.o), state:shpState1(x, now),
     transit: shpDays(x.pick, x.arr), toCheckin: shpDays(x.arr, x.ci1)}); });
 }
 function shpDraw(){
@@ -93,7 +99,7 @@ function shpDraw(){
       ${kpi('Paleta', pal? pal.toLocaleString('de-DE') : '—', rows.filter(x=>+x.pal>0).length+'/'+rows.length+' me palet të regjistruara', pal? '' : 'st-warn')}</div>`;
   // groups ("sipas kategorisë")
   // by supplier a stop belongs to each of its suppliers (one truck can carry goods of several)
-  const keysOf=x=> grp==='supplier' && x.cat==='I'? (x.sups.length? [...new Set(x.sups.map(shpSupName))] : ['Pa faturë']) : [key(x)];
+  const keysOf=x=> grp==='supplier'? (x.sups.length? [...new Set(x.sups.map(shpSupName))] : [x.cat==='I'? 'Pa faturë' : 'Pa shitës']) : [key(x)];
   const groups={}; rows.forEach(x=>keysOf(x).forEach(k=>{ (groups[k]=groups[k]||[]).push(x); }));
   const glist=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
   const gcard=([k,arr])=>{ const a=arr.filter(x=>x.arr), l=arr.filter(x=>x.state==='late').length, o=arr.filter(x=>x.state==='overdue').length, c=arr.filter(x=>x.state==='transit'||x.state==='planned').length;
@@ -118,8 +124,8 @@ function shpDraw(){
         <select id="shpState" style="width:auto;min-height:32px;margin-left:auto"><option value="">Gjendja: të gjitha</option>${SHP_STATES.map(s=>`<option value="${s[0]}" ${shpState===s[0]?'selected':''}>${s[1]}</option>`).join('')}</select>
         <input type="search" id="shpQ" placeholder="Kërko furnizues, transportues, origjinë, ID…" value="${h(shpQuery)}" style="width:220px;min-height:32px"></div>
       <div class="tablewrap"><table><thead><tr><th>ID</th><th>Gjendja</th>${shpTab==='I'?'<th>Vendi</th>':''}<th class="wrap">Origjina</th><th>Transportuesi</th><th>${shpTab==='I'?'Furnizuesi':'Shitës'}</th><th>Depo</th><th>Marrja</th><th>E pritur</th><th>Mbërritja</th><th>Tranzit</th><th>Palet</th><th>Kosto</th><th>Fatura</th><th>Njësi</th><th>Check-in</th></tr></thead><tbody>
-      ${shown.length? shown.map(x=>`<tr data-shprow="${x.did}" style="cursor:pointer"><td class="small"><b>#${x.sid}</b>${x.dor>1?'<span class="faint">/'+x.dor+'</span>':''}</td><td>${shpBadge(x.state)}<div class="small faint">status ${h(x.st)}</div></td>
-        ${shpTab==='I'?`<td class="small">${h(x.country)}</td>`:''}<td class="wrap small">${h(x.o||'—')}</td><td class="small">${h(x.carrier)}</td><td class="small">${shpTab==='I'? (x.sups.length? x.sups.map(id=>`<span title="StoreId ${h(id)}${shpStore(id)? ' · dyqani në WMS: '+h(shpStore(id)) : ''}${shpSupInferred(id)?' · emër i nxjerrë, konfirmo te Furnizuesit':''}">${h(shpSupName(id))}${shpSupInferred(id)?'<sup class="faint">?</sup>':''}</span>`).join(' + ') : '<span class="faint">—</span>') : h(x.supplier)}</td><td class="small">${h(SHP_WH[x.w]||x.w)}</td>
+      ${shown.length? shown.map(x=>`<tr data-shprow="${x.did}" style="cursor:pointer"><td class="small"><b>#${x.sid}</b>${x.dor>1?'<span class="faint">/'+x.dor+'</span>':''}</td><td>${shpBadge(x.state)}<div class="small faint">status ${h(x.st)}${shpStName(x.st)? ' · '+h(shpStName(x.st)) : ''}</div>${shpStStale(x)? '<div class="small" style="color:var(--warn)">WMS s&#39;është përditësuar</div>' : ''}</td>
+        ${shpTab==='I'?`<td class="small">${h(x.country)}</td>`:''}<td class="wrap small">${h(x.o||'—')}</td><td class="small">${h(x.carrier)}</td><td class="small">${x.sups.length? x.sups.map(id=>`<span title="StoreId ${h(id)}${shpStore(id)? ' · dyqani në WMS: '+h(shpStore(id)) : ''}${shpTab==='I'&&shpSupInferred(id)?' · emër i nxjerrë, konfirmo te Furnizuesit':''}">${h(shpSupName(id))}${shpTab==='I'&&shpSupInferred(id)?'<sup class="faint">?</sup>':''}</span>`).join(' + ') : '<span class="faint">—</span>'}</td><td class="small">${h(SHP_WH[x.w]||x.w)}</td>
         <td class="small">${shpD(x.pick)}</td><td class="small">${shpD(x.eta)}</td><td class="small">${x.arr? shpDT(x.arr) : x.state==='overdue'? '<b style="color:var(--crit)">'+Math.round((Date.now()-shpT(x.eta))/864e5)+' ditë vonesë</b>' : '—'}</td>
         <td class="small">${x.transit!=null&&x.transit>=0? x.transit+' d' : '—'}</td><td class="small">${+x.pal>0? x.pal : '—'}</td><td class="small">${+x.pr>0? shpEur(x.pr) : '<span class="faint">—</span>'}</td>
         <td class="small">${x.inv||0}</td><td class="small">${x.units? (+x.units).toLocaleString('de-DE') : '—'}</td><td class="small">${x.ci1? shpDT(x.ci1) : '—'}</td></tr>`).join('')
@@ -154,9 +160,9 @@ function shpDetail(x){
   const tr=(shpData.trucks||[]).find(t=>t.id===x.tr);
   const row=(l,v)=>`<tr><th style="text-align:left;width:42%">${l}</th><td>${v}</td></tr>`;
   openModal(`Dërgesa #${x.sid}${x.dor>1?' / ndalesa '+x.dor:''} · ${SHP_CAT[x.cat].name}`, `<table class="small" style="width:100%">
-    ${row('Gjendja', shpBadge(x.state)+' · status WMS '+h(x.st)+' (kuptim i pakonfirmuar)')}
+    ${row('Gjendja', shpBadge(x.state)+' · status WMS '+h(x.st)+(shpStName(x.st)? ' = '+h(shpStName(x.st)) : '')+(shpStStale(x)? ' — <span style="color:var(--warn)">data e marrjes ka kaluar, por WMS ende shënon Scheduled</span>' : ''))}
     ${row('Transportuesi', h(x.carrier)+(tr? ' · kamion #'+tr.id+(tr.mp? ' (deri '+tr.mp+' paleta)' : '') : ''))}
-    ${row(x.cat==='I'? 'Furnizuesi' : 'Shitës', x.cat==='I'? (x.sups.length? x.sups.map(id=>h(shpSupName(id))+' <span class="faint">(StoreId '+h(id)+(shpStore(id)&&shpStore(id)!==shpSupName(id)? ', dyqani në WMS: '+h(shpStore(id)) : '')+(shpSupInferred(id)? ', emër i nxjerrë' : '')+')</span>').join('<br>') : 'pa faturë të lidhur') : h(x.supplier)+' <span class="faint">(emrat nuk shfaqen)</span>')}
+    ${row(x.cat==='I'? 'Furnizuesi' : 'Shitës', x.cat==='I'? (x.sups.length? x.sups.map(id=>h(shpSupName(id))+' <span class="faint">(StoreId '+h(id)+(shpStore(id)&&shpStore(id)!==shpSupName(id)? ', dyqani në WMS: '+h(shpStore(id)) : '')+(shpSupInferred(id)? ', emër i nxjerrë' : '')+')</span>').join('<br>') : 'pa faturë të lidhur') : (x.sups.length? x.sups.map(id=>h(shpSupName(id))+' <span class="faint">(StoreId '+h(id)+')</span>').join('<br>') : 'pa shitës të lidhur'))}
     ${row('Origjina', h(x.o||'—')+(x.cat==='I'? ' · '+h(x.country) : ''))}
     ${row('Depoja', h(SHP_WH[x.w]||x.w))}
     ${row('Marrja te furnitori', shpDT(x.pick))}
