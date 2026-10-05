@@ -3150,6 +3150,20 @@ function wmsPreparedDashboardHTML(){
   const C=agg(chk, r=>r.checkedIn);
   const O=agg(chk, r=>r.checkedOut);
   const col=(title,sub,rows,max,color)=>`<div><h3 style="font-size:12.5px;margin:0 0 6px">${title}${sub?` <span class="sub">${sub}</span>`:''}</h3>${rows.length?rows.map(([k,c])=>barRow(k,c,max,color)).join(''):'<div class="empty" style="font-size:12px">—</div>'}</div>`;
+  // Daily realisation in %: each process against its normal day (median of the days with work in the
+  // last 14), then the average of the processes that have data that day. Median, so that weekends and
+  // one-off peaks do not move the base.
+  const median=a=>{ const s=a.filter(x=>x>0).sort((x,y)=>x-y); if(!s.length) return 0; const m=s.length>>1; return s.length%2? s[m] : (s[m-1]+s[m])/2; };
+  const procs=[['P',P,'Prepared'],['CI',C,'Checked In'],['CO',O,'Checked Out']].map(([k,A,name])=>({k,name,base:median(A.days.map(d=>d[1])),by:Object.fromEntries(A.days)}));
+  const pctDays=[...new Set([P,C,O].flatMap(A=>A.days.map(d=>d[0])))].sort().reverse().slice(0,14).map(d=>{
+    const parts=procs.filter(p=>p.base>0 && p.by[d]!=null).map(p=>({k:p.k,name:p.name,pct:Math.round(p.by[d]/p.base*100)}));
+    return {d, parts, avg: parts.length? Math.round(parts.reduce((a,x)=>a+x.pct,0)/parts.length) : null}; });
+  const pctMax=Math.max(120,...pctDays.map(x=>x.avg||0));
+  const pctColor=p=> p>=95? 'var(--ok)' : p>=75? 'var(--warn)' : 'var(--crit)';
+  const pctCol=`<div><h3 style="font-size:12.5px;margin:0 0 6px">Realizimi ditor <span class="sub">% e ditës normale</span></h3>${pctDays.length? pctDays.map(x=>{
+      const w= x.avg==null? 0 : Math.max(2,Math.round(x.avg/pctMax*100)), base=Math.round(100/pctMax*100);
+      return `<div style="margin:6px 0" title="${h(x.parts.map(p=>p.name+': '+p.pct+'%').join(' · '))}"><div style="display:flex;justify-content:space-between;gap:6px;font-size:12px"><span class="wrap">${h(fmtDateAl(x.d))} <span class="faint" style="font-size:11px">${x.parts.map(p=>p.k+' '+p.pct+'%').join(' · ')}</span></span><b style="color:${x.avg==null?'var(--muted)':pctColor(x.avg)}">${x.avg==null?'—':x.avg+'%'}</b></div>
+        <div style="position:relative;height:12px;background:var(--bg);border-radius:6px;overflow:hidden;margin-top:3px;border:1px solid var(--line)"><i style="display:block;height:100%;width:${w}%;background:${x.avg==null?'transparent':pctColor(x.avg)}"></i><i style="position:absolute;top:0;bottom:0;left:${base}%;width:2px;background:var(--text);opacity:.45" title="100% = dita normale"></i></div></div>`; }).join('') : '<div class="empty" style="font-size:12px">—</div>'}</div>`;
   // The old per-operator "latest day" table lived here; removed in favour of the "Operators" tab,
   // which shows the same Prepared/Checked In/Checked Out breakdown for any date range, not just today.
   return `<div class="card" style="margin:14px 0"><h3>Prepared · Checked In · Checked Out — trendi ditor <span class="sub">last 14 days · source: /Order/GetPreparedOrders + /Warehouse/ProductLogs</span></h3>
@@ -3157,7 +3171,9 @@ function wmsPreparedDashboardHTML(){
         ${col('Prepared by day', 'porosi', P.days.map(([k,c])=>[fmtDateAl(k),c]), P.maxD, 'var(--ok)')}
         ${col('Checked In by day', 'produkte', C.days.map(([k,c])=>[fmtDateAl(k),c]), C.maxD, 'var(--fact)')}
         ${col('Checked Out by day', 'produkte', O.days.map(([k,c])=>[fmtDateAl(k),c]), O.maxD, 'var(--imp)')}
+        ${pctCol}
       </div>
+      <div class="hint" style="margin-top:8px">📊 <b>Realizimi ditor</b>: secili proces krahasohet me ditën e tij normale (mediana e ditëve me punë në 14 ditët e fundit: Prepared ${Math.round(procs[0].base)} porosi, Checked In ${Math.round(procs[1].base)} e Checked Out ${Math.round(procs[2].base)} produkte). Përqindja e madhe = mesatarja e tri proceseve; P / CI / CO = secili veç. Vija vertikale = 100%. Ngjyra: e gjelbër ≥ 95%, portokalli 75–94%, e kuqe &lt; 75%. Dita e sotme është e pjesshme deri në fund të ditës.</div>
       <div class="hint" style="margin-top:10px">ℹ️ <b>Checked In by day</b> (nga log-u i eventeve, për operator/ditë) mund të ndryshojë pak nga karta <b>Products Checked In</b> lart (numëruesi live i WMS-it, <code>GetDashboardStats</code>). Të dy janë të saktë por masin ndryshe: karta lart = numëruesi zyrtar i WMS-it (i lidhur me faturat, dritare rrotulluese); këtu = evente «Checked in» për ditën kalendarike 00:00–tani. Diferenca vjen nga kufiri i ditës dhe përkufizimi, jo nga një gabim.</div></div>`;
 }
 
