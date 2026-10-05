@@ -1054,10 +1054,12 @@ async function tabelaData(force, date){
   try{ pod=await fetchPodScans(today); }catch(e){ pod={error:String(e.message||e)}; }
   try{ ref=await fetchRefusalScans(today); }catch(e){ ref={error:String(e.message||e)}; }
   const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES, ref);
-  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:tabelaBoard.tablesFor(rec, today)}, live&&live.ops, today, day, normName, STAFF_ALIASES, stationPresence.forDay(today));   // that day's assignment
+  // tables: set by hand for that day, else placed automatically (usual table / first free one — tabela-board.js autoPlace)
+  const placement=tabelaBoard.autoPlace(stations, live&&live.ops, rec, today, APPDIR, n=>STAFF_ALIASES[normName(n)]||n, !past);
+  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:placement.tables}, live&&live.ops, today, day, normName, STAFF_ALIASES, stationPresence.forDay(today), placement.how);
   const shifts={}; Object.entries(day||{}).forEach(([n,sh])=>{ shifts[n]= sh.off? 'pushim' : sh.start+'–'+sh.end; });
   const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
-  return {date:today, past:!!past, stations, stationInfo:stationPresence.info(today), assign:{tables:tabelaBoard.currentAssign(rec, today), updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+  return {date:today, past:!!past, stations, stationInfo:stationPresence.info(today), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
     roster:[...new Set(warehouseStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');

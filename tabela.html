@@ -80,7 +80,7 @@ dialog select{ flex:1; background:var(--bg); color:var(--text); border:1px solid
     <div class="note" id="note"></div></div>
 </div>
 <dialog id="dlg1"><div class="h2" id="d1Title">Tavolina</div>
-  <div class="note" style="margin:0 0 8px">Opsionale: kush punon në këtë tavolinë fizike. Kush nuk është i caktuar shfaqet automatikisht te "Check-out / Check-in · pa tavolinë", ndërsa Mapimi, POD dhe refuzimet plotësohen vetë. Numërohet gjithë dita e punës; ndërrimi sipas <b>Orarit të punës</b> përcakton vetëm renditjen (N1, pastaj N2). Ndryshimi ruhet për datën që po shikon; për një ditë të kaluar vlen vetëm për atë ditë.</div>
+  <div class="note" style="margin:0 0 8px">Nuk ka nevojë të shtosh askënd: kush bën check-out ose check-in vendoset vetë në tavolinën e vet të zakonshme, ose në të parën e lirë. Mapimi, POD dhe refuzimet plotësohen gjithashtu vetë. Këtu vetëm <b>korrigjon</b> nëse dikush sot ka punuar në një tavolinë tjetër: largo (✕) ose shto. Korrigjimi vlen për këtë ditë dhe mbahet mend si tavolina e operatorit për ditët në vazhdim. Kush hiqet nga këtu vendoset vetë në një tavolinë tjetër të lirë.</div>
   <div id="d1List"></div>
   <div class="row" style="margin-top:10px"><select id="d1Add"></select><button class="btn" id="d1AddBtn">+ Shto</button></div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" id="d1Cancel">Anulo</button><button class="btn primary" id="d1Save">Ruaj</button></div></dialog>
@@ -160,9 +160,9 @@ function firstNames(){ const cnt={}; allNames().forEach(n=>{ const f=n.split(' '
 function drawStations(){
   // which table PCs report the logged-in WMS account (the "WMS Station" extension)
   const SI=(D.stationInfo||[]).filter(x=>x.ip);
-  $('#stInfo').innerHTML= D.past||!SI.length? '' : 'PC-të e tavolinave: '+SI.map(x=>x.liveUser? '<b style="color:var(--ok)">●</b> '+esc(x.table)+' — '+esc(x.liveUser) : x.reports? '<span style="color:var(--muted)">○</span> '+esc(x.table)+' (raporti i fundit '+hm(x.lastSeen)+')' : '<span class="faint">○ '+esc(x.table)+' — pa raport sot</span>').join(' · ');
+  $('#stInfo').innerHTML= D.past||!SI.some(x=>x.reports||x.liveUser)? '' : 'PC-të e tavolinave: '+SI.map(x=>x.liveUser? '<b style="color:var(--ok)">●</b> '+esc(x.table)+' — '+esc(x.liveUser) : x.reports? '<span style="color:var(--muted)">○</span> '+esc(x.table)+' (raporti i fundit '+hm(x.lastSeen)+')' : '<span class="faint">○ '+esc(x.table)+' — pa raport sot</span>').join(' · ');
   const fn=firstNames(), cards=(D.cards||[]).slice().sort((a,b)=>stOrder(a)-stOrder(b));
-  $('#stcards').innerHTML=cards.map(c=>{ const K=c.kind, ret=K==='ret', co=c.co&&!ret;
+  $('#stcards').innerHTML=cards.filter(c=>!(c.auto && !(c.people||[]).length)).map(c=>{ const K=c.kind, ret=K==='ret', co=c.co&&!ret;
     const big= K==='pod'? (c.pod||0) : K==='map'? c.map : ret? (c.ref||0) : co? c.out : c.units;
     const unit= K==='pod'? 'porosi të skanuara sot për kurierët (Delivery Platform)' : K==='map'? 'njësi të mapuara sot (në raft)' : ret? 'porosi të refuzuara të pranuara sot (Scanned Refusals)' : co? 'check-out sot (produkte, si te Statistikat 5.4)' : 'njësi të pranuara sot (check-in)';
     const metric= K==='pod'? 'pod' : K==='map'? 'map' : ret? 'ref' : co? 'out' : 'units';
@@ -177,12 +177,13 @@ function drawStations(){
     const logged=p=> p.viaPresence? 'kyçur '+hm(p.loggedFrom)+'–'+(p.live? 'tani' : hm(p.loggedTo)) : null;
     const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : cur.shift? '<div class="foot">ndërrimi '+cur.shift+'</div>' : ''}`
       : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>'
-        + (c.ip && !c.viaPresence && !D.past? '<div class="foot" style="color:var(--warn)">PC '+esc(c.ip)+' s&#39;ka raportuar sot (WMS Station) — puna e kësaj tavoline shfaqet te "pa tavolinë"</div>' : '');
+        ;
     const prev=done.map(p=>`<div class="prev">${esc(fn(p.op))}: ${num(p)}${logged(p)? ' <span class="faint">('+logged(p)+')</span>' : p.shift? ' <span class="faint">('+p.shift+')</span>' : ''}</div>`).join('');
     const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))} · nga ${p.shift.slice(0,5)}</div>`).join('');
+    const pl=(c.people||[]).map(p=>p.placed), how= c.viaPresence||c.auto||K==='map'||K==='pod'||ret? '' : pl.includes('manual')&&pl.includes('auto')? '<div class="foot faint">⚙ automatik + caktuar në tabelë</div>' : pl.includes('auto')? '<div class="foot faint" title="Tavolina e zakonshme e operatorit ose e para e lirë — kliko për ta korrigjuar">⚙ vendosur automatikisht</div>' : pl.includes('manual')? '<div class="foot faint">✎ caktuar në tabelë për këtë ditë</div>' : '';
     const offs=(c.off||[]).length? '<div class="foot faint">pushim sot: '+c.off.map(n=>esc(fn(n))).join(', ')+'</div>' : '';
-    return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Kliko për operatorët e tavolinës (opsionale)"'}>
-      <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+esc(c.table)+(c.ip? ' · PC '+esc(c.ip) : ' · pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}</div>`; }).join('');
+    return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Operatorët vendosen automatikisht — kliko vetëm për korrigjim"'}>
+      <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+esc(c.table)+(c.ip? ' · PC '+esc(c.ip) : ' · pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}${how}</div>`; }).join('');
   document.querySelectorAll('.stcard:not([data-auto])').forEach(el=>el.onclick=()=>openStation(el.dataset.st));
   if(D.scheduleLoaded===false) $('#stcards').insertAdjacentHTML('beforeend','<div class="note">Orari i punës për sot nuk u gjet — operatorët numërohen për gjithë ditën.</div>');
 }
@@ -198,8 +199,9 @@ function d1Draw(){
   $('#d1Add').innerHTML='<option value="">— zgjidh operatorin —</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)} — ${D.past? "atë ditë" : "sot"} ${esc(shiftTxt(n))}${elsewhere[n]? ' · edhe te '+esc(stTitle(elsewhere[n])) : ''}</option>`).join('');
 }
 function openStation(st){
-  $('#d1Title').textContent=stTitle(st)+(D.past? ' · për datën '+dmy(D.date)+'.'+D.date.slice(0,4) : ' · nga sot'); $('#dlg1').dataset.st=st;
-  d1Ops=(((D.assign&&D.assign.tables)||{})[st]||[]).slice(); d1Draw(); $('#dlg1').showModal();
+  $('#d1Title').textContent=stTitle(st)+(D.past? ' · për datën '+dmy(D.date)+'.'+D.date.slice(0,4) : ' · sot'); $('#dlg1').dataset.st=st;
+  const eff=(D.assign&&D.assign.effective)||{}, shown=((D.cards||[]).find(c=>c.name===st)||{}).people||[];
+  d1Ops=[...new Set((eff[st]||((D.assign&&D.assign.tables)||{})[st]||[]).filter(n=>shown.some(p=>p.op===n)))]; d1Draw(); $('#dlg1').showModal();
 }
 $('#d1AddBtn').onclick=()=>{ const v=$('#d1Add').value; if(v && !d1Ops.includes(v)){ d1Ops.push(v); d1Draw(); } };
 $('#d1Cancel').onclick=()=>$('#dlg1').close();

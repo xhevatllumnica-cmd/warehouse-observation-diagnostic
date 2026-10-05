@@ -8,7 +8,8 @@
    - hourly (pulse block M, WMS database): orders READY by the cut-offs 13:00 / 15:00 / 17:30 and yesterday's carryover,
      with the Bottleneck Register D1/D1o definition (ready = created or last unit reserved; complete = all units reserved).
    The WMS does not record which operator works at which station (LabelPrintJobs/PickSession are unused), so the
-   station → operator assignment is set on the board and kept in data/tabela-assign.json (this agent is the only writer). */
+   operators are placed on the tables automatically (autoPlace); a correction on the board is kept in
+   data/tabela-assign.json (this agent is the only writer). */
 const fs=require('fs'), path=require('path');
 const CUTS=[{b:13,label:'13:00'},{b:15,label:'15:00'},{b:17,label:'17:30'}];
 const MAPPED=7;
@@ -103,9 +104,69 @@ function saveAssign(appDir, body, stations, today){
   snap[body.station]=ops;
   if(date===today) rec.tables=cloneT(snap);
   const keep=Object.keys(rec.history).sort().slice(-400), h={}; keep.forEach(d=>h[d]=rec.history[d]); rec.history=h;
+  // which tables were set by hand on which day: fixed for that day (see autoPlace); before this, the whole day's snapshot
+  if(!rec.edits){ rec.edits={}; Object.keys(rec.history).forEach(d=>{ if(d!==date) rec.edits[d]=Object.keys(rec.history[d]); }); }
+  const e=rec.edits[date]||(rec.edits[date]=[]); if(!e.includes(body.station)) e.push(body.station);
+  const ek=Object.keys(rec.edits).sort().slice(-400), e2={}; ek.forEach(d=>e2[d]=rec.edits[d]); rec.edits=e2;
   rec.updatedAt=new Date().toISOString();
   fs.mkdirSync(path.dirname(assignFile(appDir)),{recursive:true}); fs.writeFileSync(assignFile(appDir), JSON.stringify(rec,null,2));
   return rec;
+}
+/* Automatic placement on the numbered tables. The WMS records no station for a scan (checked in the database, 05.10.2026:
+   ProductLogs / ProductCheckIns carry only user, time and order; PickSession, LabelPrintJobs and the print agents are unused
+   since September), so the table is inferred, without anything installed:
+   - each operator's check-out work (products checked out) and check-in work (units) is split into sessions (gap > 45 min);
+     an operator with at least 3 check-out / 5 check-in scans gets ONE table of that kind for the day;
+   - in order of their first scan, each takes the first table, of the right kind, that is free during their sessions (no
+     overlap over 15 min with another operator there — N1 then N2 share a table), trying in turn: the table they got earlier
+     today (stable during the day), their tables on the board from the last saved assignment, their usual table (the most
+     frequent one over the last 30 days of placements), then the other tables in order;
+   - a table set on the board FOR THAT DAY (dialog) is fixed and wins; a correction is also remembered as the operator's
+     table for the next days. Who finds no free table stays in the pool "pa tavolinë".
+   Tavolina 5 (check-in & check-out together, not in use now) gets nobody automatically. Placements are kept by day in
+   data/tabela-auto.json (this agent is the only writer). */
+const AUTO_GAP=45*60000, AUTO_OVERLAP=15*60000, AUTO_MIN={co:3, ci:5}, AUTO_LEARN_DAYS=30;
+function autoFile(appDir){ return path.join(appDir,'data','tabela-auto.json'); }
+function readAuto(appDir){ try{ const r=JSON.parse(fs.readFileSync(autoFile(appDir),'utf8')); return r&&r.days? r : {days:{}}; }catch(e){ return {days:{}}; } }
+const isoAdd=(d,n)=>{ const x=new Date(d+'T12:00:00'); x.setDate(x.getDate()+n); return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0'); };
+function sessionsOf(times){ const t=times.slice().sort((a,b)=>a-b), out=[]; t.forEach(x=>{ const s=out[out.length-1]; if(s && x-s[1]<=AUTO_GAP) s[1]=x; else out.push([x,x]); }); return out; }
+const clash=(A,B)=>A.some(a=>B.some(b=>Math.min(a[1],b[1])-Math.max(a[0],b[0])>AUTO_OVERLAP));
+/* stations, ops (liveByOperator/withPod list), rec (readAssign), date → {tables:{station:[ops]}, how:{station:{op:'manual'|'auto'}}} */
+function autoPlace(stations, ops, rec, date, appDir, canon, persist){
+  const kindOf=s=> s.kind||s.auto? null : s.co&&s.ci? null : s.co? 'co' : s.ci? 'ci' : null;
+  const T={co:(stations||[]).filter(s=>kindOf(s)==='co').map(s=>s.name), ci:(stations||[]).filter(s=>kindOf(s)==='ci').map(s=>s.name)};
+  const kindByName={}; Object.entries(T).forEach(([k,list])=>list.forEach(n=>kindByName[n]=k));
+  const carried=tablesFor(rec, date), edits=rec.edits||null;
+  // fixed for this day: tables edited on the board for this date (older files without "edits": the snapshot saved that day)
+  const fixedSt= edits? new Set(edits[date]||[]) : new Set(rec.history&&rec.history[date]? Object.keys(rec.history[date]) : []);
+  const tables={}, how={}, put=(st,op,h)=>{ (tables[st]=tables[st]||[]); if(!tables[st].includes(op)){ tables[st].push(op); (how[st]=how[st]||{})[op]=h; } };
+  // every table set by hand that day keeps its people (also tables with no automatic kind: Tavolina 5, sellers, returns…)
+  Object.entries(carried).forEach(([st,list])=>{ if(fixedSt.has(st) || !kindByName[st]) (list||[]).forEach(op=>put(st,canon(op),'manual')); });
+  const A=readAuto(appDir), todayAuto=(A.days[date]||{});
+  // usual table per operator and kind: placements of the last 30 days before this date
+  const usual={}; Object.keys(A.days).filter(d=>d<date && d>=isoAdd(date,-AUTO_LEARN_DAYS)).forEach(d=>Object.entries(A.days[d]).forEach(([k,st])=>{ const u=usual[k]||(usual[k]={}); u[st]=(u[st]||0)+1; }));
+  const occ={}; const occOf=st=>occ[st]||(occ[st]=[]);
+  const S={}; (ops||[]).forEach(o=>{ S[o.name]={co:sessionsOf(o._outT||[]), ci:sessionsOf(o._ciT||[]), nco:(o._outT||[]).length, nci:(o._ciT||[]).length}; });
+  Object.entries(tables).forEach(([st,list])=>{ const k=kindByName[st]; if(k) list.forEach(op=>{ if(S[op]) occOf(st).push({op, ses:S[op][k]}); }); });
+  const fixedOps={co:new Set(), ci:new Set()}; Object.entries(tables).forEach(([st,list])=>{ const k=kindByName[st]; if(k) list.forEach(op=>fixedOps[k].add(op)); });
+  const cand=[]; (ops||[]).forEach(o=>['co','ci'].forEach(k=>{ const s=S[o.name]; if(!fixedOps[k].has(o.name) && s['n'+k]>=AUTO_MIN[k] && T[k].length) cand.push({op:o.name, k, ses:s[k], n:s['n'+k], first:s[k][0][0]}); }));
+  // a table set by hand for the day holds exactly its people: nobody is added to it automatically
+  const free=(st,c)=>!fixedSt.has(st) && !occOf(st).some(x=>x.op!==c.op && clash(x.ses, c.ses));
+  const take=(c,st)=>{ occOf(st).push({op:c.op, ses:c.ses}); put(st, c.op, 'auto'); c.done=true; };
+  // pass 1 — own table: the table on the board, the one got earlier today, the usual one; the one with more work that day
+  // goes first, so a short help at someone else's table does not push its regular operator away
+  cand.slice().sort((a,b)=>b.n-a.n).forEach(c=>{
+    const key=c.op+'|'+c.k, carriedSt=T[c.k].filter(st=>(carried[st]||[]).map(canon).includes(c.op));
+    const us=Object.entries(usual[key]||{}).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
+    const st=[...new Set([...carriedSt, todayAuto[key], ...us])].find(s=>s && T[c.k].includes(s) && free(s,c)); if(st) take(c,st); });
+  // pass 2 — the others, in order of their first scan: the first free table of the right kind
+  cand.filter(c=>!c.done).sort((a,b)=>a.first-b.first).forEach(c=>{ const st=T[c.k].find(s=>free(s,c)); if(st) take(c,st); });   // none free → pool
+  if(persist){   // the day's placements (automatic and by hand) — the memory for "usual table"
+    const day={}; Object.entries(tables).forEach(([st,list])=>{ const k=kindByName[st]; if(k) list.forEach(op=>{ if(S[op] && S[op]['n'+k]) day[op+'|'+k]=st; }); });
+    if(JSON.stringify(day)!==JSON.stringify(A.days[date]||{})){ A.days[date]=day; const keep=Object.keys(A.days).sort().slice(-120), d2={}; keep.forEach(d=>d2[d]=A.days[d]); A.days=d2;
+      try{ fs.mkdirSync(path.dirname(autoFile(appDir)),{recursive:true}); fs.writeFileSync(autoFile(appDir), JSON.stringify(A,null,1)); }catch(e){} }
+  }
+  return {tables, how};
 }
 /* the operator's shift today from the schedule day object {name:{start,end}|{off}} */
 function shiftOf(day, name, normName, today){
@@ -125,7 +186,7 @@ function shiftOf(day, name, normName, today){
    Orari i punës only orders a card (N1 on top until N1 ends, then N2); on a table with reports the account logged in now
    is on top. Operators with no work on a card are not shown. */
 const PRES_SLACK=2*60000;   // reports come about once a minute: a scan within 2 min of an interval belongs to it
-function stationCards(stations, rec, ops, today, day, normName, aliases, presence){
+function stationCards(stations, rec, ops, today, day, normName, aliases, presence, how){
   const canon=n=>(aliases&&aliases[normName(n)])||n;
   const now=Date.now(), dayStart=Date.parse(today+'T00:00:00'), dayEnd=dayStart+86400000, by={}; (ops||[]).forEach(o=>by[o.name]=o);
   const ARR={out:'_outT', orders:'_ordT', units:'_ciT', map:'_mpT', pod:'_podT', ref:'_refT', ret:'_retT'};
@@ -150,7 +211,8 @@ function stationCards(stations, rec, ops, today, day, normName, aliases, presenc
       let sh=shiftOf(day, name, normName, today), offDay=false; if(sh&&sh.off){ sh=null; offDay=true; }
       const state= viaPresence? (liveNow? 'now' : 'done') : offDay? 'done' : !sh? 'day' : now<sh.a? 'later' : now>=sh.b? 'done' : 'now';
       const start= viaPresence? from : sh? sh.a : dayStart, end= viaPresence? to : offDay? dayStart : sh? sh.b : dayEnd;
-      return Object.assign({op:name, shift: sh? sh.start+'–'+sh.end : null, start, end, state, auto:!viaPresence && !assigned.includes(name), viaPresence,
+      const placed= viaPresence? 'pc' : (how&&how[st.name]&&how[st.name][name]) || (assigned.includes(name)? 'manual' : null);
+      return Object.assign({op:name, shift: sh? sh.start+'–'+sh.end : null, start, end, state, auto:!viaPresence && !assigned.includes(name), placed, viaPresence,
         loggedFrom: from? new Date(from).toISOString() : null, loggedTo: to? new Date(to).toISOString() : null, live:liveNow}, c);
     }).filter(p=>metricsOf(st).some(m=>p[m]>0) || (viaPresence && p.live));   // no work here → not shown (the account logged in now is)
     people.sort((x,y)=>{ const m=metricsOf(st)[0]; return x.start-y.start || (m? (y[m]||0)-(x[m]||0) : 0); });
@@ -187,4 +249,4 @@ function withPod(live, pod, staff, normName, aliases, ref){
   return Object.assign({}, live, {ops, pod:info, ref:rinfo});
 }
 
-module.exports={EXTRA_STATIONS, tablesFor, withPod, liveByOperator, cutoffs, readAssign, saveAssign, currentAssign, stationCards, CUTS};
+module.exports={EXTRA_STATIONS, autoPlace, tablesFor, withPod, liveByOperator, cutoffs, readAssign, saveAssign, currentAssign, stationCards, CUTS};
