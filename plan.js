@@ -203,6 +203,11 @@ function planDrawReport(body){
 }
 
 /* Tabela ditore — the standalone board page /tabela (for the screen at the entrance), shown here in a frame like "Orari i punës" */
+function renderPostat(v){
+  v.innerHTML = pagehead('Postat — në pritje', 'Porositë që presin dërgimin për POD final, sipas postës: sa janë, sipas pagesës dhe moshës, dhe ato mbi 3 ditë me të kuqe. Hape si faqe më vete për ekranin e POD-it (⛶ ekran i plotë; rifreskohet vetë çdo 2 minuta).', `<button class="btn" id="postOpen">↗ Hap si faqe më vete</button>`)
+    + `<iframe id="postFrame" src="/postat" style="width:100%;height:calc(100vh - 170px);min-height:560px;border:1px solid var(--line);border-radius:12px;background:var(--panel)"></iframe>`;
+  $('#postOpen').onclick=()=>window.open('/postat','postat');
+}
 function renderTabela(v){
   v.innerHTML = pagehead('Tabela ditore',
     'Tabela në hyrje: porosi/orë për tavolinë me emrin e operatorit (live nga WMS, çdo 2 min), carryover i djeshëm dhe porositë e gatshme deri 13:00 · 15:00 · 17:30 (databaza e WMS, çdo orë). Për ekranin në hyrje hape si faqe më vete: <b>http://localhost:8790/tabela</b>.',

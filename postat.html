@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="sq">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Postat — në pritje</title>
+<style>
+/* same look as Tabela ditore: light by default in Gjirafa's colours; ?theme=dark for a dark screen */
+:root{ --bg:#f4f5f7; --panel:#ffffff; --line:#e2e5ea; --text:#2b2f36; --muted:#5d6876; --faint:#8a94a2; --accent:#115b92; --brand:#e67e22; --ok:#1e8449; --warn:#c4520c; --crit:#c62828; }
+:root[data-theme="dark"]{ --bg:#0b1220; --panel:#131c2e; --line:#24314a; --text:#e8eef9; --muted:#8fa1bf; --faint:#5d6f8d; --accent:#4c8dff; --brand:#f0a020; --ok:#2fbf71; --warn:#f0a020; --crit:#ff5d5d; }
+*{ box-sizing:border-box; }
+body{ margin:0; background:var(--bg); color:var(--text); font:15px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+.wrap{ padding:16px clamp(12px,2vw,28px) 24px; max-width:1900px; margin:0 auto; }
+header{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:14px; }
+h1{ font-size:clamp(20px,2.2vw,32px); margin:0; font-weight:750; }
+.sub{ color:var(--muted); font-size:clamp(12px,1vw,15px); }
+.clock{ margin-left:auto; font-size:clamp(24px,3vw,44px); font-weight:700; font-variant-numeric:tabular-nums; }
+.btn{ background:transparent; color:var(--muted); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font:inherit; font-size:13px; cursor:pointer; }
+.btn:hover{ color:var(--text); border-color:var(--accent); }
+.card{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0; }
+.summary{ display:flex; gap:clamp(14px,2vw,32px); flex-wrap:wrap; align-items:baseline; margin-bottom:14px; font-size:clamp(15px,1.4vw,22px); }
+.summary b{ font-size:clamp(22px,2.4vw,36px); }
+.red{ color:var(--crit); font-weight:800; }
+.grid{ display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); }
+/* each courier has its own colour: a tinted background, a strong left edge and a coloured name */
+.post{ --c:var(--brand); border-left:7px solid var(--c); border-color:color-mix(in srgb,var(--c) 35%,var(--line)); border-left-color:var(--c);
+  background:linear-gradient(180deg,color-mix(in srgb,var(--c) 16%,var(--panel)) 0%,color-mix(in srgb,var(--c) 6%,var(--panel)) 100%); }
+:root[data-theme="dark"] .post{ background:linear-gradient(180deg,color-mix(in srgb,var(--c) 26%,var(--panel)) 0%,color-mix(in srgb,var(--c) 10%,var(--panel)) 100%); }
+.post .name{ font-size:clamp(18px,1.7vw,26px); font-weight:800; color:color-mix(in srgb,var(--c) 75%,var(--text)); }
+.post th, .post td{ border-bottom-color:color-mix(in srgb,var(--c) 22%,var(--line)); }
+.nums{ display:flex; gap:22px; align-items:flex-end; margin:6px 0 10px; }
+.nums .big{ font-size:clamp(38px,4vw,62px); font-weight:800; line-height:1; font-variant-numeric:tabular-nums; }
+.nums .old{ font-size:clamp(28px,3vw,46px); line-height:1; }
+.nums .lbl{ font-size:clamp(11px,.9vw,14px); color:var(--muted); font-weight:700; letter-spacing:.4px; text-transform:uppercase; }
+table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+th{ text-align:left; color:var(--muted); font-size:clamp(11px,.85vw,13px); font-weight:600; text-transform:uppercase; padding:5px 6px; border-bottom:1px solid var(--line); }
+td{ padding:5px 6px; border-bottom:1px solid var(--line); font-size:clamp(13px,1.1vw,17px); }
+.faint{ color:var(--faint); }
+.note{ color:var(--faint); font-size:12px; margin-top:12px; }
+.msg{ padding:10px 14px; border-radius:10px; border:1px solid var(--warn); color:var(--warn); margin-bottom:12px; }
+details summary{ cursor:pointer; font-size:13px; margin-top:6px; }
+@media (max-width:640px){ .clock{ margin-left:0; } .grid{ grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div style="width:6px;align-self:stretch;background:var(--brand);border-radius:3px"></div>
+    <div><h1>Postat — porositë në pritje</h1><div class="sub" id="sub">—</div></div>
+    <div class="clock" id="clock">--:--</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" id="btnRefresh" title="Rifresko tani">⟳</button>
+      <button class="btn" id="btnFull">⛶ Ekran i plotë</button>
+    </div>
+  </header>
+  <div id="msg"></div>
+  <div class="summary card" id="summary">Po lexohen dërgesat nga Delivery Platform-i…</div>
+  <div class="grid" id="posts"></div>
+  <div class="note">Në pritje = statusi "Duke pritur për dërgim" në dërgesat POD të ditëve të fundit; mosha = nga krijimi i porosisë. Me të kuqe: mbi 3 ditë, pa ato me datë fikse, me bank transfer ose me pagesë online ende të papaguar (në kllapa = të përjashtuarat). Rifreskohet vetë çdo 2 minuta.</div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const dmy=iso=> iso? iso.slice(8,10)+'.'+iso.slice(5,7)+'.'+iso.slice(0,4) : '';
+try{ const t=new URLSearchParams(location.search).get('theme'); if(t) document.documentElement.dataset.theme=t; }catch(e){}
+const PAY_ORDER=['Cash','POS','Kartë / online','Bank transfer','Pa metodë'];
+const POST_COLORS=[[/^beki/i,'#e67e22'],[/^express/i,'#115b92'],[/^fiks/i,'#1e8449'],[/^merre/i,'#8e44ad'],[/^starlink/i,'#0e8c95'],[/^boxes/i,'#b7950b'],[/^pick ?up ?point/i,'#c0392b']];
+const EXTRA_COLORS=['#5d6d7e','#a04000','#2471a3','#7d3c98'];
+const postColor=(name,i)=>{ const m=POST_COLORS.find(([re])=>re.test(name||'')); return m? m[1] : EXTRA_COLORS[i%EXTRA_COLORS.length]; };
+const payGroup=pm=>{ const s=String(pm||''); if(!s) return 'Pa metodë'; if(/bank transfer/i.test(s)) return 'Bank transfer'; if(/^cash/i.test(s)) return 'Cash'; if(/^pos/i.test(s)) return 'POS'; if(/credit|card|online/i.test(s)) return 'Kartë / online'; return s; };
+function tick(){ const n=new Date(); $('#clock').textContent=String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); }
+setInterval(tick,1000); tick();
+let busy=false;
+async function load(force){
+  if(busy) return; busy=true;
+  try{ const r=await fetch('/pod/pending'+(force?'?refresh=1':''),{cache:'no-store'}); const j=await r.json();
+    if(!r.ok){ $('#msg').innerHTML='<div class="msg">'+esc(j.error||('HTTP '+r.status))+'</div>'; return; }
+    $('#msg').innerHTML= j.error? '<div class="msg">Disa ditë nuk u lexuan nga Delivery Platform ('+esc(j.error==='auth_expired'? 'sesioni ka skaduar' : j.error)+').</div>' : '';
+    draw(j);
+  }catch(e){ $('#msg').innerHTML='<div class="msg">Agjenti nuk përgjigjet ('+esc(e.message)+'). Provohet sërish pas 2 minutash.</div>'; }
+  finally{ busy=false; }
+}
+function draw(j){
+  const ages=j.ageLabels||['0–1 ditë','2–3 ditë','> 3 ditë'];
+  $('#sub').textContent='Dërgesat '+dmy(j.from)+' – '+dmy(j.to)+' · lexuar '+new Date(j.at).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+(j.operator? ' · POD sot: '+j.operator : '');
+  $('#summary').innerHTML='<span>Në pritje gjithsej: <b>'+j.total+'</b></span><span class="'+(j.old?'red':'')+'">Mbi 3 ditë: <b>'+j.old+'</b></span>'+(j.operator? '<span>POD sot: <b>'+esc(j.operator)+'</b></span>' : '');
+  $('#posts').innerHTML= j.posts.length? j.posts.map((P,i)=>{
+    const oldBy={}; P.oldList.forEach(o=>{ const g=payGroup(o.pay); oldBy[g]=(oldBy[g]||0)+1; });
+    const groups=PAY_ORDER.filter(g=>P.pay[g]).concat(Object.keys(P.pay).filter(g=>!PAY_ORDER.includes(g)));
+    const cell=(g,a)=>{ const n=P.matrix[g+'|'+a]||0; if(a!==ages[2]) return n||'<span class="faint">—</span>';
+      const r=oldBy[g]||0, ex=n-r; return (r? '<span class="red">'+r+'</span>' : '<span class="faint">0</span>')+(ex>0? ' <span class="faint">(+'+ex+')</span>' : ''); };
+    return '<div class="card post" style="--c:'+postColor(P.name,i)+'"><div class="name">'+esc(P.name==='Merre'? 'Merre vet' : P.name)+'</div>'
+      +'<div class="nums"><div><div class="big">'+P.total+'</div><div class="lbl">Në pritje</div></div>'
+      +(P.old? '<div><div class="old red">'+P.old+'</div><div class="lbl red">mbi 3 ditë</div></div>' : '')+'</div>'
+      +'<table><thead><tr><th>Pagesa</th>'+ages.map(a=>'<th>'+esc(a)+'</th>').join('')+'<th>Gjithsej</th></tr></thead><tbody>'
+      +groups.map(g=>'<tr><td>'+esc(g)+'</td>'+ages.map(a=>'<td>'+cell(g,a)+'</td>').join('')+'<td><b>'+P.pay[g]+'</b></td></tr>').join('')+'</tbody></table>'
+      +(P.oldList.length? '<details><summary class="red">Porositë mbi 3 ditë ('+P.oldList.length+')</summary><table style="margin-top:4px"><thead><tr><th>Porosia</th><th>Ditë</th><th>Pagesa</th><th>Krijuar</th></tr></thead><tbody>'
+        +P.oldList.map(o=>'<tr><td><b class="red">#'+esc(o.id)+'</b> <span class="faint">'+esc(o.pf)+'</span></td><td class="red">'+o.days+'</td><td>'+esc(o.pay||'—')+'</td><td>'+esc(dmy(o.created))+'</td></tr>').join('')+'</tbody></table></details>' : '')
+      +'</div>'; }).join('') : '<div class="card">Asnjë porosi në pritje.</div>';
+}
+$('#btnRefresh').onclick=()=>load(true);
+$('#btnFull').onclick=()=>{ const el=document.documentElement; if(document.fullscreenElement) document.exitFullscreen(); else if(el.requestFullscreen) el.requestFullscreen(); };
+load(false); setInterval(()=>load(false), 120000);
+</script>
+</body>
+</html>

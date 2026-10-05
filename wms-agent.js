@@ -583,7 +583,7 @@ async function fetchPodLogs(startIso,endIso,opts){
 const POD_ITEM_FIELDS=['orderId','platformId','platform','type','deliveryDate','deliveredDate','insertedInPodDate','createDateTime','shippingDate',
   'paymentMethod','price','totalPrice','cashAccepted','isPaid','processStatus','processStatusFundReceived','processStatusRefused','deliveryItemStatus',
   'itemDeliveryStatusId','orderStatus','driverName','packages','numberOfDaysToDeliverOrder','moreThan24HNePoste','moreThan24HENisur','reviewScore',
-  'isStarterKit','pickUpInStore','city'];
+  'isStarterKit','pickUpInStore','city','hasShippingDate','isPreorder','paymentMethodId'];
 const dtCols=n=>Array.from({length:n},()=>({data:'',name:'',searchable:true,orderable:false,search:{value:'',regex:false}}));
 const podCache={}, podInflight={};
 async function deliveryPostJson(pathname, params){
@@ -770,9 +770,9 @@ function flowChatText(data, m){
     +(pf?'\n\nYesterday full day: '+pf.checkedIn+' check-ins · '+pf.checkedOut+' checkout (products) · '+pf.orders+' orders':'')
     +(data.reliable===false?'\n\n⚠ Të dhëna jo të plota për njërën nga ditët (faqëzimi i WMS-it).':'');
 }
-function postToChat(text){
+function postToChat(text, webhook){
   return new Promise(res=>{
-    let u; try{ u=new URL(cfg.googleChatWebhook); }catch(e){ return res({error:'webhook i pavendosur'}); }
+    let u; try{ u=new URL(webhook||cfg.googleChatWebhook); }catch(e){ return res({error:'webhook i pavendosur'}); }
     const body=JSON.stringify({text});
     const r=https.request(u,{method:'POST',headers:{'Content-Type':'application/json; charset=UTF-8','Content-Length':Buffer.byteLength(body)}},resp=>{
       let d=''; resp.setEncoding('utf8'); resp.on('data',c=>d+=c);
@@ -964,6 +964,81 @@ async function fetchRefusalScans(iso){
   const v={date:iso, rows, total, complete: total==null || rows.length>=total, at:new Date().toISOString()};
   refScanCache[iso]={t:Date.now(), v}; return v;
 }
+/* POD by courier ("Postat", POD page): every order still waiting to be sent ("Duke pritur për dërgim") in the POD
+   deliveries of the last N days — an order that was not sent stays in its old delivery (found 05.10.2026: the 02–04.10
+   deliveries still held ~180 waiting orders that are not in today's) — once per order, its latest delivery winning.
+   Per courier: total, by payment group, by order age (from its creation). "Over 3 days" = created more than 3 days ago,
+   EXCEPT orders with a fixed date (hasShippingDate), paid by bank transfer, or prepaid by card/online but not paid yet
+   (cash and POS are paid on delivery, so "not paid" is normal for them). Order numbers only — no customer data. */
+const POD_PENDING_DAYS=Number(cfg.podPendingDays||7), POD_WAIT='Duke pritur për dërgim', POD_AGE_LBL=['0–1 ditë','2–3 ditë','> 3 ditë'];
+const POD_POST_ORDER=[/^beki/i, /^express/i, /^fiks/i, /^merre/i, /^starlink/i, /^boxes/i, /^pick ?up ?point/i];   // Beki, Express, Fiks, Merre vet, Starlink, Boxes, PickUpPoint
+function podPayGroup(pm){ const s=String(pm||''); if(!s) return 'Pa metodë'; if(/bank transfer/i.test(s)) return 'Bank transfer'; if(/^cash/i.test(s)) return 'Cash';
+  if(/^pos/i.test(s)) return 'POS'; if(/credit|card|online/i.test(s)) return 'Kartë / online'; return s; }
+let podPendingCache=null, podPendingBusy=null;
+async function podPending(force){
+  if(!force && podPendingCache && Date.now()-podPendingCache.t<4*60000) return podPendingCache.v;
+  if(podPendingBusy) return podPendingBusy;
+  return podPendingBusy=(async()=>{ try{
+    const today=isoToday(), now=Date.now(), byOrder=new Map(); let error=null, daysRead=0;
+    for(let i=POD_PENDING_DAYS-1;i>=0;i--){ const d=isoAddDays(today,-i); const r=await fetchPodDay(d);
+      if(r.error){ error=r.error; if(r.error==='auth_expired') break; continue; } daysRead++;
+      (r.items||[]).forEach(x=>byOrder.set(x.orderId+'-'+x.platformId, Object.assign({}, x, {dd:d}))); }   // oldest → newest: the latest delivery wins
+    const ageOf=x=>{ const t=Date.parse(String(x.createDateTime||'').replace(' ','T')); return isNaN(t)? null : (now-t)/864e5; };
+    const posts={};
+    [...byOrder.values()].filter(x=>x.deliveryItemStatus===POD_WAIT).forEach(x=>{
+      const name=x.driverName||'(pa postë)', P=posts[name]||(posts[name]={name, total:0, pay:{}, age:{}, matrix:{}, old:0, oldList:[], excluded:{fixed:0, bank:0, unpaid:0}});
+      const a=ageOf(x), pg=podPayGroup(x.paymentMethod), ab= a==null||a<=1? POD_AGE_LBL[0] : a<=3? POD_AGE_LBL[1] : POD_AGE_LBL[2];
+      P.total++; P.pay[pg]=(P.pay[pg]||0)+1; P.age[ab]=(P.age[ab]||0)+1; P.matrix[pg+'|'+ab]=(P.matrix[pg+'|'+ab]||0)+1;
+      if(a!=null && a>3){ const fixed=!!(x.hasShippingDate||x.shippingDate), bank=pg==='Bank transfer', unpaid=!x.isPaid && pg==='Kartë / online';
+        if(fixed) P.excluded.fixed++; else if(bank) P.excluded.bank++; else if(unpaid) P.excluded.unpaid++;
+        else{ P.old++; P.oldList.push({id:x.orderId, pf:x.platform||'', days:Math.floor(a), pay:x.paymentMethod||'', created:String(x.createDateTime||'').slice(0,10), dd:x.dd}); } } });
+    Object.values(posts).forEach(P=>P.oldList.sort((a,b)=>b.days-a.days));
+    // today's POD operator = the account with the latest POD scan (Delivery Platform, Accept Delivery)
+    let operator=null; try{ const s=await fetchPodScans(today); if(s.rows&&s.rows.length) operator=s.rows.reduce((b,r)=>!b||r.t>b.t? r : b, null).scanner||null; }catch(e){}
+    // fixed order of the couriers set by the warehouse lead (06.10.2026), whatever their numbers; any other courier after them
+    const rank=n=>{ const i=POD_POST_ORDER.findIndex(re=>re.test(n)); return i<0? 99 : i; };
+    const list=Object.values(posts).sort((a,b)=>rank(a.name)-rank(b.name) || b.total-a.total);
+    const v={at:new Date().toISOString(), days:POD_PENDING_DAYS, daysRead, from:isoAddDays(today,-(POD_PENDING_DAYS-1)), to:today, error, operator, ageLabels:POD_AGE_LBL,
+      posts:list, total:list.reduce((s,P)=>s+P.total,0), old:list.reduce((s,P)=>s+P.old,0)};
+    if(!error) podPendingCache={t:Date.now(), v}; return v;
+  } finally { podPendingBusy=null; } })();
+}
+/* Google Chat: the same report for the POD operator, every 30 min from 16:30 to 20:00 (cfg.podChatMarks), to the POD
+   space when cfg.podChatWebhook is set, or to the Flow (2h) space when cfg.podChatToFlowSpace is true (nothing is sent
+   until one of the two is set); the operator's name heads the message (a
+   webhook cannot write to one person). One message per mark per day; a missed mark is not back-filled. */
+const POD_CHAT_MARKS=(Array.isArray(cfg.podChatMarks)&&cfg.podChatMarks.length? cfg.podChatMarks : ['16:30','17:00','17:30','18:00','18:30','19:00','19:30','20:00']);
+const POD_CHAT_FILE=path.join(APPDIR,'data','pod-chat-state.json');
+const hmMin=s=>{ const [h,m]=String(s).split(':').map(Number); return h*60+(m||0); };
+function podChatText(v, mark){
+  const d=v.to.split('-').reverse().join('.'), payTxt=P=>Object.entries(P.pay).sort((a,b)=>b[1]-a[1]).map(([k,n])=>k+' '+n).join(' · ');
+  return '*POD — porositë në pritje për POD finale · '+mark+'* ('+d+')\n'
+    +(v.operator? 'Për: *'+v.operator+'* (po bën POD sot)\n' : '')
+    +'\nNë pritje gjithsej: *'+v.total+'* · 🔴 mbi 3 ditë: *'+v.old+'*\n\n'
+    +v.posts.map(P=>'• *'+P.name+'*: '+P.total+' në pritje'+(P.old? ' · 🔴 *'+P.old+' mbi 3 ditë*' : '')+'\n   '+payTxt(P)
+      +(P.old? '\n   më të vjetrat: '+P.oldList.slice(0,5).map(o=>'#'+o.id+' ('+o.days+' ditë)').join(', ') : '')).join('\n')
+    +'\n\n_Mbi 3 ditë nuk përfshihen: me datë fikse, me bank transfer, me pagesë online ende të papaguar._'
+    +(v.error? '\n\n⚠ Disa ditë nuk u lexuan nga Delivery Platform ('+v.error+').' : '');
+}
+let podChatBusy=false;
+async function podChatTick(){
+  // sends only once a destination is confirmed: its own POD webhook, or podChatToFlowSpace:true for the Flow (2h) space
+  const hook=cfg.podChatWebhook || (cfg.podChatToFlowSpace? cfg.googleChatWebhook : null); if(!hook || podChatBusy) return;
+  const n=new Date(), mins=n.getHours()*60+n.getMinutes(), due=POD_CHAT_MARKS.filter(m=>mins>=hmMin(m)).pop();
+  if(!due || mins>hmMin(POD_CHAT_MARKS[POD_CHAT_MARKS.length-1])+29) return;      // only inside the window
+  let st={sent:{}}; try{ st=JSON.parse(fs.readFileSync(POD_CHAT_FILE,'utf8')); }catch(e){}
+  const today=isoToday(), sent=(st.sent&&st.sent[today])||[]; if(sent.includes(due)) return;
+  if(st.lastError && st.lastError.mark===due && Date.now()-Date.parse(st.lastError.at)<10*60000) return;
+  podChatBusy=true;
+  try{ const v=await podPending(true); let r;
+    if(v.error==='auth_expired' && !v.posts.length) r=await postToChat('⚠ *POD — porositë në pritje · '+due+'*: sesioni i Delivery Platform ka skaduar te agjenti.', hook);
+    else r=await postToChat(podChatText(v, due), hook);
+    console.log('[wms-agent] Google Chat POD '+due+': '+(r.ok?'sent ✓':'FAILED '+r.error));
+    if(r.ok){ st.sent={[today]:[...sent,due]}; st.last={at:new Date().toISOString(), mark:due}; delete st.lastError; } else st.lastError={at:new Date().toISOString(), mark:due, error:r.error};
+    try{ fs.mkdirSync(path.dirname(POD_CHAT_FILE),{recursive:true}); fs.writeFileSync(POD_CHAT_FILE, JSON.stringify(st,null,2)); }catch(e){}
+  } finally { podChatBusy=false; }
+}
+setInterval(podChatTick, 60*1000);
 /* a past day (?date=YYYY-MM-DD): the same board rebuilt from that day's WMS log — no cut-off figures (those are "now") */
 async function tabelaPastLive(iso){
   const age=Math.round((new Date(isoToday()+'T00:00:00') - new Date(iso+'T00:00:00'))/86400000);
@@ -1101,6 +1176,29 @@ http.createServer(async (req,resp)=>{
       return json(200, checkinSummary(dl.rows, iso, dl.reliable));
     }
     // ---- Google Chat (Flow 2h report) ----
+    if(q.pathname==='/pod/pending'){   // POD by courier — same-origin only, no CORS header
+      const v=await podPending(!!q.query.refresh); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(Object.assign({}, v, {chat:{marks:POD_CHAT_MARKS, enabled:!!(cfg.podChatWebhook||(cfg.podChatToFlowSpace&&cfg.googleChatWebhook)), target: cfg.podChatWebhook? 'pod' : cfg.podChatToFlowSpace? 'flow' : null}})));
+    }
+    if(q.pathname==='/pod/chat-preview'){ const v=await podPending(false); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}); return resp.end(podChatText(v, String(q.query.mark||'16:30'))); }
+    // POD space webhook: saved only in the git-ignored config, never sent back to a page; same-origin only (no CORS header)
+    if((q.pathname==='/pod/chat-webhook' || q.pathname==='/pod/chat-test') && req.method==='POST'){
+      const origin=req.headers.origin; const send=(c,o)=>{ resp.writeHead(c,{'Content-Type':'application/json','Cache-Control':'no-store'}); resp.end(JSON.stringify(o)); };
+      if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return send(403,{error:'forbidden origin'});
+      if(q.pathname==='/pod/chat-webhook'){
+        let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return send(400,{error:'bad json'}); }
+        const url=String(body&&body.url||'').trim();
+        if(url && !/^https:\/\/chat\.googleapis\.com\/v1\/spaces\/[^/]+\/messages\?/.test(url)) return send(400,{error:'Kjo nuk duket si webhook i Google Chat (duhet të fillojë me https://chat.googleapis.com/v1/spaces/…/messages?key=…).'});
+        try{ const onDisk=JSON.parse(fs.readFileSync(CFG_FILE,'utf8')); if(url) onDisk.podChatWebhook=url; else delete onDisk.podChatWebhook; fs.writeFileSync(CFG_FILE, JSON.stringify(onDisk,null,2)); if(url) cfg.podChatWebhook=url; else delete cfg.podChatWebhook; }
+        catch(e){ return send(500,{error:'Nuk u ruajt: '+e.message}); }
+        console.log('[wms-agent] POD Google Chat webhook '+(url?'saved':'removed')+'.');
+        return send(200,{ok:true, configured:!!url});
+      }
+      if(!cfg.podChatWebhook) return send(400,{error:'Vendos fillimisht webhook-un e hapësirës POD.'});
+      const v=await podPending(false); const n=new Date(), mark=String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0');
+      const r=await postToChat('_Mesazh prove nga Warehouse Observation._\n\n'+podChatText(v, mark), cfg.podChatWebhook);
+      console.log('[wms-agent] POD Google Chat test: '+(r.ok?'sent ✓':'FAILED '+r.error));
+      return send(r.ok?200:502, r);
+    }
     if(q.pathname==='/chat/status'){ const st=chatState(); return json(200,{configured:!!cfg.googleChatWebhook, last:st.last||null, lastError:st.lastError||null}); }
     if(q.pathname==='/chat/webhook' && req.method==='POST'){
       let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
@@ -1140,6 +1238,7 @@ http.createServer(async (req,resp)=>{
       resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(b);
     }
     // Tabela ditore — same-origin only (no CORS header): operator names
+    if(q.pathname==='/postat' || q.pathname==='/postat/'){ return fs.readFile(path.join(APPDIR,'postat.html'),(e,d)=>{ if(e){ resp.writeHead(404); return resp.end('not found'); } resp.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}); resp.end(d); }); }
     if(q.pathname==='/tabela' || q.pathname==='/tabela/'){ return fs.readFile(path.join(APPDIR,'tabela.html'),(e,d)=>{ if(e){ resp.writeHead(404); return resp.end('not found'); } resp.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}); resp.end(d); }); }
     if(q.pathname==='/tabela/data' || q.pathname==='/tabela/assign'){
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});

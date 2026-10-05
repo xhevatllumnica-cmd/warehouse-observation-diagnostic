@@ -471,6 +471,7 @@ const ROUTES = [
   {id:'problems', title:'Bottleneck Register', ic:'⚠', render:(typeof renderBottleneck==='function'? renderBottleneck : renderProblems)},
   {id:'plan', title:'Plani i përmirësimit', ic:'🎯', render:renderPlan},
   {id:'tabela', title:'Tabela ditore', ic:'📺', render:renderTabela},
+  {id:'postat', title:'Postat — në pritje', ic:'🏤', render:renderPostat},
   {id:'kpi', title:'KPI Baseline', ic:'📊', render:renderKPI},
   {id:'validation', title:'Validation', ic:'⚖', render:renderValidation},
   {id:'insights', title:'Insights & Alerts', ic:'💡', render:renderInsights},
