@@ -74,6 +74,7 @@ dialog select{ flex:1; background:var(--bg); color:var(--text); border:1px solid
   <div id="msg"></div>
   <div class="grid" id="cards"><div class="card"><div class="foot">Po lexohen të dhënat nga WMS…</div></div></div>
   <div class="sec" id="secTitle">Tavolinat — sot</div>
+  <div id="stInfo" class="note" style="margin:-4px 0 8px"></div>
   <div class="stgrid" id="stcards"></div>
   <div class="card"><div class="h2">Porosi për orë sipas tavolinës</div><div class="tablewrap"><table id="tbl"></table></div>
     <div class="note" id="note"></div></div>
@@ -157,6 +158,9 @@ const allNames=()=>[...new Set([...(D.roster||[]), ...((D.live&&D.live.ops)||[])
 function firstNames(){ const cnt={}; allNames().forEach(n=>{ const f=n.split(' ')[0]; cnt[f]=(cnt[f]||0)+1; });
   return n=>{ const p=String(n).split(' '); return cnt[p[0]]>1 && p[1]? p[0]+' '+p[1][0]+'.' : p[0]; }; }
 function drawStations(){
+  // which table PCs report the logged-in WMS account (the "WMS Station" extension)
+  const SI=(D.stationInfo||[]).filter(x=>x.ip);
+  $('#stInfo').innerHTML= D.past||!SI.length? '' : 'PC-të e tavolinave: '+SI.map(x=>x.liveUser? '<b style="color:var(--ok)">●</b> '+esc(x.table)+' — '+esc(x.liveUser) : x.reports? '<span style="color:var(--muted)">○</span> '+esc(x.table)+' (raporti i fundit '+hm(x.lastSeen)+')' : '<span class="faint">○ '+esc(x.table)+' — pa raport sot</span>').join(' · ');
   const fn=firstNames(), cards=(D.cards||[]).slice().sort((a,b)=>stOrder(a)-stOrder(b));
   $('#stcards').innerHTML=cards.map(c=>{ const K=c.kind, ret=K==='ret', co=c.co&&!ret;
     const big= K==='pod'? (c.pod||0) : K==='map'? c.map : ret? (c.ref||0) : co? c.out : c.units;
@@ -170,13 +174,15 @@ function drawStations(){
       : '<div class="foot faint">emri = llogaria e kyçur në Delivery Platform'+(P.otherAccounts? ' · '+P.otherAccounts+(K==='ret'? ' porosi' : ' skanime')+' me llogari jashtë listës së stafit' : '')+'</div>'
       + (K==='ret'? '<div class="foot">kthime të procesuara në WMS: <b>'+(c.ret||0)+'</b> produkte</div>' : '');
     const extra= podNote+(co? '<div class="foot">porosi të përfunduara: '+c.orders+'</div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
-    const top= cur? `<div class="who">${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${cur.shift? '<div class="foot">ndërrimi '+cur.shift+'</div>' : ''}`
-      : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>';
-    const prev=done.map(p=>`<div class="prev">${esc(fn(p.op))}: ${num(p)}${p.shift? ' <span class="faint">('+p.shift+')</span>' : ''}</div>`).join('');
+    const logged=p=> p.viaPresence? 'kyçur '+hm(p.loggedFrom)+'–'+(p.live? 'tani' : hm(p.loggedTo)) : null;
+    const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : cur.shift? '<div class="foot">ndërrimi '+cur.shift+'</div>' : ''}`
+      : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>'
+        + (c.ip && !c.viaPresence && !D.past? '<div class="foot" style="color:var(--warn)">PC '+esc(c.ip)+' s&#39;ka raportuar sot (WMS Station) — puna e kësaj tavoline shfaqet te "pa tavolinë"</div>' : '');
+    const prev=done.map(p=>`<div class="prev">${esc(fn(p.op))}: ${num(p)}${logged(p)? ' <span class="faint">('+logged(p)+')</span>' : p.shift? ' <span class="faint">('+p.shift+')</span>' : ''}</div>`).join('');
     const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))} · nga ${p.shift.slice(0,5)}</div>`).join('');
     const offs=(c.off||[]).length? '<div class="foot faint">pushim sot: '+c.off.map(n=>esc(fn(n))).join(', ')+'</div>' : '';
     return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Kliko për operatorët e tavolinës (opsionale)"'}>
-      <div class="lbl">${esc(stTitle(c.name))}</div><div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}</div>`; }).join('');
+      <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+esc(c.table)+(c.ip? ' · PC '+esc(c.ip) : ' · pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}</div>`; }).join('');
   document.querySelectorAll('.stcard:not([data-auto])').forEach(el=>el.onclick=()=>openStation(el.dataset.st));
   if(D.scheduleLoaded===false) $('#stcards').insertAdjacentHTML('beforeend','<div class="note">Orari i punës për sot nuk u gjet — operatorët numërohen për gjithë ditën.</div>');
 }

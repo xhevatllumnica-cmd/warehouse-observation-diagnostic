@@ -505,6 +505,9 @@ function buildPerformance(rows, days){
 
 /* --- "Statistikat e WH" module: WMS data-access layer (all definitions live in wms-stats.js) ---------- */
 const shiftSchedule=require('./shift-schedule.js')({ appDir:APPDIR, normName, warehouseStaffList, STAFF_ALIASES });
+// which WMS account is logged in at which table PC (by IP) — reports from the "WMS Station" extension, own port on the LAN
+const stationPresence=require('./station-presence.js')({ appDir:APPDIR, cfgFile:CFG_FILE, cfg, normName, aliases:STAFF_ALIASES });
+stationPresence.listen(Number(cfg.stationPort||8791));
 const wmsStats=require('./wms-stats.js')({ appDir:APPDIR, fetchDayProductLogs, isoToday, isoAddDays, isoToMdy, lastNDays, parseWmsDate,
   CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, scheduleForDay:iso=>shiftSchedule.forDay(iso) });
 /* Module settings (agent config, one writer). Thresholds are starting values meant to be tuned by the lead:
@@ -890,7 +893,8 @@ const TABELA_STATION_CFG={'CHECKOUT 5':{hidden:true}, 'CHECKIN 3':{hidden:true},
 function tabelaStations(){
   let list=TABELA_DEFAULT_STATIONS;
   try{ const b=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).board; if(b&&b.stations&&b.stations.length) list=b.stations.map(s=>({name:s.name, co:!!s.co, ci:!!s.ci})); }catch(e){}
-  return list.filter(s=>!(TABELA_STATION_CFG[s.name]||{}).hidden).map(s=>Object.assign({}, s, TABELA_STATION_CFG[s.name]||{})).concat(tabelaBoard.EXTRA_STATIONS);
+  const ipOf={}; stationPresence.stationMap().forEach(m=>{ ipOf[m.station]=m; });   // the physical table (and its PC's IP) of each WMS station
+  return list.filter(s=>!(TABELA_STATION_CFG[s.name]||{}).hidden).map(s=>Object.assign({}, s, TABELA_STATION_CFG[s.name]||{}, ipOf[s.name]? {table:ipOf[s.name].table, ip:ipOf[s.name].ip||null} : {})).concat(tabelaBoard.EXTRA_STATIONS);
 }
 /* POD for the board: the orders scanned for the couriers in the Delivery Platform ("Accept Delivery → Scanned Orders",
    POST /AcceptDelivery/GetScannedOrders — the read the platform's own page makes). Only the scanner's name and the scan
@@ -975,10 +979,10 @@ async function tabelaData(force, date){
   try{ pod=await fetchPodScans(today); }catch(e){ pod={error:String(e.message||e)}; }
   try{ ref=await fetchRefusalScans(today); }catch(e){ ref={error:String(e.message||e)}; }
   const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES, ref);
-  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:tabelaBoard.tablesFor(rec, today)}, live&&live.ops, today, day, normName, STAFF_ALIASES);   // that day's assignment
+  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:tabelaBoard.tablesFor(rec, today)}, live&&live.ops, today, day, normName, STAFF_ALIASES, stationPresence.forDay(today));   // that day's assignment
   const shifts={}; Object.entries(day||{}).forEach(([n,sh])=>{ shifts[n]= sh.off? 'pushim' : sh.start+'–'+sh.end; });
   const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
-  return {date:today, past:!!past, stations, assign:{tables:tabelaBoard.currentAssign(rec, today), updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+  return {date:today, past:!!past, stations, stationInfo:stationPresence.info(today), assign:{tables:tabelaBoard.currentAssign(rec, today), updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
     roster:[...new Set(warehouseStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');

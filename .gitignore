@@ -88,3 +88,6 @@ bottleneck/metric-history.json
 # WMS store names (StoreId → store), read by the agent from the WMS web app
 pulse/stores.json
 pulse/queries.bn.sql
+
+# WMS Station extension: generated config (contains the station key)
+station-extension/config.js
