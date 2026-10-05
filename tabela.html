@@ -79,7 +79,7 @@ dialog select{ flex:1; background:var(--bg); color:var(--text); border:1px solid
     <div class="note" id="note"></div></div>
 </div>
 <dialog id="dlg1"><div class="h2" id="d1Title">Tavolina</div>
-  <div class="note" style="margin:0 0 8px">Operatorët e kësaj tavoline. Ndryshimi ruhet për datën që po shikon dhe vazhdon ditët në vijim derisa ta ndryshosh; për një ditë të kaluar, vlen vetëm për atë ditë. Çdo ditë secili numërohet brenda ndërrimit të vet sipas <b>Orarit të punës</b>; kush ka pushim atë ditë nuk shfaqet.</div>
+  <div class="note" style="margin:0 0 8px">Opsionale: kush punon në këtë tavolinë fizike. Kush nuk është i caktuar shfaqet automatikisht te "Check-out / Check-in · pa tavolinë", ndërsa Mapimi, POD dhe refuzimet plotësohen vetë. Numërohet gjithë dita e punës; ndërrimi sipas <b>Orarit të punës</b> përcakton vetëm renditjen (N1, pastaj N2). Ndryshimi ruhet për datën që po shikon; për një ditë të kaluar vlen vetëm për atë ditë.</div>
   <div id="d1List"></div>
   <div class="row" style="margin-top:10px"><select id="d1Add"></select><button class="btn" id="d1AddBtn">+ Shto</button></div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" id="d1Cancel">Anulo</button><button class="btn primary" id="d1Save">Ruaj</button></div></dialog>
@@ -94,7 +94,10 @@ let D=null;
 const localToday=()=>{ const n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0'); };
 let pickedDate=''; try{ pickedDate=new URLSearchParams(location.search).get('date')||''; }catch(e){}
 const selDate=()=> pickedDate && pickedDate<localToday()? pickedDate : '';
-function tick(){ const n=new Date(); $('#clock').textContent=String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); }
+let lastMin=-1;
+function tick(){ const n=new Date(); $('#clock').textContent=String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0');
+  // every new minute redraw from the data already loaded, so a cut-off card appears at 12:55 / 14:55 / 17:25 sharp
+  const m=n.getHours()*60+n.getMinutes(); if(m!==lastMin){ const first=lastMin<0; lastMin=m; if(!first && D && !D.past) draw(); } }
 setInterval(tick,1000); tick();
 async function load(force){
   try{ const dq=selDate();   // a past day (date picker, or /tabela?date=YYYY-MM-DD)
@@ -115,6 +118,7 @@ function draw(){
     cards+=`<div class="card ${y.stillOpen>0?'warn':'ok'}"><div class="lbl">Carryover i djeshëm (${dmy(y.date)})</div><div class="big">${y.carry}</div>
       <div class="foot">${y.pct!=null? fmt(y.pct)+' % e '+y.ready+' të gatshmeve deri 17:30' : ''}<br>dalë sot ${y.outToday} · ende hapur <b>${y.stillOpen}</b>${y.olderOpen? ' · më të vjetra hapur '+y.olderOpen : ''}</div></div>`;
     C.cuts.forEach(c=>{ const mins=c.label==='17:30'? 1050 : parseInt(c.label)*60, late=nowMin>mins && c.open>0, pct=c.ready? Math.round(c.out/c.ready*100) : 0;
+      if(!D.past && nowMin < mins-5) return;   // today: a cut-off card appears 5 minutes before its time and stays for the rest of the day
       cards+=`<div class="card ${late?'warn':''}"><div class="lbl">Gati deri në ${c.label}</div><div class="big">${c.ready}</div>
         <div class="bar"><i style="width:${pct}%"></i></div><div class="foot">dalë <b>${c.out}</b> · mbetur <b>${c.open}</b>${c.waiting? ' · presin njësi '+c.waiting : ''}</div></div>`; });
   } else if(D.past) cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Shfaqen vetëm për sot (gjendja aktuale në databazë). Për ditë të kaluara: tavolinat dhe operatorët më poshtë.</div></div>`;
@@ -147,8 +151,8 @@ function draw(){
    the operators whose shift at this table already ended (N1 after N2 starts) or starts later */
 const stLabel=n=>{ const c=(D.stations||[]).find(s=>s.name===n)||{}; return c.label || String(n).replace(/CHECKOUT/g,'Check-out').replace(/CHECKIN/g,'Check-in').replace(/SELLERS/g,'Sellers'); };
 // Mapimi and POD are work areas, not tables: their cards carry the plain name
-const stTitle=n=>{ const l=stLabel(n), c=(D.stations||[]).find(s=>s.name===n)||{}; return c.kind==='map'||c.kind==='pod'||/^Tavolin/i.test(l)? l : 'Tavolina '+l; };
-const stOrder=c=> (c.kind==='map'? 3 : c.kind==='pod'? 4 : c.co&&!c.ci? 0 : c.co&&c.ci? 1 : 2)*100 + (parseInt(String(c.name).replace(/\D+/g,''))||50);
+const stTitle=n=>{ const l=stLabel(n), c=(D.stations||[]).find(s=>s.name===n)||{}; return c.kind==='map'||c.kind==='pod'||c.auto||/^Tavolin/i.test(l)? l : 'Tavolina '+l; };
+const stOrder=c=> (c.auto? 5 : c.kind==='map'? 3 : c.kind==='pod'? 4 : c.co&&!c.ci? 0 : c.co&&c.ci? 1 : 2)*100 + (parseInt(String(c.name).replace(/\D+/g,''))||50);
 const allNames=()=>[...new Set([...(D.roster||[]), ...((D.live&&D.live.ops)||[]).map(o=>o.name)])];
 function firstNames(){ const cnt={}; allNames().forEach(n=>{ const f=n.split(' ')[0]; cnt[f]=(cnt[f]||0)+1; });
   return n=>{ const p=String(n).split(' '); return cnt[p[0]]>1 && p[1]? p[0]+' '+p[1][0]+'.' : p[0]; }; }
@@ -166,14 +170,14 @@ function drawStations(){
       : '<div class="foot faint">emri = llogaria e kyçur në Delivery Platform'+(P.otherAccounts? ' · '+P.otherAccounts+(K==='ret'? ' porosi' : ' skanime')+' me llogari jashtë listës së stafit' : '')+'</div>'
       + (K==='ret'? '<div class="foot">kthime të procesuara në WMS: <b>'+(c.ret||0)+'</b> produkte</div>' : '');
     const extra= podNote+(co? '<div class="foot">porosi të përfunduara: '+c.orders+'</div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
-    const top= cur? `<div class="who">${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${cur.shift? '<div class="foot">ndërrimi '+cur.shift+(c.weekend? ' · fundjavë: numërohet gjithë dita' : '')+'</div>' : ''}`
-      : (c.people||[]).length? '' : '<div class="who"><span class="free">— e lirë —</span></div>';
+    const top= cur? `<div class="who">${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${cur.shift? '<div class="foot">ndërrimi '+cur.shift+'</div>' : ''}`
+      : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>';
     const prev=done.map(p=>`<div class="prev">${esc(fn(p.op))}: ${num(p)}${p.shift? ' <span class="faint">('+p.shift+')</span>' : ''}</div>`).join('');
     const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))} · nga ${p.shift.slice(0,5)}</div>`).join('');
     const offs=(c.off||[]).length? '<div class="foot faint">pushim sot: '+c.off.map(n=>esc(fn(n))).join(', ')+'</div>' : '';
-    return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" title="Kliko për operatorët e tavolinës">
+    return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Kliko për operatorët e tavolinës (opsionale)"'}>
       <div class="lbl">${esc(stTitle(c.name))}</div><div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}</div>`; }).join('');
-  document.querySelectorAll('.stcard').forEach(el=>el.onclick=()=>openStation(el.dataset.st));
+  document.querySelectorAll('.stcard:not([data-auto])').forEach(el=>el.onclick=()=>openStation(el.dataset.st));
   if(D.scheduleLoaded===false) $('#stcards').insertAdjacentHTML('beforeend','<div class="note">Orari i punës për sot nuk u gjet — operatorët numërohen për gjithë ditën.</div>');
 }
 let d1Ops=[];

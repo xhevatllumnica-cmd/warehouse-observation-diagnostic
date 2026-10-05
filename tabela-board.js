@@ -62,14 +62,14 @@ function cutoffs(board, today, yday){
 
 /* Virtual tables that are not WMS stations: Mapimi (units mapped to a shelf row, LogTypeId 7) and POD (orders scanned for
    the couriers in the Delivery Platform, Accept Delivery — see withPod). */
-const EXTRA_STATIONS=[{name:'MAPIMI', label:'Mapimi', kind:'map'}, {name:'POD', label:'POD', kind:'pod'}];
+const EXTRA_STATIONS=[{name:'MAPIMI', label:'Mapimi', kind:'map'}, {name:'POD', label:'POD', kind:'pod'},
+  // automatic pools: check-out / check-in work of anyone not assigned to a numbered table — no work is left off the board
+  {name:'POOL_CO', label:'Check-out · pa tavolinë', kind:'poolco', co:true, auto:true}, {name:'POOL_CI', label:'Check-in · pa tavolinë', kind:'poolci', ci:true, auto:true}];
 /* Station assignment: tables = {station: [operator, …]} — the operators who work at that table (e.g. the N1 and the N2
-   operator), kept until changed. Each day every operator is counted only within their own shift from "Orari i punës"
-   (shift-schedule.json, ±15 min), so the N1 operator's number stays fixed after N1 ends and the N2 operator's grows; an
-   operator who is off that day is not shown. Without a schedule entry the whole day counts. An operator may work at two
+   operator), kept until changed. Each operator's whole day counts (see stationCards); the shift from "Orari i punës" only orders the
+   card, and an assigned operator who is off and did nothing that day is not shown. An operator may work at two
    tables in one shift: a table counts only its own kind of work (orders / check-in units / mapping / returns), and when two
    of their tables count the same kind, it is counted once — at the first table — and the other card says where. */
-const SHIFT_SLACK=15*60000;
 function assignFile(appDir){ return path.join(appDir,'data','tabela-assign.json'); }
 /* History by date: history = {'YYYY-MM-DD': {station:[ops]}} — the full table map saved for that day. A day uses the
    latest snapshot on or before it (so an assignment carries over until changed); before the first snapshot, "base" — the
@@ -115,36 +115,44 @@ function shiftOf(day, name, normName, today){
   return {start:s.start, end:s.end, a, b};
 }
 /* one card per table: today's total and each operator's orders/units within their shift; "current" = on shift now */
+/* One card per table / process. Since 05.10.2026 nothing has to be added by hand for the work to show:
+   - process cards (Mapimi, POD, refusals/returns) take everyone who did that work that day;
+   - numbered tables show the operators assigned to them (optional — it only tells which physical table);
+   - the pools "Check-out · pa tavolinë" / "Check-in · pa tavolinë" take everyone else who did that work.
+   Everyone's whole day counts, whatever the shift; the shift (Orari i punës) only orders the card (N1 on top until N1 ends,
+   then N2). Work of one kind is counted once — at the first card that claims it (assigned tables before the pools). */
 function stationCards(stations, rec, ops, today, day, normName, aliases){
   const canon=n=>(aliases&&aliases[normName(n)])||n;   // an assignment made with a second account of the same person
-  const now=Date.now(), dayStart=Date.parse(today+'T00:00:00'), wd=new Date(today+'T12:00:00').getDay(), weekend= wd===0||wd===6, by={}; (ops||[]).forEach(o=>by[o.name]=o);
-  const claims={};   // operator|metric → the table that counts it
+  const now=Date.now(), dayStart=Date.parse(today+'T00:00:00'), dayEnd=dayStart+86400000, by={}; (ops||[]).forEach(o=>by[o.name]=o);
+  const claims={};   // operator|metric → the card that counts it
   const metricsOf=st=> st.kind==='ret'? ['ref','ret'] : st.kind==='map'? ['map'] : st.kind==='pod'? ['pod'] : st.co&&st.ci? ['out','orders','units'] : st.co? ['out','orders'] : st.ci? ['units'] : [];
+  const has=(o,k)=> o && o[k] && o[k].length;
+  const autoOf=st=> st.kind==='map'? (ops||[]).filter(o=>has(o,'_mpT')) : st.kind==='pod'? (ops||[]).filter(o=>has(o,'_podT'))
+    : st.kind==='ret'? (ops||[]).filter(o=>has(o,'_refT')||has(o,'_retT')) : st.kind==='poolco'? (ops||[]).filter(o=>has(o,'_outT')) : st.kind==='poolci'? (ops||[]).filter(o=>has(o,'_ciT')) : [];
+  const cntAll=(o,k)=> o&&o[k]? o[k].filter(t=>t>=dayStart && t<dayEnd).length : 0;
   return (stations||[]).map(st=>{
-    // POD scanning and refusal collection happen only at their own station: whoever did it that day is on the card even
-    // without an assignment
-    const auto= st.kind==='pod'? (ops||[]).filter(o=>o._podT&&o._podT.length).map(o=>o.name)
-      : st.kind==='ret'? (ops||[]).filter(o=>o._refT&&o._refT.length).map(o=>o.name) : [];
-    const people=[...new Set((rec.tables[st.name]||[]).map(canon).concat(auto))].map(name=>{
-      let sh=shiftOf(day, name, normName, today);
-      let offDay=false; if(sh&&sh.off){ if(!auto.includes(name)) return null; sh=null; offDay=true; }   // POD/refusals on a scheduled day off: the work still counts (whole day)
-      // weekends (one shift, 09–18): everything the operator did that day counts, also before 09:00 / after 18:00
-      // POD and refusals are recorded by the logged-in Delivery Platform account, not by shift: the whole day counts
-      const wholeDay= weekend || !sh || st.kind==='pod' || st.kind==='ret', a= wholeDay? dayStart : sh.a-SHIFT_SLACK, b= wholeDay? dayStart+86400000 : sh.b+SHIFT_SLACK, o=by[name];
-      const cnt=arr=> o&&arr? arr.filter(t=>t>=a && t<b).length : 0, orders=cnt(o&&o._ordT), units=cnt(o&&o._ciT), ret=cnt(o&&o._retT), map=cnt(o&&o._mpT), out=cnt(o&&o._outT), pod=cnt(o&&o._podT), ref=cnt(o&&o._refT);
+    const auto=autoOf(st).map(o=>o.name), assigned=[...new Set((rec.tables[st.name]||[]).map(canon))];
+    const people=[...new Set(assigned.concat(auto))].map(name=>{
+      const o=by[name], c={orders:cntAll(o,'_ordT'), units:cntAll(o,'_ciT'), ret:cntAll(o,'_retT'), map:cntAll(o,'_mpT'), out:cntAll(o,'_outT'), pod:cntAll(o,'_podT'), ref:cntAll(o,'_refT')};
+      const worked= metricsOf(st).some(m=>c[m]>0);
+      let sh=shiftOf(day, name, normName, today), offDay=false;
+      if(sh&&sh.off){ if(!worked) return null; sh=null; offDay=true; }   // off in the schedule but worked: the work still shows
       const state= offDay? 'done' : !sh? 'day' : now<sh.a? 'later' : now>=sh.b? 'done' : 'now';
-      return {op:name, shift: sh? sh.start+'–'+sh.end : null, start: sh? sh.a : dayStart, end: offDay? dayStart : sh? sh.b : dayStart+86400000, state, orders, units, ret, map, out, pod, ref};
-    // shift order (N1 before N2); two operators on the same shift: the one with more of this table's work first
+      return Object.assign({op:name, shift: sh? sh.start+'–'+sh.end : null, start: sh? sh.a : dayStart, end: offDay? dayStart : sh? sh.b : dayEnd, state, auto:!assigned.includes(name)}, c);
+    // shift order (N1 before N2); two operators on the same shift: the one with more of this card's work first
     }).filter(Boolean).sort((x,y)=>{ const m=metricsOf(st)[0]; return x.start-y.start || (m? (y[m]||0)-(x[m]||0) : 0); });
     people.forEach(p=>metricsOf(st).forEach(m=>{ const k=p.op+'|'+m;
-      if(claims[k] && claims[k]!==st.name){ p[m]=0; (p.countedAt=p.countedAt||{})[m]=claims[k]; } else claims[k]=st.name; }));
+      if(claims[k] && claims[k]!==st.name){ p[m]=0; (p.countedAt=p.countedAt||{})[m]=claims[k]; } else if(p[m]>0 || !st.auto) claims[k]=st.name; }));
+    const shown= st.auto? people.filter(p=>metricsOf(st).some(m=>p[m]>0)) : people;   // a pool keeps only work no other card counts
     // on top: the earliest operator still on shift (N1 stays until their shift ends); when nobody is on shift, the one who
     // finished last stays on top until the next operator starts
-    const onNow=people.filter(p=>p.state==='now'||p.state==='day');
-    const lastDone=people.filter(p=>p.state==='done').reduce((best,p)=> !best || p.end>best.end? p : best, null);   // same end: keeps the shift/work order
+    const onNow=shown.filter(p=>p.state==='now'||p.state==='day');
+    const lastDone=shown.filter(p=>p.state==='done').reduce((best,p)=> !best || p.end>best.end? p : best, null);
     const current= onNow.length? onNow[0].op : lastDone? lastDone.op : null;
-    return {name:st.name, label:st.label||null, kind:st.kind||null, co:!!st.co, ci:!!st.ci, orders:people.reduce((s,p)=>s+p.orders,0), units:people.reduce((s,p)=>s+p.units,0), ret:people.reduce((s,p)=>s+p.ret,0), map:people.reduce((s,p)=>s+p.map,0), out:people.reduce((s,p)=>s+p.out,0), pod:people.reduce((s,p)=>s+p.pod,0), ref:people.reduce((s,p)=>s+p.ref,0), weekend,
-      current, people:people.map(p=>{ const c=Object.assign({},p); delete c.start; delete c.end; return c; }), off:[...new Set((rec.tables[st.name]||[]).map(canon))].filter(n=>{ const sh=shiftOf(day,n,normName,today); return sh&&sh.off; })};
+    const sum=k=>shown.reduce((s,p)=>s+(p[k]||0),0);
+    return {name:st.name, label:st.label||null, kind:st.kind||null, auto:!!st.auto, co:!!st.co, ci:!!st.ci, orders:sum('orders'), units:sum('units'), ret:sum('ret'), map:sum('map'), out:sum('out'), pod:sum('pod'), ref:sum('ref'),
+      current, people:shown.map(p=>{ const c=Object.assign({},p); delete c.start; delete c.end; return c; }),
+      off:assigned.filter(n=>{ const sh=shiftOf(day,n,normName,today); return sh&&sh.off && !shown.some(p=>p.op===n); })};
   });
 }
 
