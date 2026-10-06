@@ -187,7 +187,7 @@ function drawStations(){
   document.querySelectorAll('.stcard:not([data-auto])').forEach(el=>el.onclick=()=>openStation(el.dataset.st));
   if(D.scheduleLoaded===false) $('#stcards').insertAdjacentHTML('beforeend','<div class="note">Orari i punës për sot nuk u gjet — operatorët numërohen për gjithë ditën.</div>');
 }
-let d1Ops=[];
+let d1Ops=[], d1Start=[];
 function shiftTxt(n){ const sh=(D.shifts||{})[n]; return sh? (sh==='pushim'? 'pushim' : sh) : 'pa orar'; }
 function d1Draw(){
   const fn=firstNames();
@@ -201,12 +201,12 @@ function d1Draw(){
 function openStation(st){
   $('#d1Title').textContent=stTitle(st)+(D.past? ' · për datën '+dmy(D.date)+'.'+D.date.slice(0,4) : ' · sot'); $('#dlg1').dataset.st=st;
   const eff=(D.assign&&D.assign.effective)||{}, shown=((D.cards||[]).find(c=>c.name===st)||{}).people||[];
-  d1Ops=[...new Set((eff[st]||((D.assign&&D.assign.tables)||{})[st]||[]).filter(n=>shown.some(p=>p.op===n)))]; d1Draw(); $('#dlg1').showModal();
+  d1Ops=[...new Set((eff[st]||((D.assign&&D.assign.tables)||{})[st]||[]).filter(n=>shown.some(p=>p.op===n)))]; d1Start=d1Ops.slice(); d1Draw(); $('#dlg1').showModal();
 }
 $('#d1AddBtn').onclick=()=>{ const v=$('#d1Add').value; if(v && !d1Ops.includes(v)){ d1Ops.push(v); d1Draw(); } };
 $('#d1Cancel').onclick=()=>$('#dlg1').close();
 $('#d1Save').onclick=async()=>{ const st=$('#dlg1').dataset.st;
-  try{ await fetch('/tabela/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:st, ops:d1Ops, date:D.past? D.date : undefined})}); }catch(e){}
+  try{ await fetch('/tabela/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:st, ops:d1Ops, removed:d1Start.filter(n=>!d1Ops.includes(n)), date:D.past? D.date : undefined})}); }catch(e){}
   $('#dlg1').close(); load(false); };
 $('#btnRefresh').onclick=()=>load(true);
 $('#btnFull').onclick=()=>{ const el=document.documentElement; if(document.fullscreenElement) document.exitFullscreen(); else if(el.requestFullscreen) el.requestFullscreen(); };

@@ -107,6 +107,9 @@ function saveAssign(appDir, body, stations, today){
   // which tables were set by hand on which day: fixed for that day (see autoPlace); before this, the whole day's snapshot
   if(!rec.edits){ rec.edits={}; Object.keys(rec.history).forEach(d=>{ if(d!==date) rec.edits[d]=Object.keys(rec.history[d]); }); }
   const e=rec.edits[date]||(rec.edits[date]=[]); if(!e.includes(body.station)) e.push(body.station);
+  const rm=[...new Set((Array.isArray(body.removed)? body.removed : []).map(o=>String(o||'').trim().slice(0,80)).filter(o=>o && !ops.includes(o)))].slice(0,10);
+  rec.removed=rec.removed||{}; const rd=rec.removed[date]||(rec.removed[date]={}); rd[body.station]=[...new Set((rd[body.station]||[]).filter(o=>!ops.includes(o)).concat(rm))];
+  const rk=Object.keys(rec.removed).sort().slice(-60), r2={}; rk.forEach(d=>r2[d]=rec.removed[d]); rec.removed=r2;
   const ek=Object.keys(rec.edits).sort().slice(-400), e2={}; ek.forEach(d=>e2[d]=rec.edits[d]); rec.edits=e2;
   rec.updatedAt=new Date().toISOString();
   fs.mkdirSync(path.dirname(assignFile(appDir)),{recursive:true}); fs.writeFileSync(assignFile(appDir), JSON.stringify(rec,null,2));
@@ -121,7 +124,8 @@ function saveAssign(appDir, body, stations, today){
      overlap over 15 min with another operator there — N1 then N2 share a table), trying in turn: the table they got earlier
      today (stable during the day), their tables on the board from the last saved assignment, their usual table (the most
      frequent one over the last 30 days of placements), then the other tables in order;
-   - a table set on the board FOR THAT DAY (dialog) is fixed and wins; a correction is also remembered as the operator's
+   - a correction on the board FOR THAT DAY (dialog) pins the people listed there and wins; those removed from a table are not
+     put back on it that day; others may still join it automatically. A correction is also remembered as the operator's
      table for the next days. Who finds no free table stays in the pool "pa tavolinë".
    Tavolina 5 (check-in & check-out together, not in use now) gets nobody automatically. Placements are kept by day in
    data/tabela-auto.json (this agent is the only writer). */
@@ -150,17 +154,23 @@ function autoPlace(stations, ops, rec, date, appDir, canon, persist){
   Object.entries(tables).forEach(([st,list])=>{ const k=kindByName[st]; if(k) list.forEach(op=>{ if(S[op]) occOf(st).push({op, ses:S[op][k]}); }); });
   const fixedOps={co:new Set(), ci:new Set()}; Object.entries(tables).forEach(([st,list])=>{ const k=kindByName[st]; if(k) list.forEach(op=>fixedOps[k].add(op)); });
   const cand=[]; (ops||[]).forEach(o=>['co','ci'].forEach(k=>{ const s=S[o.name]; if(!fixedOps[k].has(o.name) && s['n'+k]>=AUTO_MIN[k] && T[k].length) cand.push({op:o.name, k, ses:s[k], n:s['n'+k], first:s[k][0][0]}); }));
-  // a table set by hand for the day holds exactly its people: nobody is added to it automatically
-  const free=(st,c)=>!fixedSt.has(st) && !occOf(st).some(x=>x.op!==c.op && clash(x.ses, c.ses));
+  // a correction pins the people listed on that table; the others still come automatically, except those removed from it that day
+  const removed=(rec.removed&&rec.removed[date])||{};
+  const free=(st,c)=>!(removed[st]||[]).map(canon).includes(c.op) && !occOf(st).some(x=>x.op!==c.op && clash(x.ses, c.ses));
   const take=(c,st)=>{ occOf(st).push({op:c.op, ses:c.ses}); put(st, c.op, 'auto'); c.done=true; };
-  // pass 1 — own table: the table on the board, the one got earlier today, the usual one; the one with more work that day
+  const own=c=>{ const key=c.op+'|'+c.k, carriedSt=T[c.k].filter(st=>(carried[st]||[]).map(canon).includes(c.op));
+    return [...new Set([...carriedSt, ...Object.entries(usual[key]||{}).sort((a,b)=>b[1]-a[1]).map(e=>e[0])])].filter(st=>T[c.k].includes(st)); };
+  const byWork=cand.slice().sort((a,b)=>b.n-a.n);
+  // pass 1 — own table (on the board at the last correction, or the usual one over 30 days); the one with more work that day
   // goes first, so a short help at someone else's table does not push its regular operator away
-  cand.slice().sort((a,b)=>b.n-a.n).forEach(c=>{
-    const key=c.op+'|'+c.k, carriedSt=T[c.k].filter(st=>(carried[st]||[]).map(canon).includes(c.op));
-    const us=Object.entries(usual[key]||{}).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
-    const st=[...new Set([...carriedSt, todayAuto[key], ...us])].find(s=>s && T[c.k].includes(s) && free(s,c)); if(st) take(c,st); });
-  // pass 2 — the others, in order of their first scan: the first free table of the right kind
-  cand.filter(c=>!c.done).sort((a,b)=>a.first-b.first).forEach(c=>{ const st=T[c.k].find(s=>free(s,c)); if(st) take(c,st); });   // none free → pool
+  byWork.forEach(c=>{ const st=own(c).find(s=>free(s,c)); if(st) take(c,st); });
+  // pass 2 — the table got earlier today (keeps a newcomer where they were), never before anyone's own table
+  byWork.forEach(c=>{ if(c.done) return; const st=todayAuto[c.op+'|'+c.k]; if(st && T[c.k].includes(st) && free(st,c)) take(c,st); });
+  // pass 3 — the others, in order of their first scan: the first free table, those whose regular operators are not working
+  // in this process today first (so a newcomer does not sit at a colleague's usual table)
+  const claimed={co:new Set(), ci:new Set()}; Object.keys(S).forEach(op=>['co','ci'].forEach(k=>{ if(S[op]['n'+k]) own({op,k}).forEach(st=>claimed[k].add(st)); }));
+  cand.filter(c=>!c.done).sort((a,b)=>a.first-b.first).forEach(c=>{ const tl=T[c.k].filter(s=>!claimed[c.k].has(s)).concat(T[c.k].filter(s=>claimed[c.k].has(s)));
+    const st=tl.find(s=>free(s,c)); if(st) take(c,st); });   // none free → pool
   if(persist){   // the day's placements (automatic and by hand) — the memory for "usual table"
     const day={}; Object.entries(tables).forEach(([st,list])=>{ const k=kindByName[st]; if(k) list.forEach(op=>{ if(S[op] && S[op]['n'+k]) day[op+'|'+k]=st; }); });
     if(JSON.stringify(day)!==JSON.stringify(A.days[date]||{})){ A.days[date]=day; const keep=Object.keys(A.days).sort().slice(-120), d2={}; keep.forEach(d=>d2[d]=A.days[d]); A.days=d2;
