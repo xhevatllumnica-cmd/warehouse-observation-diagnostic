@@ -131,7 +131,7 @@ function draw(){
   const H=now.getHours(), hrs=[]; for(let h=7; h<=Math.max(H,15) && h<=22; h++) hrs.push(h);
   const byName={}; ops.forEach(o=>byName[o.name]=o);
   const A={}; (D.cards||[]).forEach(c=>{ if(c.current) A[c.name]=c.current; });
-  const used=new Set(Object.values((D.assign&&D.assign.tables)||{}).flat());
+  const used=new Set((D.cards||[]).flatMap(c=>(c.people||[]).map(p=>p.op)));
   const spark=(o,key)=>{ const m=(o&&o[key])||{}, mx=Math.max(1,...hrs.map(h=>m[h]||0)); return `<div class="hours">${hrs.map(h=>`<i class="${h===H?'now':''}" style="height:${Math.max(2,Math.round((m[h]||0)/mx*28))}px" title="${h}:00 — ${m[h]||0}"></i>`).join('')}</div>`; };
   /* a station shows orders (check-out) or units (check-in); a mixed station shows whichever the operator did */
   const row=(label,name,st)=>{ const o=name? byName[name] : null; if(name) used.add(name);
@@ -140,10 +140,10 @@ function draw(){
     const [tot,unit,rate,m]= st.kind==='pod'? [o.pod||0,'POD',null,o.podByHour||{}] : st.kind==='map'? [o.mp||0,'njësi',o.mpRate,o.mpByHour||{}] : st.kind==='ret'? [o.ref||0,'refuzime',null,o.refByHour||{}] : co? [o.orders,'porosi',o.coRate,o.byHour||{}] : [o.ci,'njësi',o.ciRate,o.ciByHour||{}];
     return `<tr><td><span class="st">${esc(label)}</span></td><td>${esc(o.name)}</td><td class="num"><b>${tot}</b> <span class="faint" style="font-size:.6em">${unit}</span></td><td class="num">${fmt(rate)}</td><td class="num">${m[H]||0}</td><td class="num">${m[H-1]||0}</td><td>${spark(o, st.kind==='pod'?'podByHour':st.kind==='map'?'mpByHour':st.kind==='ret'?'refByHour':co?'byHour':'ciByHour')}</td></tr>`; };
   let html=`<thead><tr><th>Tavolina</th><th>Operatori</th><th class="num">Sot</th><th class="num">Në orë aktive</th><th class="num">Kjo orë</th><th class="num">Ora e kaluar</th><th>${hrs[0]}:00 → tani</th></tr></thead><tbody>`;
-  const free=[]; (D.stations||[]).forEach(s=>{ if(A[s.name]) html+=row(stLabel(s.name), A[s.name], s); else free.push(stLabel(s.name)); });
+  const free=[]; (D.stations||[]).forEach(s=>{ if(A[s.name]) html+=row(stLabel(s.name), A[s.name], s); else if(!s.auto) free.push(stLabel(s.name)); });   // the pools are not tables
   const rest=ops.filter(o=>!used.has(o.name) && (o.orders>0 || o.ci>0)).sort((a,b)=>b.orders-a.orders || b.ci-a.ci);
-  if(rest.length){ html+=`<tr><td colspan="7" class="faint" style="font-size:13px;padding-top:14px">AKTIVË PA TAVOLINË TË CAKTUAR</td></tr>`; rest.forEach(o=>{ html+=row('—', o.name, {co:o.orders>0, ci:!(o.orders>0)}); }); }
-  if(free.length) html+=`<tr><td colspan="7" class="faint" style="font-size:13px;white-space:normal">TAVOLINA TË LIRA (pa operator të caktuar): ${free.map(esc).join(' · ')}</td></tr>`;
+  if(rest.length){ html+=`<tr class="ts-section"><td colspan="7" class="faint" style="font-size:13px;padding-top:14px">AKTIVË PA TAVOLINË</td></tr>`; rest.forEach(o=>{ html+=row('—', o.name, {co:o.orders>0, ci:!(o.orders>0)}); }); }
+  if(free.length) html+=`<tr><td colspan="7" class="faint" style="font-size:13px;white-space:normal">TAVOLINA TË LIRA (askush sot): ${free.map(esc).join(' · ')}</td></tr>`;
   $('#tbl').innerHTML=html+'</tbody>';
   $('#note').innerHTML=`Live nga WMS: ${hm(L.at)}${L.lastScan? ' (skanimi i fundit '+hm(L.lastScan)+')' : ''}${L.reliable===false? ' · <b>log-u i sotëm u lexua jo i plotë</b>' : ''} · Carryover dhe porositë e gatshme: ${C.gen? C.gen.slice(11,16) : '—'} (databaza, çdo orë).
     Porosi = porosi me check-out (Checked out + Ready for delivery), si te Statistikat e WH; "në orë aktive" = porosi ÷ orët me të paktën një skanim. Tavolinat caktohen këtu — WMS nuk e regjistron tavolinën e operatorit.`;
@@ -220,5 +220,6 @@ $('#btnToday').onclick=()=>setDate('');
 syncPicker();
 load(false); setInterval(()=>{ if(!selDate()) load(false); }, 120000);   // a past day does not change — no auto-refresh
 </script>
+<script src="/table-sort.js?v=3"></script>
 </body>
 </html>
