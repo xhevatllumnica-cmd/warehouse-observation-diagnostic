@@ -972,6 +972,8 @@ async function fetchRefusalScans(iso){
    (cash and POS are paid on delivery, so "not paid" is normal for them). Order numbers only — no customer data. */
 const POD_PENDING_DAYS=Number(cfg.podPendingDays||7), POD_WAIT='Duke pritur për dërgim', POD_AGE_LBL=['0–1 ditë','2–3 ditë','> 3 ditë'];
 const POD_POST_ORDER=[/^beki/i, /^express/i, /^fiks/i, /^merre/i, /^starlink/i, /^boxes/i, /^pick ?up ?point/i];   // Beki, Express, Fiks, Merre vet, Starlink, Boxes, PickUpPoint
+// short payment name for the lists: no bank / provider detail — "CreditCard (Online payment NLB)" → "CreditCard", "POS ProCreditBank" → "POS"
+function podPayLabel(pm){ const s=String(pm||'').replace(/\s*\([^)]*\)/g,'').trim(); return /^pos\b/i.test(s)? 'POS' : s; }
 function podPayGroup(pm){ const s=String(pm||''); if(!s) return 'Pa metodë'; if(/bank transfer/i.test(s)) return 'Bank transfer'; if(/^cash/i.test(s)) return 'Cash';
   if(/^pos/i.test(s)) return 'POS'; if(/credit|card|online/i.test(s)) return 'Kartë / online'; return s; }
 let podPendingCache=null, podPendingBusy=null;
@@ -991,7 +993,7 @@ async function podPending(force){
       P.total++; P.pay[pg]=(P.pay[pg]||0)+1; P.age[ab]=(P.age[ab]||0)+1; P.matrix[pg+'|'+ab]=(P.matrix[pg+'|'+ab]||0)+1;
       if(a!=null && a>3){ const fixed=!!(x.hasShippingDate||x.shippingDate), bank=pg==='Bank transfer', unpaid=!x.isPaid && pg==='Kartë / online';
         if(fixed) P.excluded.fixed++; else if(bank) P.excluded.bank++; else if(unpaid) P.excluded.unpaid++;
-        else{ P.old++; P.oldList.push({id:x.orderId, pf:x.platform||'', days:Math.floor(a), pay:x.paymentMethod||'', created:String(x.createDateTime||'').slice(0,10), dd:x.dd}); } } });
+        else{ P.old++; P.oldList.push({id:x.orderId, pf:x.platform||'', days:Math.floor(a), pay:podPayLabel(x.paymentMethod), created:String(x.createDateTime||'').slice(0,10), dd:x.dd}); } } });
     // the list of orders over 3 days: newest first (the warehouse lead, 06.10.2026); same age → the later created first
     Object.values(posts).forEach(P=>P.oldList.sort((a,b)=>a.days-b.days || String(b.created).localeCompare(String(a.created))));
     // today's POD operator = the account with the latest POD scan (Delivery Platform, Accept Delivery)

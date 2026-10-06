@@ -109,7 +109,7 @@ function drawPod(){
       ${rows.slice(0,400).map(x=>`<tr><td><b>${h(x.orderId)}</b><div class="small faint">${h(x.platform||'')}${x.type&&x.type!=='Outbound'?' · '+h(x.type):''}</div></td>
         <td class="small">${h(x.driverName||'—')}</td><td class="small">#${h(x.deliveryId)}</td>
         <td class="small"><span style="color:${stColor(x)};font-weight:600">${h(x.deliveryItemStatus||'—')}</span></td><td class="small">${h(x.orderStatus||'—')}</td>
-        <td class="small">${podWhen(x.insertedInPodDate)}</td><td class="small">${podWhen(x.deliveredDate)}</td><td class="small">${h(x.paymentMethod||'—')}</td>
+        <td class="small">${podWhen(x.insertedInPodDate)}</td><td class="small">${podWhen(x.deliveredDate)}</td><td class="small">${h(podPayLabelC(x.paymentMethod)||'—')}</td>
         <td class="small">${podMoney(x.price)}${isCash(x)&&isDelivered(x)?' / '+podMoney(podCollected(x)):''}</td>
         <td class="small">${x.packagesTotal? (x.packagesScanned??'—')+' / '+x.packagesTotal : (x.packages||'—')}</td><td class="small">${h(x.city||'—')}</td>
         <td>${x.flags.length? `<span class="badge ${x.flags.some(f=>f[0]==='crit')?'b-crit':'b-warn'}" title="${h(x.flags.map(f=>f[1]).join(' · '))}">${h(x.flags[0][1])}${x.flags.length>1?' +'+(x.flags.length-1):''}</span>` : '<span class="faint">—</span>'}</td></tr>`).join('')}
@@ -131,6 +131,8 @@ function drawPod(){
 const POD_PAY_ORDER=['Cash','POS','Kartë / online','Bank transfer','Pa metodë'];
 const POD_POST_COLORS=[[/^beki/i,'#e67e22'],[/^express/i,'#115b92'],[/^fiks/i,'#1e8449'],[/^merre/i,'#8e44ad'],[/^starlink/i,'#0e8c95'],[/^boxes/i,'#b7950b'],[/^pick ?up ?point/i,'#c0392b']];
 const podPostColor=(name,i)=>{ const m=POD_POST_COLORS.find(([re])=>re.test(name||'')); return m? m[1] : ['#5d6d7e','#a04000','#2471a3','#7d3c98'][i%4]; };
+// short payment name, as on the agent: "CreditCard (Online payment NLB)" → "CreditCard", "POS ProCreditBank" → "POS"
+const podPayLabelC=pm=>{ const s=String(pm||'').replace(/\s*\([^)]*\)/g,'').trim(); return /^pos\b/i.test(s)? 'POS' : s; };
 const podPayGroupC=pm=>{ const s=String(pm||''); if(!s) return 'Pa metodë'; if(/bank transfer/i.test(s)) return 'Bank transfer'; if(/^cash/i.test(s)) return 'Cash'; if(/^pos/i.test(s)) return 'POS'; if(/credit|card|online/i.test(s)) return 'Kartë / online'; return s; };
 async function loadPodPosts(force){
   const box=$('#podBody'); if(!box) return;
