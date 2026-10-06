@@ -992,7 +992,8 @@ async function podPending(force){
       if(a!=null && a>3){ const fixed=!!(x.hasShippingDate||x.shippingDate), bank=pg==='Bank transfer', unpaid=!x.isPaid && pg==='Kartë / online';
         if(fixed) P.excluded.fixed++; else if(bank) P.excluded.bank++; else if(unpaid) P.excluded.unpaid++;
         else{ P.old++; P.oldList.push({id:x.orderId, pf:x.platform||'', days:Math.floor(a), pay:x.paymentMethod||'', created:String(x.createDateTime||'').slice(0,10), dd:x.dd}); } } });
-    Object.values(posts).forEach(P=>P.oldList.sort((a,b)=>b.days-a.days));
+    // the list of orders over 3 days: newest first (the warehouse lead, 06.10.2026); same age → the later created first
+    Object.values(posts).forEach(P=>P.oldList.sort((a,b)=>a.days-b.days || String(b.created).localeCompare(String(a.created))));
     // today's POD operator = the account with the latest POD scan (Delivery Platform, Accept Delivery)
     let operator=null; try{ const s=await fetchPodScans(today); if(s.rows&&s.rows.length) operator=s.rows.reduce((b,r)=>!b||r.t>b.t? r : b, null).scanner||null; }catch(e){}
     // fixed order of the couriers set by the warehouse lead (06.10.2026), whatever their numbers; any other courier after them
@@ -1016,7 +1017,7 @@ function podChatText(v, mark){
     +(v.operator? 'Për: *'+v.operator+'* (po bën POD sot)\n' : '')
     +'\nNë pritje gjithsej: *'+v.total+'* · 🔴 mbi 3 ditë: *'+v.old+'*\n\n'
     +v.posts.map(P=>'• *'+P.name+'*: '+P.total+' në pritje'+(P.old? ' · 🔴 *'+P.old+' mbi 3 ditë*' : '')+'\n   '+payTxt(P)
-      +(P.old? '\n   më të vjetrat: '+P.oldList.slice(0,5).map(o=>'#'+o.id+' ('+o.days+' ditë)').join(', ') : '')).join('\n')
+      +(P.old? '\n   më të vjetrat: '+P.oldList.slice().sort((a,b)=>b.days-a.days).slice(0,5).map(o=>'#'+o.id+' ('+o.days+' ditë)').join(', ') : '')).join('\n')
     +'\n\n_Mbi 3 ditë nuk përfshihen: me datë fikse, me bank transfer, me pagesë online ende të papaguar._'
     +(v.error? '\n\n⚠ Disa ditë nuk u lexuan nga Delivery Platform ('+v.error+').' : '');
 }
