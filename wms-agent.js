@@ -1290,7 +1290,7 @@ http.createServer(async (req,resp)=>{
         return resp.end(buf); }
       return send(404,{error:'not found'});
     }
-    if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, Object.assign(shiftSchedule.summary(), {appUrl:scheduleAppUrl()})); }
+    if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, Object.assign(shiftSchedule.summary(), {appUrl:scheduleAppUrl(), aliases:STAFF_ALIASES})); }   // aliases: two WMS accounts of one person → the schedule name
     if(q.pathname==='/schedule/sync' && req.method==='POST'){
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
       const r=await scheduleSync(); return json(r.ok?200:502, Object.assign(r, {summary:shiftSchedule.summary()}));

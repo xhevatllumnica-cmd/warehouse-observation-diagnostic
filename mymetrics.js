@@ -28,7 +28,7 @@ async function loadMyMetrics(force){
   const draw=()=>{ if(seq===mmSeq) drawMyMetrics(); };
   const yd=mmIso(-1);
   // the pulse first (fast); the live sources fill in as they arrive (POD after an agent restart takes ~3 minutes)
-  if(!mmSrc.P) mmSrc.P=await get('/pulse/data'); draw();
+  if(!mmSrc.P || !mmSrc.SCH){ const [p,s]=await Promise.all([mmSrc.P||get('/pulse/data'), mmSrc.SCH||get('/schedule')]); mmSrc.P=p; mmSrc.SCH=s; } draw();
   const jobs=[['T','/tabela/data'], ['PP','/pod/pending'], ['POD','/delivery/pod?date='+yd]].filter(([k])=>!mmSrc[k]);
   jobs.forEach(([k,u])=>get(u).then(j=>{ mmSrc[k]=j; draw(); }));
 }
@@ -130,23 +130,42 @@ function mmSections(){
 
   // ---------------------------------------------------------------- 4. Njerëzit dhe produktiviteti
   const s4=[];
+  // people metrics count only the warehouse operators on the list of "Orari i punës" (the lead, 07.10.2026); the two WMS
+  // accounts of one person count as one (aliases). Work per person and day: pulse block I (opsDay, by WMS user → name).
+  const SCH=mmSrc.SCH&&!mmSrc.SCH.error&&mmSrc.SCH.names? mmSrc.SCH : null;
+  const nn=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+  const staff=new Map(((SCH&&SCH.names)||[]).map(n=>[nn(n),n])), alias={}; Object.entries((SCH&&SCH.aliases)||{}).forEach(([k,v])=>alias[nn(k)]=v);
   const meta={}; ((C&&C.opsMeta)||[]).forEach(m=>meta[m.u]=m);
-  if(K&&D&&D.week) s4.push({n:'Ops të peshuara për ditë pune', why:'1.0 × check-out + 0.8 × check-in + 0.6 × map, për punëtor aktiv.', cad:'J', go:'pulse',
-    v:mmN(K.avg,0), s:`mesatarja · devijimi ${mmN(K.sd,0)} · 7 ditë: ${mmN(D.week.reduce((s,r)=>s+r[5],0),0)} ops nga ${D.week.length} punëtorë`, lvl:'info'});
-  if(D&&D.bands){ const cnt=b=>D.bands.filter(r=>r[3]===b && (b==='Spike' || r[2]>=5)), who=r=>String(r[0]).split('@')[0];   // ≥ 5 active days: a few days are no basis for a band
-    s4.push({n:'Bandat e performancës (30 ditë)', why:'Mbi normë > 125% e mesatares · nën normë < 75% · spike > mesatarja + 2σ (kontrollo nëse është i vërtetë). Numërohen ata me të paktën 5 ditë aktive.', cad:'J', go:'pulse',
-      v:`${cnt('Below').length} nën normë`, s:`mbi normë ${cnt('Above').length} · spike ${cnt('Spike').length}${cnt('Spike').length? ' ('+cnt('Spike').map(who).join(', ')+')' : ''}${cnt('Below').length? ' · nën: '+cnt('Below').slice(0,6).map(who).join(', ') : ''}`,
-      lvl: cnt('Below').length? 'warn' : 'ok'}); }
-  if(C&&C.opsDay){
-    const per=(from,to)=>{ const m={}; C.opsDay.forEach(r=>{ if(r.d<from||r.d>to) return; const o=m[r.u]||(m[r.u]={w:0,days:0}); o.w+=wops(r); o.days++; }); return m; };
-    const a=per(mmIso(-7),yd), b=per(mmIso(-14),mmIso(-8));
-    const drop=Object.keys(a).filter(u=>b[u] && a[u].days>=3 && b[u].days>=3 && !(meta[u]||{}).tmp).map(u=>({u, ch:(a[u].w/a[u].days)/(b[u].w/b[u].days)*100-100})).filter(x=>x.ch<=-15).sort((x,y)=>x.ch-y.ch);
-    s4.push({n:'Rënie ≥ 15% javë pas jave', why:'Ops të peshuara për ditë pune: 7 ditët e fundit kundrejt 7 ditëve para (min. 3 ditë pune në secilën).', cad:'J', go:'capacity',
-      v:`${drop.length}`, s: drop.length? drop.slice(0,6).map(x=>`${h((meta[x.u]||{}).n||x.u)} ${mmN(x.ch,0)}%`).join(' · ') : 'askush', lvl: drop.length? 'warn' : 'ok'});
-    const co={}; C.opsDay.forEach(r=>{ if(r.d<mmIso(-7)||r.d>yd) return; co[r.u]=(co[r.u]||0)+(+r.co||0); });
-    const tot=Object.values(co).reduce((s,n)=>s+n,0), top=Object.entries(co).sort((x,y)=>y[1]-x[1]).slice(0,3), share=tot? top.reduce((s,x)=>s+x[1],0)/tot*100 : null;
+  const whName=u=>{ const n=(meta[u]||{}).n; if(!n) return null; return staff.get(nn(alias[nn(n)]||n))||null; };
+  const whDays=(from,to)=>{ const m={}; ((C&&C.opsDay)||[]).forEach(r=>{ if(r.d<from||r.d>to) return; const n=whName(r.u); if(!n) return;
+      const o=m[n]||(m[n]={n, w:0, co:0, dates:new Set()}); o.w+=wops(r); o.co+=(+r.co||0); o.dates.add(r.d); });
+    Object.values(m).forEach(o=>{ o.days=o.dates.size; o.pd=o.days? o.w/o.days : 0; }); return m; };
+  if(!staff.size || !(C&&C.opsDay)) s4.push({n:'Bandat e performancës (30 ditë)', cad:'J', go:'capacity', v:'—', s: mmSrc.SCH? 'lista e Orarit të punës nuk u lexua' : 'po lexohet lista e Orarit të punës…', lvl:'na'});
+  else {
+    const m30=whDays(mmIso(-30), yd), act=Object.values(m30).filter(o=>o.days>=5);
+    const avg=act.length? act.reduce((s,o)=>s+o.pd,0)/act.length : 0, sd=act.length? Math.sqrt(act.reduce((s,o)=>s+(o.pd-avg)**2,0)/act.length) : 0;
+    const band=o=> o.days<5? 'few' : o.pd>avg+2*sd? 'Spike' : o.pd>avg*1.25? 'Above' : o.pd<avg*0.75? 'Below' : 'Normal';
+    const BL={Spike:['Spike','var(--accent)'], Above:['Mbi normë','var(--ok)'], Normal:['Normale','var(--muted)'], Below:['Nën normë','var(--crit)'], few:['< 5 ditë','var(--faint)']};
+    const list=[...staff.values()].map(n=>m30[n]||{n, pd:0, days:0}).sort((a,b)=>((b.days>=5)-(a.days>=5)) || b.pd-a.pd), cnt=b=>list.filter(o=>band(o)===b).length;
+    s4.push({n:'Ops të peshuara për ditë pune', why:'1.0 × check-out + 0.8 × check-in + 0.6 × map, për ditë pune.', cad:'J', go:'capacity',
+      v:mmN(avg,0), s:`mesatarja e ${act.length} operatorëve të WH (lista te Orari i punës) me ≥ 5 ditë pune në 30 ditë · devijimi ${mmN(sd,0)}`, lvl:'info'});
+    s4.push({n:'Bandat e performancës (30 ditë)', why:'Vetëm operatorët e WH sipas listës te Orari i punës, me të paktën 5 ditë pune. Mbi normë > 125% e mesatares · nën normë < 75% · spike > mesatarja + 2σ (kontrollo nëse është i vërtetë). Numërohen vetëm skanimet në WMS: puna në POD dhe refuzime (Delivery Platform) nuk hyn këtu — kush punon kryesisht aty del më i ulët.', cad:'J', go:'capacity',
+      v:`${cnt('Below')} nën normë`, s:`mbi normë ${cnt('Above')} · normale ${cnt('Normal')} · spike ${cnt('Spike')} · me < 5 ditë ${cnt('few')} · mesatarja ${mmN(avg,0)} ops/ditë`,
+      list:list.map(o=>{ const b=band(o), L=BL[b];
+        return `<div style="display:flex;gap:10px;align-items:baseline;padding:3px 0;border-bottom:1px dashed var(--line)"><span style="flex:1;min-width:0">${h(o.n)}</span>
+          <span style="font-variant-numeric:tabular-nums;white-space:nowrap">${o.days? mmN(o.pd,0)+' ops/ditë' : 'pa punë'}</span>
+          <span class="faint" style="width:64px;text-align:right;white-space:nowrap">${b!=='few'&&avg? (o.pd>=avg?'+':'')+mmN((o.pd/avg-1)*100,0)+'%' : o.days+' ditë'}</span>
+          <b style="width:80px;text-align:right;color:${L[1]};white-space:nowrap">${L[0]}</b></div>`; }).join(''),
+      lvl: cnt('Below')? 'warn' : 'ok'});
+    const a=whDays(mmIso(-7),yd), b=whDays(mmIso(-14),mmIso(-8));
+    const drop=Object.values(a).filter(o=>b[o.n] && o.days>=3 && b[o.n].days>=3).map(o=>({n:o.n, ch:o.pd/b[o.n].pd*100-100})).filter(x=>x.ch<=-15).sort((x,y)=>x.ch-y.ch);
+    s4.push({n:'Rënie ≥ 15% javë pas jave', why:'Ops të peshuara për ditë pune: 7 ditët e fundit kundrejt 7 ditëve para (min. 3 ditë pune në secilën), operatorët e WH.', cad:'J', go:'capacity',
+      v:`${drop.length}`, s: drop.length? drop.slice(0,6).map(x=>`${h(x.n)} ${mmN(x.ch,0)}%`).join(' · ') : 'askush', lvl: drop.length? 'warn' : 'ok'});
+    const tot=Object.values(a).reduce((s,o)=>s+o.co,0), top=Object.values(a).sort((x,y)=>y.co-x.co).slice(0,3), share=tot? top.reduce((s,o)=>s+o.co,0)/tot*100 : null;
     s4.push({n:'Shpërndarja e check-out-it (top 3)', why:'Nëse 2–3 persona bëjnë shumicën e check-out-eve, depo varet prej tyre. Alarm: mbi 60%.', cad:'J', go:'capacity',
-      v:`${mmN(share,0)}%`, s:top.map(([u,n])=>`${h((meta[u]||{}).n||u)} ${mmN(n/tot*100,0)}%`).join(' · ')+' · 7 ditë', lvl:mmLvl(share,60,75)});
+      v:`${mmN(share,0)}%`, s:top.map(o=>`${h(o.n)} ${mmN(o.co/tot*100,0)}%`).join(' · ')+' · 7 ditë, operatorët e WH', lvl:mmLvl(share,60,75)});
+  }
+  if(C&&C.opsDay){
     const all=C.opsDay.filter(r=>r.d>=mmIso(-7)&&r.d<=yd), tw=all.filter(r=>(meta[r.u]||{}).tmp).reduce((s,r)=>s+wops(r),0), aw=all.reduce((s,r)=>s+wops(r),0);
     const other=T&&!T.error&&T.live&&T.live.pod? T.live.pod.otherAccounts : null;
     s4.push({n:'Llogari të përbashkëta / jashtë stafit', why:'Llogaritë temp@… dhe skanimet me llogari jashtë listës së stafit fshehin kush e bën punën.', cad:'J', go:'tabela',
@@ -243,7 +262,8 @@ function drawMyMetrics(){
               <span class="small faint" title="${h(MM_CAD[r.cad]||'')}">${h(MM_CAD[r.cad]||'')}</span>
               ${r.go? `<a href="#${h(r.go)}" class="small" style="margin-left:auto;white-space:nowrap">detajet →</a>` : ''}</div>
             <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-top:2px"><span style="font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;color:${col[r.lvl]||'inherit'}">${r.v}</span><span class="small">${r.s||''}</span></div>
-            ${r.why? `<div class="small faint" style="margin-top:2px">${h(r.why)}</div>` : ''}</div></div>`).join('')}</div>`; }).join('')}</div>
+            ${r.list? `<div class="small" style="margin-top:6px">${r.list}</div>` : ''}
+            ${r.why? `<div class="small faint" style="margin-top:4px">${h(r.why)}</div>` : ''}</div></div>`).join('')}</div>`; }).join('')}</div>
     <div class="hint" style="margin-top:10px">Ritmi: <b>çdo ditë</b> backlog-u sipas moshës, porositë e hapura, carryover-i, njësitë pa map dhe POD-i · <b>çdo javë</b> mediana dhe p90 porosi → check-out, bandat e produktivitetit, mungesat në inventar · <b>çdo muaj</b> kostoja për porosi, diferencat e stokut dhe transportuesit. Pragjet janë pikënisje: kalibroji pas 2–4 javësh sipas ditës normale të depos. Burimet: WMS Pulse (baza e WMS-it, rifreskim çdo orë / çdo ditë), Tabela ditore (live), Delivery Platform (live).</div>`;
   $$('[data-mmc]').forEach(b=>b.onclick=()=>{ mmCad=b.dataset.mmc; drawMyMetrics(); });
 }

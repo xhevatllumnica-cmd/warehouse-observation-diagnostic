@@ -105,7 +105,7 @@ module.exports=function makeSchedule(d){
     if(!data||!data.days) return {loaded:false};
     const dates=Object.keys(data.days).sort(); const ops=new Set(); dates.forEach(x=>Object.keys(data.days[x]).forEach(n=>ops.add(n)));
     const hours={}; dates.forEach(x=>Object.values(data.days[x]).forEach(s=>{ if(!s.off){ const k=s.start+'–'+s.end; hours[k]=(hours[k]||0)+1; } }));
-    return {loaded:true, from:dates[0], to:dates[dates.length-1], days:dates.length, operators:ops.size, slots:hours, importedAt:data.importedAt, lastFile:data.lastFile,
+    return {loaded:true, from:dates[0], to:dates[dates.length-1], days:dates.length, operators:ops.size, names:[...ops].sort(), slots:hours, importedAt:data.importedAt, lastFile:data.lastFile,
       source:data.source||'excel', lastSync:data.lastSync||null, syncError:data.syncError||null, syncUnmapped:data.syncUnmapped||[]};
   }
   const forDay=iso=> (data && data.days && data.days[iso]) || null;
