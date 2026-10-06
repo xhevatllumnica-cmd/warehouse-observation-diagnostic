@@ -14,7 +14,7 @@ const DIR=__dirname, RAW=path.join(DIR,'raw'), GROUPS=['A','B','C','D','E'], OPT
 const args=process.argv.slice(2), flag=f=>args.includes(f), opt=(f,d)=>{ const i=args.indexOf(f); return i>=0? args[i+1] : d; };
 
 function fromTranscripts(maxAgeMin){
-  const root=path.join(os.homedir(),'.claude','projects'), since=Date.now()-maxAgeMin*60000, found={};
+  const root=path.join(os.homedir(),'.claude','projects'), since=Date.now()-maxAgeMin*60000, found={}, failed={};
   let files=[];
   for(const d of fs.readdirSync(root)){ const p=path.join(root,d); let st; try{ st=fs.statSync(p); }catch(e){ continue; } if(!st.isDirectory()) continue;
     for(const f of fs.readdirSync(p)){ if(!f.endsWith('.jsonl')) continue; const fp=path.join(p,f); const s=fs.statSync(fp); if(s.mtimeMs>=since) files.push(fp); } }
@@ -26,19 +26,21 @@ function fromTranscripts(maxAgeMin){
         if(b.type==='tool_use' && /queryWMSDb/.test(b.name||'')){ const m=/\/\*pulse:([A-M])\*\//.exec((b.input&&b.input.query)||''); if(m) uses[b.id]={g:m[1], ts:Date.parse(o.timestamp)||0}; }
         if(b.type==='tool_result' && uses[b.tool_use_id]){
           const u=uses[b.tool_use_id]; let t=Array.isArray(b.content)? b.content.map(x=>x.text||'').join('') : String(b.content||'');
+          // a run that gave no row (timeout, SQL error, refused) is kept as the block's last failure, so the summary names it
+          const fail=why=>{ if(!failed[u.g] || failed[u.g].ts<u.ts) failed[u.g]={ts:u.ts, error:String(why).replace(/\s+/g,' ').trim().slice(0,160)}; };
           // a large result is not inlined: Claude Code saves it to a file and the tool result names that file
           const saved=/saved to (\S+?\.txt)/.exec(t);
-          if(saved){ try{ t=fs.readFileSync(saved[1],'utf8'); }catch(e){ continue; } } else if(b.is_error) continue;
-          let j; try{ j=JSON.parse(t); }catch(e){ continue; }
-          const row=j.rows&&j.rows[0]; if(!row) continue;
+          if(saved){ try{ t=fs.readFileSync(saved[1],'utf8'); }catch(e){ fail('result file not readable: '+saved[1]); continue; } } else if(b.is_error){ fail(t); continue; }
+          let j; try{ j=JSON.parse(t); }catch(e){ fail(t); continue; }
+          const row=j.rows&&j.rows[0]; if(!row){ fail(j.error||'no row'); continue; }
           if(!found[u.g] || found[u.g].ts<u.ts) found[u.g]={ts:u.ts, row};
         } } } }
-  return found;
+  return {found, failed};
 }
 
-let rows={};
+let rows={}, failed={};
 if(flag('--from-transcripts')){
-  const f=fromTranscripts(+opt('--max-age',90));
+  const t=fromTranscripts(+opt('--max-age',90)), f=t.found; failed=t.failed;
   GROUPS.concat(OPTIONAL).forEach(g=>{ if(f[g]){ rows[g]=f[g].row; rows[g]._at=new Date(f[g].ts).toISOString(); fs.mkdirSync(RAW,{recursive:true}); fs.writeFileSync(path.join(RAW,g+'.json'), JSON.stringify(f[g].row)); } });
 }
 GROUPS.concat(OPTIONAL).forEach(g=>{ if(!rows[g]){ const p=path.join(RAW,g+'.json'); if(fs.existsSync(p)) rows[g]=JSON.parse(fs.readFileSync(p,'utf8')); } });
@@ -102,7 +104,14 @@ const capacity= rows.H? { at:rows.H._at||null, from:rows.H.wFrom, to:rows.H.wTo,
 const shipments= rows.K? {at:rows.K._at||null, gen:rows.K.gen, stops:J(rows.K.stops), carriers:J(rows.K.carriers), trucks:J(rows.K.trucks)} : null;
 const returns= rows.L? {at:rows.L._at||null, gen:rows.L.gen, batches:J(rows.L.batches), units:J(rows.L.units), disp:J(rows.L.disp), monthly:J(rows.L.monthly), dispMonthly:J(rows.L.dispMonthly), legacy:J(rows.L.legacy)} : null;
 const board= rows.M? {at:rows.M._at||null, gen:rows.M.gen, outd:J(rows.M.outd), openr:J(rows.M.openr), stations:J(rows.M.stations)} : null;
-const data={ version:1, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
+// per block: when its result was read and whether it is stale. A block that was not run (or failed) keeps its previous
+// result from pulse/raw/ — e.g. the board (M) of an older day, which the Tabela ditore then shows as "not refreshed today".
+const today=(d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'))(new Date());
+const blocks={}; GROUPS.concat(OPTIONAL).forEach(g=>{ const r=rows[g], fl=failed[g], at=r? r._at||null : null;
+  if(!r && !fl) return;
+  blocks[g]={at, gen: r&&r.gen || null, failedAt: fl&&(!at || fl.ts>Date.parse(at))? new Date(fl.ts).toISOString() : null, error: fl&&(!at || fl.ts>Date.parse(at))? fl.error : null}; });
+const boardStale= !board || !String(board.gen||'').startsWith(today);
+const data={ version:1, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
   D:{week, bands, hour, pay, period, rates, daily, o2c, upo, status, state, dwell, sect, insp, diff, sup, car, pick, st, inv},
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };
@@ -113,4 +122,6 @@ fs.writeFileSync(path.join(DIR,'wms-pulse.html'), tpl.replace('<script id="pulse
 console.log('WMS Pulse built: data from '+data.generatedAt+' · '+week.length+' workers (7d) · '+bands.length+' (30d) · avg '+r1(avg)+' sd '+r1(sd)
   +' · inbound '+(inb? inb.length+' batches' : 'not included (block F missing)')
   +' · orders '+(ordG? ordG.done.length+' checked out today, '+ordG.wait.length+' waiting' : 'not included (block G missing)')
-  +' · capacity '+(capacity? capacity.vol.length+' days, '+(capacity.ops? capacity.ops.length+' operators' : 'no operators (I missing)')+(capacity.sameDay? '' : ', no same-day (J missing)') : 'not included (block H missing)')+' → pulse/data.json, pulse/wms-pulse.html');
+  +' · capacity '+(capacity? capacity.vol.length+' days, '+(capacity.ops? capacity.ops.length+' operators' : 'no operators (I missing)')+(capacity.sameDay? '' : ', no same-day (J missing)') : 'not included (block H missing)')
+  +' · board '+(!board? 'not included (block M missing)' : boardStale? 'STALE (block M from '+board.gen+')' : 'from '+board.gen)
+  +(blocks.M&&blocks.M.error? ' · block M failed at '+blocks.M.failedAt+': '+blocks.M.error : '')+' → pulse/data.json, pulse/wms-pulse.html');

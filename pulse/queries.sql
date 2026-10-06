@@ -1,11 +1,54 @@
 -- WMS Pulse · Prishtinë — the queries behind the "WMS Pulse" page (app tab + artifact).
--- Run each block (-- @A … -- @E, keep the /*pulse:X*/ marker) as ONE read-only SELECT on the WMS database (queryWMSDb). Every block returns a
--- single row; list columns are JSON strings (FOR JSON). Save the row object as pulse/raw/<letter>.json, then run
--- `node pulse/build.js`.
+-- Run EVERY block of this file — M, A, B, C, D, E, F, G, H, I, J, K, L (13 blocks, each starts with `-- @X`) — as ONE
+-- read-only SELECT each on the WMS database (queryWMSDb), exactly as written, keeping the /*pulse:X*/ marker: the agent
+-- finds the results in the Claude Code transcripts by that marker and runs `node pulse/build.js`. A block that is not run
+-- keeps its previous result (pulse/raw/<X>.json) and goes stale; build.js names stale blocks in its summary line.
+-- Every block returns a single row; list columns are JSON strings (FOR JSON).
+-- Block M (daily board, page /tabela) comes first: it is also run on its own every hour of the working day, see pulse/README.md.
 -- Rules (gjirafa-wms-data-analyst): ProductLogs.InsertDateTime is local time, Orders.CreatedOnUtc is UTC;
 -- Users are joined on UserId (not Id); orders on (OrderId, PlatformId); no CTEs (derived tables only).
 -- Never select Country.ApiValue, ExternalPlatformTokens, Settings.Value or any hash column.
 -- Weighted ops = 1.0×check-out (4,18) + 0.8×check-in (2) + 0.6×map (7).
+
+-- @M daily board ("Tabela ditore", page /tabela): orders READY in the warehouse (same definition as the Bottleneck Register
+--    D1/D1o: created, or the last unit reserved for it = LogType 3; complete = all ordered units reserved), by the cut-offs
+--    13:00 / 15:00 / 17:30 (b = 13 / 15 / 17, 24 = after 17:30). outd: orders first checked out (4/18) since yesterday, by
+--    ready day (rd, 'older' = before yesterday) × cut-off × checkout day (od). openr: orders still not checked out, by ready
+--    day × cut-off × complete (cmp 1) / still waiting for units (cmp 0). stations: the WMS stations of warehouse 1.
+SELECT /*pulse:M*/ CONVERT(varchar(19),GETDATE(),126) gen,
+ (SELECT CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END rd,
+    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END b,
+    CONVERT(varchar(10),CAST(c1 AS date),23) od, COUNT(*) n
+  FROM (SELECT k.c1, CASE WHEN a.l3>t.cr THEN a.l3 ELSE t.cr END r
+     FROM (SELECT OrderId, PlatformId, MIN(InsertDateTime) c1 FROM ProductLogs WITH (NOLOCK)
+           WHERE LogTypeId IN (4,18) AND OrderId>0 AND PlatformId IN (1,2) AND InsertDateTime>=DATEADD(day,-30,CAST(GETDATE() AS date))
+           GROUP BY OrderId, PlatformId HAVING MIN(InsertDateTime)>=DATEADD(day,-1,CAST(GETDATE() AS date))) k
+     JOIN Orders o ON o.OrderId=k.OrderId AND o.PlatformId=k.PlatformId AND o.WarehouseId=1
+     CROSS APPLY (SELECT CAST(o.CreatedOnUtc AT TIME ZONE 'UTC' AT TIME ZONE 'Central European Standard Time' AS datetime) cr) t
+     LEFT JOIN (SELECT k2.OrderId, k2.PlatformId, MAX(x3.InsertDateTime) l3 FROM
+          (SELECT DISTINCT OrderId, PlatformId, ProductItemUniqueIdentifierId uid FROM ProductLogs WITH (NOLOCK)
+           WHERE LogTypeId IN (4,18) AND OrderId>0 AND PlatformId IN (1,2) AND InsertDateTime>=DATEADD(day,-1,CAST(GETDATE() AS date))) k2
+          JOIN ProductLogs x3 WITH (NOLOCK) ON x3.ProductItemUniqueIdentifierId=k2.uid AND x3.LogTypeId=3 AND x3.OrderId=k2.OrderId AND x3.InsertDateTime>=DATEADD(day,-120,GETDATE())
+          GROUP BY k2.OrderId, k2.PlatformId) a ON a.OrderId=k.OrderId AND a.PlatformId=k.PlatformId) x
+  WHERE c1>=r
+  GROUP BY CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END,
+    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END, CAST(c1 AS date)
+  ORDER BY 1,2,3 FOR JSON PATH) outd,
+ (SELECT CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END rd,
+    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END b, cmp, COUNT(*) n
+  FROM (SELECT CASE WHEN w.l>t.cr THEN w.l ELSE t.cr END r, CASE WHEN dq.q IS NOT NULL AND w.u>=dq.q THEN 1 ELSE 0 END cmp
+     FROM (SELECT c.OrderId, COUNT(*) u, MAX(lp.t3) l FROM ProductCheckIns c
+           OUTER APPLY (SELECT TOP 1 x.InsertDateTime t3 FROM ProductLogs x WITH (NOLOCK) WHERE x.ProductItemUniqueIdentifierId=c.ProductItemUniqueIdentifier AND x.LogTypeId=3 AND x.OrderId=c.OrderId AND x.InsertDateTime>=DATEADD(day,-120,GETDATE()) ORDER BY x.Id DESC) lp
+           WHERE c.WarehouseId=1 AND c.StatusId=3 AND c.OrderId>0 GROUP BY c.OrderId) w
+     CROSS APPLY (SELECT TOP 1 o0.PlatformId, o0.CreatedOnUtc FROM Orders o0 WHERE o0.OrderId=w.OrderId AND o0.WarehouseId=1 ORDER BY o0.CreatedOnUtc DESC) o
+     CROSS APPLY (SELECT CAST(o.CreatedOnUtc AT TIME ZONE 'UTC' AT TIME ZONE 'Central European Standard Time' AS datetime) cr) t
+     OUTER APPLY (SELECT SUM(d.Quantity) q FROM OrderDetails d WHERE d.OrderId=w.OrderId AND d.PlatformId=o.PlatformId) dq
+     WHERE NOT EXISTS (SELECT 1 FROM ProductLogs y WITH (NOLOCK) WHERE y.OrderId=w.OrderId AND y.PlatformId=o.PlatformId AND y.LogTypeId IN (4,18) AND y.InsertDateTime>=DATEADD(day,-120,GETDATE()))) z
+  WHERE r>=DATEADD(day,-30,CAST(GETDATE() AS date))
+  GROUP BY CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END,
+    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END, cmp
+  ORDER BY 1,2,3 FOR JSON PATH) openr,
+ (SELECT Id id, Name name, IsCheckIn ci, IsCheckOut co FROM Stations WHERE WarehouseId=1 AND IsActive=1 AND Name<>'test' ORDER BY Id FOR JSON PATH) stations
 
 -- @A productivity
 SELECT /*pulse:A*/ CONVERT(varchar(19),GETDATE(),126) gen,
@@ -365,43 +408,3 @@ SELECT /*pulse:L*/ CONVERT(varchar(19),GETDATE(),126) gen,
  (SELECT CONVERT(varchar(7),InsertDateTime,126) m, LogTypeId t, COUNT(*) n FROM ProductLogs WITH (NOLOCK) WHERE LogTypeId IN (20,21,22,29) AND InsertDateTime>=DATEADD(month,-8,GETDATE())
   GROUP BY CONVERT(varchar(7),InsertDateTime,126), LogTypeId ORDER BY 1,2 FOR JSON PATH) dispMonthly,
  (SELECT CONVERT(varchar(7),InsertDateTime,126) m, COUNT(*) n, COUNT(DISTINCT StoreId) stores FROM ReturnsToSupplier WHERE InsertDateTime>=DATEADD(month,-18,GETDATE()) GROUP BY CONVERT(varchar(7),InsertDateTime,126) ORDER BY 1 FOR JSON PATH) legacy
-
--- @M daily board ("Tabela ditore", page /tabela): orders READY in the warehouse (same definition as the Bottleneck Register
---    D1/D1o: created, or the last unit reserved for it = LogType 3; complete = all ordered units reserved), by the cut-offs
---    13:00 / 15:00 / 17:30 (b = 13 / 15 / 17, 24 = after 17:30). outd: orders first checked out (4/18) since yesterday, by
---    ready day (rd, 'older' = before yesterday) × cut-off × checkout day (od). openr: orders still not checked out, by ready
---    day × cut-off × complete (cmp 1) / still waiting for units (cmp 0). stations: the WMS stations of warehouse 1.
-SELECT /*pulse:M*/ CONVERT(varchar(19),GETDATE(),126) gen,
- (SELECT CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END rd,
-    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END b,
-    CONVERT(varchar(10),CAST(c1 AS date),23) od, COUNT(*) n
-  FROM (SELECT k.c1, CASE WHEN a.l3>t.cr THEN a.l3 ELSE t.cr END r
-     FROM (SELECT OrderId, PlatformId, MIN(InsertDateTime) c1 FROM ProductLogs WITH (NOLOCK)
-           WHERE LogTypeId IN (4,18) AND OrderId>0 AND PlatformId IN (1,2) AND InsertDateTime>=DATEADD(day,-30,CAST(GETDATE() AS date))
-           GROUP BY OrderId, PlatformId HAVING MIN(InsertDateTime)>=DATEADD(day,-1,CAST(GETDATE() AS date))) k
-     JOIN Orders o ON o.OrderId=k.OrderId AND o.PlatformId=k.PlatformId AND o.WarehouseId=1
-     CROSS APPLY (SELECT CAST(o.CreatedOnUtc AT TIME ZONE 'UTC' AT TIME ZONE 'Central European Standard Time' AS datetime) cr) t
-     LEFT JOIN (SELECT k2.OrderId, k2.PlatformId, MAX(x3.InsertDateTime) l3 FROM
-          (SELECT DISTINCT OrderId, PlatformId, ProductItemUniqueIdentifierId uid FROM ProductLogs WITH (NOLOCK)
-           WHERE LogTypeId IN (4,18) AND OrderId>0 AND PlatformId IN (1,2) AND InsertDateTime>=DATEADD(day,-1,CAST(GETDATE() AS date))) k2
-          JOIN ProductLogs x3 WITH (NOLOCK) ON x3.ProductItemUniqueIdentifierId=k2.uid AND x3.LogTypeId=3 AND x3.OrderId=k2.OrderId AND x3.InsertDateTime>=DATEADD(day,-120,GETDATE())
-          GROUP BY k2.OrderId, k2.PlatformId) a ON a.OrderId=k.OrderId AND a.PlatformId=k.PlatformId) x
-  WHERE c1>=r
-  GROUP BY CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END,
-    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END, CAST(c1 AS date)
-  ORDER BY 1,2,3 FOR JSON PATH) outd,
- (SELECT CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END rd,
-    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END b, cmp, COUNT(*) n
-  FROM (SELECT CASE WHEN w.l>t.cr THEN w.l ELSE t.cr END r, CASE WHEN dq.q IS NOT NULL AND w.u>=dq.q THEN 1 ELSE 0 END cmp
-     FROM (SELECT c.OrderId, COUNT(*) u, MAX(lp.t3) l FROM ProductCheckIns c
-           OUTER APPLY (SELECT TOP 1 x.InsertDateTime t3 FROM ProductLogs x WITH (NOLOCK) WHERE x.ProductItemUniqueIdentifierId=c.ProductItemUniqueIdentifier AND x.LogTypeId=3 AND x.OrderId=c.OrderId AND x.InsertDateTime>=DATEADD(day,-120,GETDATE()) ORDER BY x.Id DESC) lp
-           WHERE c.WarehouseId=1 AND c.StatusId=3 AND c.OrderId>0 GROUP BY c.OrderId) w
-     CROSS APPLY (SELECT TOP 1 o0.PlatformId, o0.CreatedOnUtc FROM Orders o0 WHERE o0.OrderId=w.OrderId AND o0.WarehouseId=1 ORDER BY o0.CreatedOnUtc DESC) o
-     CROSS APPLY (SELECT CAST(o.CreatedOnUtc AT TIME ZONE 'UTC' AT TIME ZONE 'Central European Standard Time' AS datetime) cr) t
-     OUTER APPLY (SELECT SUM(d.Quantity) q FROM OrderDetails d WHERE d.OrderId=w.OrderId AND d.PlatformId=o.PlatformId) dq
-     WHERE NOT EXISTS (SELECT 1 FROM ProductLogs y WITH (NOLOCK) WHERE y.OrderId=w.OrderId AND y.PlatformId=o.PlatformId AND y.LogTypeId IN (4,18) AND y.InsertDateTime>=DATEADD(day,-120,GETDATE()))) z
-  WHERE r>=DATEADD(day,-30,CAST(GETDATE() AS date))
-  GROUP BY CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END,
-    CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END, cmp
-  ORDER BY 1,2,3 FOR JSON PATH) openr,
- (SELECT Id id, Name name, IsCheckIn ci, IsCheckOut co FROM Stations WHERE WarehouseId=1 AND IsActive=1 AND Name<>'test' ORDER BY Id FOR JSON PATH) stations
