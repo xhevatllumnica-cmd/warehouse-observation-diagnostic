@@ -451,6 +451,7 @@ function processesByCat(cat){ return activeProcesses().filter(p=>p.category===ca
 const ROUTES = [
   {sec:'Observe'},
   {id:'dashboard', title:'Dashboard', ic:'▤', render:renderDashboard},
+  {id:'metrikat', title:'Metrikat e mia', ic:'🧭', render:renderMyMetrics},
   {id:'observations', title:'Daily Observation', ic:'👁', render:renderObservations},
   {id:'timer', title:'Process Measurement', ic:'⏱', render:renderTimer},
   {id:'raportet', title:'Raportet', ic:'📑', render:renderRaportet},
