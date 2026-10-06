@@ -1013,12 +1013,17 @@ async function podPending(force){
 const POD_CHAT_MARKS=(Array.isArray(cfg.podChatMarks)&&cfg.podChatMarks.length? cfg.podChatMarks : ['16:30','17:00','17:30','18:00','18:30','19:00','19:30','20:00']);
 const POD_CHAT_FILE=path.join(APPDIR,'data','pod-chat-state.json');
 const hmMin=s=>{ const [h,m]=String(s).split(':').map(Number); return h*60+(m||0); };
+// the Google Chat message covers only the courier posts BEKI, Express and Fiks (the warehouse lead, 06.10.2026) — not
+// Merre vet, Starlink, Boxes, PickUpPoint…; the page /postat still shows all of them
+const POD_CHAT_POSTS=[/^beki/i,/^express/i,/^fiks/i];
 function podChatText(v, mark){
   const d=v.to.split('-').reverse().join('.'), payTxt=P=>Object.entries(P.pay).sort((a,b)=>b[1]-a[1]).map(([k,n])=>k+' '+n).join(' · ');
+  const posts=v.posts.filter(P=>POD_CHAT_POSTS.some(re=>re.test(P.name))), total=posts.reduce((s,P)=>s+P.total,0), old=posts.reduce((s,P)=>s+P.old,0);
   return '*POD — porositë në pritje për POD finale · '+mark+'* ('+d+')\n'
     +(v.operator? 'Për: *'+v.operator+'* (po bën POD sot)\n' : '')
-    +'\nNë pritje gjithsej: *'+v.total+'* · 🔴 mbi 3 ditë: *'+v.old+'*\n\n'
-    +v.posts.map(P=>'• *'+P.name+'*: '+P.total+' në pritje'+(P.old? ' · 🔴 *'+P.old+' mbi 3 ditë*' : '')+'\n   '+payTxt(P)
+    +'\nNë pritje gjithsej (BEKI, Express, Fiks): *'+total+'* · 🔴 mbi 3 ditë: *'+old+'*\n\n'
+    +(posts.length? '' : 'Asnjë porosi në pritje te BEKI, Express apo Fiks.')
+    +posts.map(P=>'• *'+P.name+'*: '+P.total+' në pritje'+(P.old? ' · 🔴 *'+P.old+' mbi 3 ditë*' : '')+'\n   '+payTxt(P)
       +(P.old? '\n   më të vjetrat: '+P.oldList.slice().sort((a,b)=>b.days-a.days).slice(0,5).map(o=>'#'+o.id+' ('+o.days+' ditë)').join(', ') : '')).join('\n')
     +'\n\n_Mbi 3 ditë nuk përfshihen: me datë fikse, me bank transfer, me pagesë online ende të papaguar._'
     +(v.error? '\n\n⚠ Disa ditë nuk u lexuan nga Delivery Platform ('+v.error+').' : '');
