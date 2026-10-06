@@ -14,7 +14,7 @@ const MM_CAD={D:'Ditore', J:'Javore', M:'Mujore'};
 function renderMyMetrics(v){
   v.innerHTML=pagehead('Metrikat e mia',
     'Metrikat që ndjek Warehouse Lead-i për të gjetur problemet në procese: rrjedha e porosive para së gjithash, pastaj ku ngec puna — në cilin proces, te kush, në cilin lokacion. Fokusi te <b>p90 dhe trendet</b>, jo te mesataret: problemet duken së pari te bishti i gjatë. Depo 01 Prishtinë.',
-    `<button class="btn" id="mmRefresh">↻ Rifresko</button>`)
+    `<span id="mmScore" style="display:inline-flex;align-items:center"></span><button class="btn" id="mmRefresh">↻ Rifresko</button>`)
     + `<div class="card no-print" style="margin-bottom:12px"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center" id="mmBar"></div></div>
        <div id="mmBody"><div class="empty">Po lexohen të dhënat…</div></div>`;
   $('#mmRefresh').onclick=()=>loadMyMetrics(true);
@@ -241,10 +241,26 @@ function mmSections(){
   return S;
 }
 
+/* WH performance score, 0–100: each metric with a signal gives 🟢 100 · 🟠 60 · 🔴 20 points (information and missing data do
+   not count); a sub-card's score is the average of its metrics; the total weighs the sub-cards — the order flow most.
+   Colours (the lead, 07.10.2026): 0–60 red · 61–75 orange · 76–94 light green · 95–100 dark green, bold. */
+const MM_PTS={ok:100, warn:60, crit:20}, MM_W=[25,15,15,15,10,10,10];
+function mmScoreOf(rows){ const r=rows.filter(x=>MM_PTS[x.lvl]!=null); return r.length? r.reduce((s,x)=>s+MM_PTS[x.lvl],0)/r.length : null; }
+function mmScoreStyle(p){ const v=Math.round(p);
+  return v<=60? 'color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,transparent);border-color:color-mix(in srgb,var(--crit) 40%,transparent)'
+    : v<=75? 'color:#d35400;background:color-mix(in srgb,#e67e22 12%,transparent);border-color:color-mix(in srgb,#e67e22 45%,transparent)'
+    : v<=94? 'color:#5aa95a;background:color-mix(in srgb,#5aa95a 10%,transparent);border-color:color-mix(in srgb,#5aa95a 40%,transparent)'
+    : 'color:#14632f;font-weight:900;background:color-mix(in srgb,#1e8449 14%,transparent);border-color:#1e8449'; }
 function drawMyMetrics(){
   const box=$('#mmBody'); if(!box) return;
   const P=mmSrc.P; if(!P){ box.innerHTML='<div class="empty">Po lexohen të dhënat…</div>'; return; }
   const S=mmSections(), all=S.flatMap(s=>s.rows), c=l=>all.filter(r=>r.lvl===l).length;
+  S.forEach((s,i)=>{ s.score=mmScoreOf(s.rows); s.w=MM_W[i]||10; });
+  const sc=S.filter(s=>s.score!=null), total= sc.length? sc.reduce((a,s)=>a+s.score*s.w,0)/sc.reduce((a,s)=>a+s.w,0) : null;
+  const live=mmSrc.PP&&mmSrc.POD&&mmSrc.T;
+  const sEl=$('#mmScore'); if(sEl) sEl.innerHTML= total==null? '' : `<span title="${h('Performanca e WH: '+S.map((s,i)=>`${i+1}. ${s.t} ${s.score==null? '—' : Math.round(s.score)+'%'} (pesha ${s.w}%)`).join('\n')+(live? '' : '\n(burimet live po lexohen — shifra mund të ndryshojë)'))}"
+      style="display:inline-flex;align-items:baseline;gap:6px;padding:5px 12px;border:1px solid;border-radius:10px;margin-right:8px;cursor:help;${mmScoreStyle(total)}">
+      <span style="font-size:12px;font-weight:600;opacity:.85">Performanca e WH</span><span style="font-size:22px;line-height:1;font-variant-numeric:tabular-nums">${Math.round(total)}%</span>${live? '' : '<span style="font-size:11px;opacity:.7">…</span>'}</span>`;
   const pick=r=> mmCad==='all' || (mmCad==='sig'? r.lvl==='crit'||r.lvl==='warn' : r.cad===mmCad);
   const at=P.generatedAt? String(P.generatedAt).replace('T',' ').slice(0,16) : '—';
   $('#mmBar').innerHTML=[['all','Të gjitha',all.length],['sig','Vetëm sinjalet 🔴🟠',c('crit')+c('warn')],['D','Ditore',all.filter(r=>r.cad==='D').length],['J','Javore',all.filter(r=>r.cad==='J').length],['M','Mujore',all.filter(r=>r.cad==='M').length]]
@@ -255,7 +271,8 @@ function drawMyMetrics(){
       const nc=s.rows.filter(r=>r.lvl==='crit').length, nw=s.rows.filter(r=>r.lvl==='warn').length;
       return `<div class="card" style="margin:0;border-top:4px solid ${nc? 'var(--crit)' : nw? 'var(--warn)' : 'var(--ok)'}">
         <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px"><h3 style="margin:0">${i+1}. ${h(s.t)}</h3>${s.sub? `<span class="sub">${h(s.sub)}</span>` : ''}
-          <span class="small" style="margin-left:auto">${nc? '🔴 '+nc+' ' : ''}${nw? '🟠 '+nw : ''}${!nc&&!nw? '<span style="color:var(--ok)">në rregull</span>' : ''}</span></div>
+          <span class="small" style="margin-left:auto">${nc? '🔴 '+nc+' ' : ''}${nw? '🟠 '+nw : ''}${!nc&&!nw? '<span style="color:var(--ok)">në rregull</span>' : ''}</span>
+          ${s.score!=null? `<span class="small" title="Pikët e kësaj karte (pesha në total ${s.w}%)" style="padding:1px 8px;border:1px solid;border-radius:8px;${mmScoreStyle(s.score)}">${Math.round(s.score)}%</span>` : ''}</div>
         ${rows.map(r=>`<div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid var(--line)">
           <div style="font-size:15px;line-height:1.3" title="${h({ok:'Në rregull',warn:'Për t\'u ndjekur',crit:'Kritike',info:'Informacion',na:'Pa të dhëna'}[r.lvl]||'')}">${dot[r.lvl]||'⚪'}</div>
           <div style="flex:1;min-width:0"><div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b>${h(r.n)}</b>
@@ -264,6 +281,7 @@ function drawMyMetrics(){
             <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-top:2px"><span style="font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;color:${col[r.lvl]||'inherit'}">${r.v}</span><span class="small">${r.s||''}</span></div>
             ${r.list? `<div class="small" style="margin-top:6px">${r.list}</div>` : ''}
             ${r.why? `<div class="small faint" style="margin-top:4px">${h(r.why)}</div>` : ''}</div></div>`).join('')}</div>`; }).join('')}</div>
-    <div class="hint" style="margin-top:10px">Ritmi: <b>çdo ditë</b> backlog-u sipas moshës, porositë e hapura, carryover-i, njësitë pa map dhe POD-i · <b>çdo javë</b> mediana dhe p90 porosi → check-out, bandat e produktivitetit, mungesat në inventar · <b>çdo muaj</b> kostoja për porosi, diferencat e stokut dhe transportuesit. Pragjet janë pikënisje: kalibroji pas 2–4 javësh sipas ditës normale të depos. Burimet: WMS Pulse (baza e WMS-it, rifreskim çdo orë / çdo ditë), Tabela ditore (live), Delivery Platform (live).</div>`;
+    <div class="hint" style="margin-top:10px"><b>Performanca e WH</b> (lart, pranë Rifresko): çdo metrikë me sinjal jep 🟢 100 · 🟠 60 · 🔴 20 pikë (informacionet dhe ato pa të dhëna nuk numërohen); karta merr mesataren e metrikave të saj, totali i peshon kartat: rrjedha e porosive 25%, inbound, picking/check-out dhe njerëzit nga 15%, kostoja, dërgesat dhe inventari nga 10%. Ngjyra: 0–60 e kuqe · 61–75 portokalli · 76–94 e gjelbër e zbehtë · 95–100 e gjelbër e mbyllur.</div>
+    <div class="hint" style="margin-top:6px">Ritmi: <b>çdo ditë</b> backlog-u sipas moshës, porositë e hapura, carryover-i, njësitë pa map dhe POD-i · <b>çdo javë</b> mediana dhe p90 porosi → check-out, bandat e produktivitetit, mungesat në inventar · <b>çdo muaj</b> kostoja për porosi, diferencat e stokut dhe transportuesit. Pragjet janë pikënisje: kalibroji pas 2–4 javësh sipas ditës normale të depos. Burimet: WMS Pulse (baza e WMS-it, rifreskim çdo orë / çdo ditë), Tabela ditore (live), Delivery Platform (live).</div>`;
   $$('[data-mmc]').forEach(b=>b.onclick=()=>{ mmCad=b.dataset.mmc; drawMyMetrics(); });
 }
