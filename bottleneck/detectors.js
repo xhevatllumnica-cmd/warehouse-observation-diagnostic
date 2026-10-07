@@ -208,7 +208,7 @@ function detect(snap, cfgIn){
         value:over, baseline:null, threshold:cfg.mapWaitMax, unit:'njësi', better:'lower', period:{from:W.cur.from,to:today}, scope:scopeText(b),
         n:n+nCur, confidence:conf(n,{inferred:true}),
         impact:{objective:'Same-day', value:over, text:`${over} njësi jo të disponueshme për picking/porosi derisa të mapohen`},
-        tags:{ fact:[`Mosha: ${wt.map(w=>'status '+w.s+': 0–4h '+w.b0_4+', 4–8h '+w.b4_8+', 8–24h '+w.b8_24+', 1–3d '+w.b1_3d+', >3d '+w.b3d).join(' · ')}`],
+        tags:{ fact:[`Koha e pritjes: ${wt.map(w=>'status '+w.s+': 0–4h '+w.b0_4+', 4–8h '+w.b4_8+', 8–24h '+w.b8_24+', 1–3d '+w.b1_3d+', >3d '+w.b3d).join(' · ')}`],
                hyp:[], unconfirmed:['StatusId 6 = "para mapping-ut" është e nxjerrë (2→6→7), jo e konfirmuar.'] },
         hypotheses:[ 'Mapping bëhet në tufa në fund të ditës, jo në rrjedhë pas check-in-it.', 'Mungon lokacion i lirë/i përshtatshëm për këto produkte (raft i plotë, produkte voluminoze).',
           'Njësitë më të vjetra janë ngecur (defekt, produkt pa kod, pritje vendimi) dhe nuk janë punë mapping-u.' ],
@@ -333,7 +333,7 @@ function detect(snap, cfgIn){
         suggest:{ sev:3, occ:5 } });
     }
     // older than the problem age limit: backlog of the past, shown as a note only (never as a problem)
-    if(+s.gt30>0) note('D8',`${s.gt30} furnizime të tjera janë "Started" prej më shumë se ${cfg.maxAgeDays} ditësh — mbetje e vjetër, jashtë kufirit të moshës; nuk shfaqen si problem.`,'old');
+    if(+s.gt30>0) note('D8',`${s.gt30} furnizime të tjera janë "Started" prej më shumë se ${cfg.maxAgeDays} ditësh — mbetje e vjetër, jashtë kufirit të kohës së pritjes; nuk shfaqen si problem.`,'old');
     if(delay.length && q(delay.map(x=>+x.p50),0.5)===0) note('D8','Furnizimi hapet në momentin e check-in-it të parë (mediana e vonesës = 0 min): koha nga mbërritja fizike te check-in-i nuk regjistrohet në WMS — mateni në Gemba.','data');
   });
 
@@ -446,7 +446,7 @@ function detect(snap, cfgIn){
         gemba:['Kush krijon dërgesat në WMS dhe a e sheh fushën "PalletCount"?', 'A e jep transportuesi numrin e paletave në dokument (CMR)?'], suggest:{sev:2, occ:5, det:2} });
     }
     const rec3=dq.filter(m=>m.m>=ageMonth).length? dq.filter(m=>m.m>=ageMonth) : dq.slice(-1), np={}; rec3.forEach(m=>(m.noPrice||[]).forEach(x=>{ np[x.c]=(np[x.c]||0)+x.n; })); const npN=sum(Object.values(np));
-    metric('D11.noprice',{detector:'D11', label:'Ndalesa ndërkombëtare pa çmim transporti (muajt brenda kufirit të moshës)', unit:'ndalesa', better:'lower', target:cfg.noPriceMax, series:[{d:today, v:npN}]});
+    metric('D11.noprice',{detector:'D11', label:'Ndalesa ndërkombëtare pa çmim transporti (muajt brenda kufirit të kohës së pritjes)', unit:'ndalesa', better:'lower', target:cfg.noPriceMax, series:[{d:today, v:npN}]});
     if(npN>cfg.noPriceMax) cand({ key:'D11.noprice', detector:'D11', metricKey:'D11.noprice', blocks:['D11'], solo:true, title:`Kostoja e transportit mungon për ${Object.keys(np).join(', ')}`, phase:'Inbounding', category:'Të dhëna',
       symptom:`${npN} ndalesa ndërkombëtare të marra që nga ${fmtD(rec3[0].m+'-01')} nuk kanë çmim (Price = 0): ${Object.entries(np).map(([c,n])=>c+' '+n).join(', ')}.`,
       value:npN, baseline:null, threshold:cfg.noPriceMax, unit:'ndalesa', better:'lower', period:{from:rec3[0].m+'-01', to:today}, scope:scopeText(b)+' · ndërkombëtare', n:sum(rec3.map(m=>m.n)), confidence:'e lartë',

@@ -204,7 +204,7 @@ function planDrawReport(body){
 
 /* Tabela ditore — the standalone board page /tabela (for the screen at the entrance), shown here in a frame like "Orari i punës" */
 function renderPostat(v){
-  v.innerHTML = pagehead('Postat — në pritje', 'Porositë që presin dërgimin për POD final, sipas postës: sa janë, sipas pagesës dhe moshës, dhe ato mbi 3 ditë me të kuqe. Hape si faqe më vete për ekranin e POD-it (⛶ ekran i plotë; rifreskohet vetë çdo 2 minuta).', `<button class="btn" id="postOpen">↗ Hap si faqe më vete</button>`)
+  v.innerHTML = pagehead('Postat — në pritje', 'Porositë që presin dërgimin për POD final, sipas postës: sa janë, sipas pagesës dhe kohës së pritjes, dhe ato mbi 3 ditë me të kuqe. Hape si faqe më vete për ekranin e POD-it (⛶ ekran i plotë; rifreskohet vetë çdo 2 minuta).', `<button class="btn" id="postOpen">↗ Hap si faqe më vete</button>`)
     + `<iframe id="postFrame" src="/postat" style="width:100%;height:calc(100vh - 170px);min-height:560px;border:1px solid var(--line);border-radius:12px;background:var(--panel)"></iframe>`;
   $('#postOpen').onclick=()=>window.open('/postat','postat');
 }

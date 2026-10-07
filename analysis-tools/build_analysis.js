@@ -387,7 +387,7 @@ if (DT.daysSinceLastEntry >= 2) rec.push(["Rifillo mbledhjen e të dhënave", `$
 if (R.convergence) rec.push([`Hulumto variancën e ${R.convergence.process} (${nf(R.convergence.spread, 1)}×)`, `${nf(R.convergence.min)} kundrejt ${nf(R.convergence.max)} sek/porosi; shkak i emëruar në ${R.convergence.namedIn.length} vëzhgime`, "I ulët — një bisedë dhe dy matje", "Këtë javë"]);
 if (CS) rec.push(["Studio metodën e operatorit më të shpejtë", `${nf(CS.min)} sek/porosi kundrejt ${nf(CS.max)} — diferenca kushton deri në ${nf(R.capacity[2].personShifts - R.capacity[0].personShifts, 1)} person-turne në ditë`, "I ulët — vëzhgim i strukturuar", "Këtë javë"]);
 const dispatchFail = R.observations.find((o) => /nuk ka shku|nuk ka arritur|vones/i.test(o.what + " " + o.impact));
-if (dispatchFail) rec.push(["Vendos kontroll moshe për porositë e dërguara", `Vëzhgim: "${dispatchFail.what.slice(0, 70)}…"; asnjë proces nuk e kap një porosi që ngec pas dispatch-it`, "I ulët — një raport javor", "Këtë javë"]);
+if (dispatchFail) rec.push(["Vendos kontroll të kohës së pritjes për porositë e dërguara", `Vëzhgim: "${dispatchFail.what.slice(0, 70)}…"; asnjë proces nuk e kap një porosi që ngec pas dispatch-it`, "I ulët — një raport javor", "Këtë javë"]);
 if (R.emptyModules.includes("orders")) rec.push(["Fillo Order Flow me vula kohore", "Pritja mes proceseve nuk matet fare sot", "Mesatar — 20 porosi të ndjekura", "Brenda 2 javësh"]);
 if (C.staffSkills < C.employees * 3) rec.push(["Plotëso matricën e aftësive", `${C.staffSkills} regjistrime nga rreth ${C.employees * C.processes} kombinime`, "I ulët — një orë punë", "Brenda 2 javësh"]);
 children.push(dataTable([500, 3000, 3400, 2100, 1800], ["#", "Veprimi", "Prova që e kërkon", "Mundi", "Afati"],

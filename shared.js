@@ -147,7 +147,7 @@ function wmsAutoObservations(db, d, time){
       evidence:'System record: WMS /Warehouse/ProductLogs, LogType «Checked in» vs «Check out», dita kalendarike.',
       impact:`+${W.checkedIn-W.checkedOut} produkte shtohen stokut në pritje; backlog-u i porosive rritet në vend që të ulet.`,
       cause:'HIPOTEZË (e pakonfirmuar): kapaciteti i picking/check-out është nën atë të pranimit; ose një pjesë e check-in është stok pa porosi; ose check-out nuk skanohet për çdo dërgim.',
-      validationMethod:'Check system data', validationAction:'Krahaso për 3 ditë porositë e dërguara fizikisht (lista e transportuesit) me eventet «Check out». Ndaj porositë «in processing» sipas moshës dhe statusit (pret stok / gati për picking).', followUpDate:nextWorkDay(db,d,2) });
+      validationMethod:'Check system data', validationAction:'Krahaso për 3 ditë porositë e dërguara fizikisht (lista e transportuesit) me eventet «Check out». Ndaj porositë «in processing» sipas kohës së pritjes dhe statusit (pret stok / gati për picking).', followUpDate:nextWorkDay(db,d,2) });
   }
   // R2 · prepared orders vs baseline
   if(W.prep>0 && W.prepAvg!=null && W.prepDays>=2 && W.isWorkDay){
@@ -212,7 +212,7 @@ function wmsAutoObservations(db, d, time){
       evidence:'System record: snapshot-et GetDashboardStats të ditës.',
       impact: first!=null&&ip>=first ? 'Backlog-u nuk u ul gjatë ditës — puna e ditës mbuloi vetëm hyrjet e reja.' : 'Carry-over për ditën tjetër; hapi i fundit (complete/unmap) mbetet pas.',
       cause:'HIPOTEZË: hapi i fundit bëhet nga një person tjetër/më vonë; ose porositë «in processing» presin stok që s\'ka mbërritur.',
-      validationMethod:'Check system data', validationAction:'Ndaj porositë «in processing» sipas moshës (0–1 / 2–3 / >3 ditë) dhe arsyes së pritjes. Pyet kush e bën «complete» dhe kur.', followUpDate:nextWorkDay(db,d,1) });
+      validationMethod:'Check system data', validationAction:'Ndaj porositë «in processing» sipas kohës së pritjes (0–1 / 2–3 / >3 ditë) dhe arsyes së saj. Pyet kush e bën «complete» dhe kur.', followUpDate:nextWorkDay(db,d,1) });
   }
   return out;
 }

@@ -58,7 +58,7 @@ function urDrawTable(){
   const box=$('#urBody'); if(!box) return; const rows=urRows();
   if(!Store.col('unlinkedReturns').length){ box.innerHTML='<div class="card"><div class="empty">Ende asnjë pako. Shtyp <b>＋ Pako e re</b> sa herë që pranohet një kthim pa kërkesë ose pa porosi.</div></div>'; return; }
   box.innerHTML=`<div class="card"><div style="overflow-x:auto"><table style="font-size:12.5px"><thead><tr>
-      <th>Pranuar</th><th>Pranoi</th><th>Ardhja</th><th>Dërguesi</th><th>Tracking / barcode</th><th>Produkti</th><th>Sasia</th><th>Gjendja</th><th>WMS row</th><th>Statusi</th><th>Porosia / kërkesa</th><th>Mosha</th><th></th></tr></thead><tbody>
+      <th>Pranuar</th><th>Pranoi</th><th>Ardhja</th><th>Dërguesi</th><th>Tracking / barcode</th><th>Produkti</th><th>Sasia</th><th>Gjendja</th><th>WMS row</th><th>Statusi</th><th>Porosia / kërkesa</th><th>Koha e pritjes</th><th></th></tr></thead><tbody>
     ${rows.map(r=>{ const age=urAgeDays(r), open=r.status!=='Zgjidhur';
       return `<tr><td data-sort="${h((r.date||'')+' '+(r.time||''))}" style="white-space:nowrap">${h(urDT(r))}</td><td>${h(r.receivedBy||'—')}</td>
         <td>${h(r.arrival||'—')}${r.post? '<div class="small faint">'+h(r.post)+'</div>' : ''}</td><td>${h(r.senderName||'—')}</td>
@@ -112,7 +112,7 @@ function urForm(existing, nextStatus){
 }
 function urCsv(){
   const rows=urRows(), q=s=>'"'+String(s==null?'':s).replace(/"/g,'""')+'"';
-  const head=['Data','Ora','Pranoi','Ardhja','Posta','Dërguesi','Tracking','Produkti','Emri i produktit','Sasia','Gjendja','WMS row','Statusi','Porosia','Platforma','Kërkesa RMS','Vendimi','Mosha (ditë)','Shënime'];
+  const head=['Data','Ora','Pranoi','Ardhja','Posta','Dërguesi','Tracking','Produkti','Emri i produktit','Sasia','Gjendja','WMS row','Statusi','Porosia','Platforma','Kërkesa RMS','Vendimi','Koha e pritjes (ditë)','Shënime'];
   const lines=[head.map(q).join(',')].concat(rows.map(r=>[r.date,r.time,r.receivedBy,r.arrival,r.post,r.senderName,r.tracking,r.productCode,r.productName,r.qty,r.condition,r.wmsRow,r.status,r.orderId,r.platform,r.requestId,r.resolution,r.status!=='Zgjidhur'? urAgeDays(r) : '',r.notes].map(q).join(',')));
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['﻿'+lines.join('\n')],{type:'text/csv;charset=utf-8'})); a.download='kthime-pa-lidhje-'+todayStr()+'.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }

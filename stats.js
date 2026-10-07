@@ -173,7 +173,7 @@ function renderStatsBody(d){
       <tr><td>Mediana e periudhës së kaluar</td><td>${statsFmtMin(pa.prevMedianMin)}</td></tr>
       <tr><td>Ende të pamapuara (pa dalë në porosi)</td><td><b>${pa.unmapped}</b> — ${Object.entries(pa.unmappedBuckets).map(([k,v])=>h(k)+': '+v).join(' · ')}</td></tr>
     </tbody></table>
-    ${statsMeta('koha nga check-in-i (LogTypeId 2) deri te mapimi i parë (7) i së njëjtës njësi fizike. «Të pamapuara» = njësi të check-in-uara në periudhë që s\'kanë as mapim, as hap dalës (3, 4, 9, 18, 27); mosha matet deri tani.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
+    ${statsMeta('koha nga check-in-i (LogTypeId 2) deri te mapimi i parë (7) i së njëjtës njësi fizike. «Të pamapuara» = njësi të check-in-uara në periudhë që s\'kanë as mapim, as hap dalës (3, 4, 9, 18, 27); koha e pritjes matet deri tani.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
   const band={above:['b-ok','Mbi mesataren'],below:['b-crit','Nën mesataren'],average:['b-muted','Mesatare']};
   const prod=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.4 Produktiviteti i punëtorëve</h3><button class="btn sm ghost no-print" data-csv="workers" style="margin-left:auto">⬇ CSV</button></div>
     <div style="overflow-x:auto"><table style="font-size:12.5px"><thead><tr><th>Operatori</th><th>Check-in</th><th>Map</th><th>Check-out</th><th>Ditë aktive</th><th>Op. të peshuara</th><th>Op./ditë</th><th>${single?'Dita e mëparshme':'Periudha e kaluar'}</th><th>Kategoria</th><th>Sinjale</th></tr></thead><tbody>
@@ -198,7 +198,7 @@ function renderStatsBody(d){
     <div class="hint" style="margin-top:6px">Prezenca dhe vonesat e stafit <b>nuk regjistrohen</b> në aplikacion, prandaj s'ka statistikë për to. Near-miss s'ka fushë të veçantë: numërohen vëzhgimet e llojit «Safety issue».</div>
     ${statsMeta('matjet nga Process Measurement (koha totale dhe pritja për hap); bottleneck = vëzhgime manuale të llojit «Bottleneck» ose «Delay / Waiting» (pa ato të gjeneruara automatikisht nga WMS); turni nxirret nga ora e vëzhgimit (N1 dhe N2 mbivendosen 13:00–15:00).','App', appScope)}</div>`;
   const pending=`<div class="card" style="margin-bottom:14px"><h3>Në Fazën 2 (kërkojnë SQL-in e WMS-it)</h3>
-    <div class="small">Same-day shipping (cut-off ${h(cfg.cutoff)}) · carryover ditor · backlog sipas statusit dhe moshës · porosi → check-out (mediana/p90) · porosi të krijuara sipas orës dhe platformës · PickSession · kostoja për porosi · inbound (Supplies) · saktësia e stokut (Inspects, StockDifferences) · stacionet · dërgesat në kohë · filtri i platformës.</div></div>`;
+    <div class="small">Same-day shipping (cut-off ${h(cfg.cutoff)}) · carryover ditor · backlog sipas statusit dhe kohës së pritjes · porosi → check-out (mediana/p90) · porosi të krijuara sipas orës dhe platformës · PickSession · kostoja për porosi · inbound (Supplies) · saktësia e stokut (Inspects, StockDifferences) · stacionet · dërgesat në kohë · filtri i platformës.</div></div>`;
   const settings=`<details class="card no-print" style="margin-bottom:14px"><summary style="cursor:pointer"><b>Cilësimet e modulit</b> <span class="faint small">· cut-off, targeti, pragjet e KPI-ve</span></summary>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:10px">
       <label class="small">Cut-off same-day<input id="stCut" value="${h(cfg.cutoff)}"></label>

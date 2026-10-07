@@ -20,11 +20,11 @@ const BN_OBJ_KPI={'Siguri':'Safety','Same-day':'Same-day shipping','Kosto për p
 const BN_6M=['Njeri','Metodë','Makineri','Material','Matje','Mjedis'];
 const BN_SOURCES=['Vëzhgim në terren','D1','D2','D3','D4','D5','D6','D7','D8','D9','D10','D11','D12','D13'];
 const BN_DET_NAMES={D1:'Carryover',D2:'Lead time porosi → check-out',D3:'Rrjedha për orë / kufizimi',D4:'Pritja për mapping',D5:'Picking & koha e ciklit',D6:'Produktiviteti',
-  D7:'Cilësia e të dhënave',D8:'Inbound',D9:'Saktësia e inventarit',D10:'Hapësira / lokacioni',D11:'Transporti',D12:'Mosha e porosive sipas statusit',D13:'Kosto për porosi'};
+  D7:'Cilësia e të dhënave',D8:'Inbound',D9:'Saktësia e inventarit',D10:'Hapësira / lokacioni',D11:'Transporti',D12:'Koha e pritjes së porosive sipas statusit',D13:'Kosto për porosi'};
 const BN_CLOSE_DAYS=14;
 const BN_PARAM_LABELS={wh:['Depoja (WarehouseId)','1 = Prishtinë'], pf:['Platforma','0 = të dyja, 1 = GjirafaMall, 2 = Gjirafa50'], nd:['Ditë historie','7 ditë aktuale + 4 javë baseline = 35'],
-  ma:['Mosha maksimale e problemit (ditë kalendarike)','vetëm ngjarjet e WMS-it të këtyre ditëve bëhen kandidatë; mbetjet më të vjetra shfaqen vetëm si shënim'],
-  co:['Cut-off','HH:MM — pas kësaj ore nuk ka inbound'], mh:['Pritja për mapping (orë)','njësitë mbi këtë moshë numërohen si në pritje'], sh:['Furnizim i ngecur pas (orë)',''], gm:['Boshllëk (min)','pa skanime mes dy veprimeve']};
+  ma:['Koha maksimale e pritjes së problemit (ditë kalendarike)','vetëm ngjarjet e WMS-it të këtyre ditëve bëhen kandidatë; mbetjet më të vjetra shfaqen vetëm si shënim'],
+  co:['Cut-off','HH:MM — pas kësaj ore nuk ka inbound'], mh:['Pritja për mapping (orë)','njësitë mbi këtë kohë pritjeje numërohen si në pritje'], sh:['Furnizim i ngecur pas (orë)',''], gm:['Boshllëk (min)','pa skanime mes dy veprimeve']};
 const BN_TH_LABELS={ roster:'Ekipi i planifikuar (operatorë)', breakMin:'Pushimi për person-ditë (min)', minN:'n minimal për besueshmëri të lartë',
   carryMax:'D1 Carryover i lejuar (porosi/ditë)', leadP50Max:'D2 Mediana max porosi → check-out (orë)', leadRisePct:'D2 Rritja e p90 mbi baseline (%)', utilMax:'D3 Shfrytëzimi që shënon kufizimin (%)',
   mapWaitMax:'D4 Njësi në pritje për mapping (max)', mapP90Max:'D4 Check-in → mapping p90 (min)', cycleTolPct:'D5 Toleranca mbi standardin (%)', declinePct:'D6 Rënia javë pas jave (%)',

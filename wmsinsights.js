@@ -122,7 +122,7 @@ function wiRules(P, shifts, pod){
     const below=(D.bands||[]).filter(r=>r[3]==='Below'&&r[2]>=5).length, tot=(D.bands||[]).filter(r=>r[2]>=5).length;
     if(tot && below/tot>=0.3) add({kind:'Shumë operatorë nën mesataren e ekipit', level:'info', area:'Produktiviteti', text:`${below} nga ${tot} llogari me ≥ 5 ditë aktive janë nën 75% të mesatares së ekipit (${(+P.K.avg).toFixed(0)} op. të peshuara/ditë) në 30 ditë — kontrollo ndarjen e punës dhe punët pa skaner para se të nxjerrësh përfundime individuale.`, evidence:'ProductLogs 2/7/4,18 · pesha 0.8/0.6/1.0', src:'WMS Pulse', at:P.generatedAt, go:'pulse'});
     const st25=(D.status||[]).filter(r=>r[2]===25).reduce((a,r)=>a+r[5],0);
-    if(st25) add({kind:'Porosi në status "At warehouse / Local Seller" mbi 72h', level:'warn', area:'Rrjedha e porosive', text:`${wiN(st25)} porosi të krijuara në 30 ditët e fundit janë ende në statusin 25 pas më shumë se 72 orësh (të gjitha depot).`, evidence:'Orders.WmsStatusId = 25 · mosha > 72h', src:'WMS Pulse', at:P.generatedAt, go:'pulse'});
+    if(st25) add({kind:'Porosi në status "At warehouse / Local Seller" mbi 72h', level:'warn', area:'Rrjedha e porosive', text:`${wiN(st25)} porosi të krijuara në 30 ditët e fundit janë ende në statusin 25 pas më shumë se 72 orësh (të gjitha depot).`, evidence:'Orders.WmsStatusId = 25 · koha e pritjes > 72h', src:'WMS Pulse', at:P.generatedAt, go:'pulse'});
   }
   /* ---------- shifts × schedule (today, live) ---------- */
   if(shifts && !shifts.error){
