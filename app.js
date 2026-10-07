@@ -341,7 +341,7 @@ const Store = {
 };
 const seedCollections = ['config','employees','departments','processes','observations','measurements',
   'orders','products','staffSkills','staffObs','problems','kpiRecords','hqInteractions','quickWins','briefings','validations',
-  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions','planActions','planChecks','planKpis'];
+  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions','planActions','planChecks','planKpis','unlinkedReturns'];
 
 function audit(entity,recId,action,before,after){
   const changes=[];
@@ -461,6 +461,7 @@ const ROUTES = [
   {id:'pod', title:'POD — Proof of Delivery', ic:'🚚', render:renderPod},
   {id:'shipments', title:'Shipments', ic:'🚛', render:renderShipments},
   {id:'returns', title:'Kthimet', ic:'↩️', render:renderReturns},
+  {id:'kthimepl', title:'Kthime pa lidhje', ic:'📦', render:renderUnlinkedReturns},
   {id:'maps', title:'Process Maps', ic:'🗺', render:renderMaps},
   {id:'flows', title:'Actual Process Flow', ic:'🔀', render:renderActualFlows},
   {sec:'People'},
