@@ -7,13 +7,20 @@ import "server-only";
 import type { EntryStatus, ShiftCategory } from "./constants";
 import { db } from "./db";
 import type { ISODate } from "./dates";
-import type { EmployeeDTO, EntryDTO, ShiftDTO } from "./types";
+import type { EmployeeDTO, EntryDTO, PositionDTO, ShiftDTO } from "./types";
 
 export async function getEmployees(opts: { activeOnly?: boolean } = {}): Promise<EmployeeDTO[]> {
   return db.employee.findMany({
     where: opts.activeOnly ? { isActive: true } : undefined,
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-    select: { id: true, name: true, color: true, isActive: true, sortOrder: true, aliases: true },
+    select: { id: true, name: true, color: true, isActive: true, sortOrder: true, aliases: true, positionId: true },
+  });
+}
+
+export async function getPositions(): Promise<PositionDTO[]> {
+  return db.position.findMany({
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    select: { id: true, name: true, description: true, color: true, isActive: true, sortOrder: true },
   });
 }
 

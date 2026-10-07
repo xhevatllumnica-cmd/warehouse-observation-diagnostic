@@ -24,10 +24,28 @@ model Employee {
   sortOrder Int      @default(0)
   /// Emra alternativë të përdorur në Excel, të ndarë me presje (p.sh. "Erik,Eriku").
   aliases   String   @default("")
+  /// Pozita kryesore në depo (Check-in, Mapim, Check-out…); opsionale.
+  positionId String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  entries ScheduleEntry[]
+  position Position?       @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  entries  ScheduleEntry[]
+}
+
+/// Pozitë pune në depo, p.sh. "Check-in", "Mapim", "Check-out".
+model Position {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  /// Përshkrim i shkurtër i detyrave (opsional).
+  description String   @default("")
+  color       String   @default("#64748b")
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  employees Employee[]
 }
 
 /// Shift i paracaktuar, p.sh. "07:00-15:00".

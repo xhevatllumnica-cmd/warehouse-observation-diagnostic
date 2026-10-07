@@ -29,7 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDate } from "@/lib/dates";
-import type { EmployeeDTO } from "@/lib/types";
+import type { EmployeeDTO, PositionDTO } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EmployeeDialog } from "./employee-dialog";
 
@@ -42,9 +42,11 @@ type Filter = "active" | "inactive" | "all";
 
 export function EmployeesManager({
   employees,
+  positions,
   usage,
 }: {
   employees: EmployeeDTO[];
+  positions: PositionDTO[];
   usage: Record<string, Usage>;
 }) {
   const router = useRouter();
@@ -52,6 +54,7 @@ export function EmployeesManager({
   const [filter, setFilter] = useState<Filter>("active");
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<EmployeeDTO | "new" | null>(null);
+  const positionById = useMemo(() => new Map(positions.map((p) => [p.id, p])), [positions]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -130,6 +133,7 @@ export function EmployeesManager({
             <TableRow>
               <TableHead className="w-12">#</TableHead>
               <TableHead>Emri</TableHead>
+              <TableHead>Pozita</TableHead>
               <TableHead className="hidden md:table-cell">Emra alternativë</TableHead>
               <TableHead className="text-right">Ditë në orar</TableHead>
               <TableHead className="hidden sm:table-cell">Dita e fundit</TableHead>
@@ -153,6 +157,19 @@ export function EmployeesManager({
                       {emp.name}
                       {!emp.isActive && <Badge variant="secondary">Joaktiv</Badge>}
                     </div>
+                  </TableCell>
+                  <TableCell>
+                    {(() => {
+                      const p = emp.positionId ? positionById.get(emp.positionId) : undefined;
+                      return p ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs">
+                          <span className="size-2 rounded-full" style={{ backgroundColor: p.color }} aria-hidden />
+                          {p.name}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      );
+                    })()}
                   </TableCell>
                   <TableCell className="hidden text-muted-foreground md:table-cell">
                     {emp.aliases ? emp.aliases.split(",").join(", ") : "—"}
@@ -228,7 +245,7 @@ export function EmployeesManager({
             })}
             {visible.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                   Asnjë punonjës.
                 </TableCell>
               </TableRow>
@@ -244,6 +261,7 @@ export function EmployeesManager({
 
       <EmployeeDialog
         employee={editing === "new" ? null : editing}
+        positions={positions}
         open={editing !== null}
         defaultColorIndex={employees.length}
         onClose={() => setEditing(null)}

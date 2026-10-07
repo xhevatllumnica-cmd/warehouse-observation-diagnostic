@@ -129,7 +129,7 @@ function statusBadge(s){
 }
 function toast(msg){
   let t=$('#toast'); if(!t){ t=document.createElement('div'); t.id='toast';
-    t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0e3a2a;color:#5bd6a0;border:1px solid #1e4a34;padding:11px 18px;border-radius:10px;z-index:200;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4)'; document.body.appendChild(t); }
+    t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1e8449;color:#fff;border:1px solid #1e8449;padding:11px 18px;border-radius:10px;z-index:200;font-size:13px;box-shadow:0 6px 20px rgba(16,24,40,.18)'; document.body.appendChild(t); }
   t.textContent=msg; t.style.opacity='1';
   clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.transition='opacity .4s'; t.style.opacity='0'; },1800);
 }
@@ -145,6 +145,8 @@ const Store = {
     // additive migration: classify existing processes for Actual Process Flow (never overwrites an existing choice)
     let migrated=false;
     (this.db.processes||[]).forEach(p=>{ if(!p.flowType){ p.flowType=defaultFlowType(p.name); migrated=true; } });
+    if(dedupeDepartments(this.db)) migrated=true;
+    if(typeof bnMigrate==='function' && bnMigrate(this.db)) migrated=true;   // Bottleneck Register fields on existing problems (bottleneck.js)
     // one-time: drop "Arrival" — it is a starting event, not an operational process.
     if(!this.db.config) this.db.config={};
     this.db.config.migrations = this.db.config.migrations || {};
@@ -228,7 +230,89 @@ const Store = {
     if(migrated) this.persist();
     return this.db;
   },
-  persist(){ localStorage.setItem(DB_KEY, JSON.stringify(this.db)); },
+  persist(){ localStorage.setItem(DB_KEY, JSON.stringify(this.db)); this.schedulePush(); },
+  /* ---- shared server copy (wods-db.json via the local agent) ------------------------------
+     Every browser on this machine (Chrome, Edge, the Claude pane…) has its own localStorage, so
+     the agent keeps ONE canonical copy. Boot pulls it, every persist pushes it (debounced), and a
+     60 s poll pulls changes made elsewhere (another tab, or the agent's 21:30 report job). */
+  serverSavedAt:null, pushTimer:null, pushing:false,
+  onAgent(){ return typeof wmsOnAgent==='function' && wmsOnAgent(); },
+  stamp(){ this.db.meta=this.db.meta||{}; this.db.meta.savedAt=nowISO(); return this.db.meta.savedAt; },
+  schedulePush(){ if(!this.onAgent()) return; clearTimeout(this.pushTimer); this.pushTimer=setTimeout(()=>this.pushToServer(),600); },
+  async pushToServer(){
+    if(!this.onAgent() || this.pushing) { if(this.pushing) this.schedulePush(); return; }
+    this.pushing=true;
+    try{
+      const savedAt=this.stamp(); localStorage.setItem(DB_KEY, JSON.stringify(this.db));
+      const r=await fetch('/db',{method:'PUT',headers:{'Content-Type':'application/json','X-Base-Saved-At':this.serverSavedAt||''},body:JSON.stringify(this.db)});
+      if(r.status===409){ const j=await r.json(); if(j&&j.db){ this.mergeFrom(j.db); this.serverSavedAt=j.db.meta&&j.db.meta.savedAt; this.pushing=false; return this.pushToServer(); } }
+      else if(r.ok){ this.serverSavedAt=savedAt; }
+    }catch(e){ /* agent offline — local copy stays authoritative until it is back */ }
+    this.pushing=false;
+  },
+  async pullFromServer(opts){
+    opts=opts||{}; if(!this.onAgent()) return false;
+    try{
+      const r=await fetch('/db'+(this.serverSavedAt?'?since='+encodeURIComponent(this.serverSavedAt):''),{cache:'no-store'});
+      if(r.status===404){ await this.pushToServer(); return false; }         // first browser on this machine seeds the server copy
+      if(r.status===304 || !r.ok) return false;
+      const srv=await r.json(); if(!srv||!srv.config) return false;
+      const srvAt=(srv.meta&&srv.meta.savedAt)||''; const locAt=(this.db.meta&&this.db.meta.savedAt)||'';
+      this.serverSavedAt=srvAt;
+      // a browser that never joined the shared copy: adopt it outright when this browser holds nothing of its own,
+      // otherwise union the two (natural keys — nothing is lost, nothing double-counted) and push the result
+      if(opts.initial && !locAt){
+        const own=['observations','measurements','problems','staffObs','kpiRecords','validations'].reduce((a,c)=>a+((this.db[c]||[]).length),0);
+        if(!own){ this.db=srv; localStorage.setItem(DB_KEY, JSON.stringify(this.db)); this.load(); return true; }
+        this.mergeFrom(srv); localStorage.setItem(DB_KEY, JSON.stringify(this.db)); this.load(); await this.pushToServer(); return true;
+      }
+      if(srvAt && srvAt!==locAt){ const changed=this.mergeFrom(srv); if(changed){ localStorage.setItem(DB_KEY, JSON.stringify(this.db)); } return changed; }
+    }catch(e){}
+    return false;
+  },
+  /* union per collection (natural keys for WMS rows so two browsers' separate syncs never double-count),
+     newest record wins; config/meta/wms objects: newer side wins */
+  natKey(k,r){
+    if(k==='wmsPrepared'||k==='wmsCheckin') return 'nk|'+r.date+'|'+r.operator;
+    if(k==='wmsFlow') return 'nk|'+r.date;
+    if(k==='wmsStats') return 'nk|'+r.at;
+    if(k==='wmsSyncLog') return 'nk|'+r.at+'|'+r.operation;
+    if(k==='dailyReports') return 'nk|'+r.date;
+    if(k==='weeklyReports') return 'nk|'+r.weekStart;
+    if(k==='observations' && r.analysisKey) return 'ak|'+r.analysisKey;
+    return 'id|'+r.id;
+  },
+  mergeFrom(other){
+    const ts=r=>r.updatedAt||r.importedAt||r.generatedAt||r.createdAt||r.at||'';
+    let changed=false; const mine=this.db;
+    const srvNewer=((other.meta&&other.meta.savedAt)||'') > ((mine.meta&&mine.meta.savedAt)||'');
+    // tombstones from both sides: a record deleted anywhere stays deleted everywhere
+    const dead=Object.assign({}, other.deleted||{}, mine.deleted||{});
+    if(JSON.stringify(dead)!==JSON.stringify(mine.deleted||{})){ mine.deleted=dead; changed=true; }
+    Object.keys(other).forEach(k=>{
+      const ov=other[k];
+      if(k==='deleted') return;
+      if(Array.isArray(ov)){
+        const mv=Array.isArray(mine[k])?mine[k]:(mine[k]=[]);
+        // drop anything the other side has deleted since
+        for(let i=mv.length-1;i>=0;i--){ if(mv[i]&&typeof mv[i]==='object'&&('id' in mv[i])&&dead[k+'|'+this.natKey(k,mv[i])]){ mv.splice(i,1); changed=true; } }
+        if(!ov.length) return;
+        if(!ov[0] || typeof ov[0]!=='object' || !('id' in ov[0])){ if(srvNewer && JSON.stringify(mv)!==JSON.stringify(ov)){ mine[k]=ov; changed=true; } return; }
+        const byKey=new Map(mv.map(r=>[this.natKey(k,r),r]));
+        ov.forEach(r=>{ const key=this.natKey(k,r); if(dead[k+'|'+key]) return; const m=byKey.get(key); if(!m){ mv.push(r); byKey.set(key,r); changed=true; } else if(ts(r)>ts(m) || (srvNewer && ts(r)===ts(m) && JSON.stringify(r)!==JSON.stringify(m))){ Object.assign(m,r); changed=true; } });
+        // keep newest-first ordering the UI expects
+        mv.sort((a,b)=>ts(b)<ts(a)?-1:(ts(b)>ts(a)?1:0));
+      } else if(ov && typeof ov==='object'){
+        if(k==='meta') return;
+        if(srvNewer && JSON.stringify(mine[k])!==JSON.stringify(ov)){ mine[k]=ov; changed=true; }
+      }
+    });
+    if(srvNewer){ mine.meta=Object.assign({},mine.meta,other.meta); }
+    return changed;
+  },
+  startPolling(){ if(!this.onAgent() || this._poll) return;
+    this._poll=setInterval(async()=>{ if($('#modalRoot') && $('#modalRoot').children.length) return;   // never re-render under an open form
+      const changed=await this.pullFromServer(); if(changed){ go(); toast('Të dhënat u rifreskuan'); } }, 60000); },
   col(name){ return this.db[name] || (this.db[name]=[]); },
   get(name,id){ return this.col(name).find(r=>r.id===id); },
   insert(name,rec){
@@ -250,12 +334,14 @@ const Store = {
     const i=this.col(name).findIndex(r=>r.id===id); if(i<0) return;
     const before=this.col(name)[i];
     audit(name, id, 'delete', before, null);
+    // tombstone: a union merge with another browser would otherwise resurrect the record
+    this.db.deleted=this.db.deleted||{}; this.db.deleted[name+'|'+this.natKey(name,before)]=nowISO();
     this.col(name).splice(i,1); this.persist();
   },
 };
 const seedCollections = ['config','employees','departments','processes','observations','measurements',
   'orders','products','staffSkills','staffObs','problems','kpiRecords','hqInteractions','quickWins','briefings','validations',
-  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','audit'];
+  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions','planActions','planChecks','planKpis'];
 
 function audit(entity,recId,action,before,after){
   const changes=[];
@@ -272,6 +358,24 @@ function audit(entity,recId,action,before,after){
 }
 function summarize(r){ if(!r) return ''; return r.title||r.what||r.problem||r.name||r.orderRef||r.sku||r.metric||r.id||''; }
 
+/* Departments with the same name are one department. Every browser that opened the app for the first time used to
+   seed the default list with fresh random ids, and the shared-copy merge (by id) then kept all of them — 31 rows for
+   11 names (10/2026). Runs on every load: keeps the department that other records point to (else the first), points
+   every reference (hqInteractions.departmentId) at it and tombstones the rest so no other browser brings them back. */
+function dedupeDepartments(db){
+  const deps=db.departments||[]; if(deps.length<2) return false;
+  const used=new Set((db.hqInteractions||[]).map(x=>x.departmentId).filter(Boolean));
+  const groups={}; deps.forEach(d=>{ const k=String(d.name||'').trim().toLowerCase(); (groups[k]=groups[k]||[]).push(d); });
+  const remap={}, drop=new Set();
+  Object.values(groups).forEach(g=>{ if(g.length<2) return;
+    const keep=g.find(d=>used.has(d.id)) || g[0];
+    g.forEach(d=>{ if(d!==keep){ remap[d.id]=keep.id; drop.add(d.id); } }); });
+  if(!drop.size) return false;
+  (db.hqInteractions||[]).forEach(x=>{ if(remap[x.departmentId]) x.departmentId=remap[x.departmentId]; });
+  db.deleted=db.deleted||{}; const at=nowISO(); drop.forEach(id=>{ db.deleted['departments|id|'+id]=at; });
+  db.departments=deps.filter(d=>!drop.has(d.id));
+  return true;
+}
 /* ----------------------------------------------------------------- seed data */
 function seedDB(){
   const P=(name,cat,i)=>({id:uid('prc'),name,category:cat,order:i,active:true,flowType:defaultFlowType(name)});
@@ -282,7 +386,7 @@ function seedDB(){
     ...['Refusals','Returns','Returns verification','Damaged Goods','Waste','Inventory'].map(n=>P(n,'Other',i++)),
   ];
   const departments=['Operations','Procurement','Sales','Customer Support','IT/Product','Finance','HR/BNJ','Logistics/Delivery']
-    .map(n=>({id:uid('dep'),name:n}));
+    .map(n=>({id:'dep_'+n.toLowerCase().replace(/[^a-z0-9]+/g,'-'), name:n}));   // stable ids: a second browser's seed cannot duplicate them
   // A few example employees (clearly editable) so the matrix is usable immediately.
   const employees=[
     {id:uid('emp'),name:'Employee A',role:'Operator',shift:'Day',active:true,example:true},
@@ -347,24 +451,36 @@ function processesByCat(cat){ return activeProcesses().filter(p=>p.category===ca
 const ROUTES = [
   {sec:'Observe'},
   {id:'dashboard', title:'Dashboard', ic:'▤', render:renderDashboard},
+  {id:'metrikat', title:'Metrikat e mia', ic:'🧭', render:renderMyMetrics},
   {id:'observations', title:'Daily Observation', ic:'👁', render:renderObservations},
   {id:'timer', title:'Process Measurement', ic:'⏱', render:renderTimer},
+  {id:'raportet', title:'Raportet', ic:'📑', render:renderRaportet},
   {sec:'Flows'},
   {id:'orders', title:'Order Flow', ic:'➜', render:renderOrders},
   {id:'inbound', title:'Product / Inbound Flow', ic:'⇩', render:renderInbound},
+  {id:'pod', title:'POD — Proof of Delivery', ic:'🚚', render:renderPod},
+  {id:'shipments', title:'Shipments', ic:'🚛', render:renderShipments},
+  {id:'returns', title:'Kthimet', ic:'↩️', render:renderReturns},
   {id:'maps', title:'Process Maps', ic:'🗺', render:renderMaps},
   {id:'flows', title:'Actual Process Flow', ic:'🔀', render:renderActualFlows},
   {sec:'People'},
   {id:'matrix', title:'Staff Capability Matrix', ic:'▦', render:renderMatrix},
   {id:'staffobs', title:'Staff Observation Log', ic:'📝', render:renderStaffObs},
+  {id:'capacity', title:'Kapaciteti & Stafi', ic:'👥', render:renderCapacity},
+  {id:'orari', title:'Orari i punës', ic:'📅', render:renderOrari},
   {sec:'Diagnose'},
-  {id:'problems', title:'Bottleneck Register', ic:'⚠', render:renderProblems},
+  {id:'problems', title:'Bottleneck Register', ic:'⚠', render:(typeof renderBottleneck==='function'? renderBottleneck : renderProblems)},
+  {id:'plan', title:'Plani i përmirësimit', ic:'🎯', render:renderPlan},
+  {id:'tabela', title:'Tabela ditore', ic:'📺', render:renderTabela},
+  {id:'postat', title:'Postat — në pritje', ic:'🏤', render:renderPostat},
   {id:'kpi', title:'KPI Baseline', ic:'📊', render:renderKPI},
   {id:'validation', title:'Validation', ic:'⚖', render:renderValidation},
   {id:'insights', title:'Insights & Alerts', ic:'💡', render:renderInsights},
   {sec:'Interface'},
   {id:'hq', title:'HQ Interface', ic:'🏢', render:renderHQ},
   {sec:'WMS'},
+  {id:'stats', title:'Statistikat e WH', ic:'📈', render:renderStatsWH},
+  {id:'pulse', title:'WMS Pulse', ic:'📡', render:renderPulse},
   {id:'wms', title:'WMS Data & Performance', ic:'🔌', render:renderWMS},
   {sec:'Reports'},
   {id:'reports', title:'Reports', ic:'📄', render:renderReports},
@@ -846,107 +962,87 @@ function priorBaseline(d){
     negRate: days.reduce((a,m)=>a+m.negRate,0)/days.length,
     waitShare: ws.length? ws.reduce((a,m)=>a+m.waitShare,0)/ws.length : null };
 }
-/* Auto-generated Albanian expert summary of the observation journal for one day, with a trend read. */
+/* Daily narrative summary. The narrative itself is built by shared.js (WODS.buildDailyNarrative — the very same
+   code the agent runs for the 21:30 report), so browser and archive never disagree on wording. If the agent has
+   archived a report for the day, that snapshot is shown by default (WMS figures keep drifting after the shift);
+   "Shiko live" recomputes from current data. Counters, charts and lists sit under a fold. */
+function storedReport(d){ return Store.col('dailyReports').find(r=>r.date===d)||null; }
+let obsSumLive=false;
 function drawObsSummary(date){
-  if(date) obsSumDate=date;
+  if(date){ obsSumDate=date; obsSumLive=false; }
   const d=obsSumDate||todayStr();
   const box=$('#obsSummary'); if(!box) return;
   const rows=Store.col('observations').filter(o=>o.date===d);
-  if(!rows.length){ box.innerHTML=`<div class="empty">Ende s'ka vëzhgime të regjistruara për ${h(fmtDateAl(d))}. Sapo t'i futësh, kjo përmbledhje ndërtohet vetë.</div>`; return; }
+  const stored=storedReport(d);
+  const live=WODS.buildDailyNarrative(Store.db,d);
+  if(live.empty && !stored){ box.innerHTML=`<div class="empty">Ende s'ka vëzhgime as të dhëna WMS për ${h(fmtDateAl(d))}. Sapo t'i futësh, kjo përmbledhje ndërtohet vetë.</div>`; return; }
+  const useStored=!!stored && !obsSumLive;
+  const narrative=useStored? stored.html : live.html;
+
+  // ---- detail figures (journal only) ----
   const byType={}, byProc={}, bySev={}, byVal={};
-  let interruptions=0,rework=0,errors=0,waiting=0,processing=0,withHyp=0,validated=0,pending=0,attCount=0;
+  let withHyp=0,validated=0,pending=0,attCount=0;
   rows.forEach(o=>{
     byType[o.type||'—']=(byType[o.type||'—']||0)+1;
     const pn=procName(o.processId)||'I pacaktuar'; byProc[pn]=(byProc[pn]||0)+1;
     if(o.severity) bySev[o.severity]=(bySev[o.severity]||0)+1;
     if(o.validationStatus && o.validationStatus!=='Not required') byVal[o.validationStatus]=(byVal[o.validationStatus]||0)+1;
-    if(o.interruption) interruptions++; if(o.rework) rework++; if(o.error) errors++;
-    waiting+=num(o.waitingMin,0); processing+=num(o.processingMin,0);
-    if(o.cause) withHyp++;
-    if(o.validationStatus==='Validated') validated++;
-    if(o.validationStatus==='Pending validation') pending++;
+    if(o.cause) withHyp++; if(o.validationStatus==='Validated') validated++; if(o.validationStatus==='Pending validation') pending++;
     attCount+=(o.attachments||[]).length;
   });
   const topType=Object.entries(byType).sort((a,b)=>b[1]-a[1]);
   const topProc=Object.entries(byProc).sort((a,b)=>b[1]-a[1]);
-  const maxT=Math.max(...topType.map(x=>x[1])), maxP=Math.max(...topProc.map(x=>x[1]));
-  const nProc=Object.keys(byProc).length;
-  const repAl=[...topType.filter(x=>x[1]>=2).map(x=>`tipi “${x[0]}” ×${x[1]}`), ...topProc.filter(x=>x[1]>=2).map(x=>`procesi “${x[0]}” ×${x[1]}`)];
+  const maxT=Math.max(1,...topType.map(x=>x[1])), maxP=Math.max(1,...topProc.map(x=>x[1]));
   const openHyp=rows.filter(o=>o.cause && (!o.validationStatus || o.validationStatus==='Pending validation'));
   const dueFollow=Store.col('observations').filter(o=>o.followUpDate && o.followUpDate<=d && !['Validated','Not confirmed','Partially validated'].includes(o.validationStatus||''));
+  const M=dayMetrics(d); const W=WODS.wmsDayFacts(Store.db,d);
 
-  // ---- expert Albanian narrative with trend analysis (observations + measurements) ----
-  const M=dayMetrics(d), B=priorBaseline(d);
-  const P1=[];
-  P1.push(`Më <b>${h(fmtDateAl(d))}</b>, u regjistruan <b>${M.obsN}</b> vëzhgime dhe <b>${M.measN}</b> matje në ${nProc} proces${nProc!==1?'e':''}.`);
-  if(topType.length) P1.push(`Tipi më i shpeshtë i vëzhgimit ishte “${h(topType[0][0])}” (${topType[0][1]})${topType.length>1?`, krahas ${slAl(topType.slice(1,3).map(([k,c])=>`“${h(k)}” (${c})`))}`:''}.`);
-  if(M.waitMin||M.procMin){ let s=`Koha e regjistruar: <b>${Math.round(M.procMin)} min</b> procesim aktiv dhe <b>${Math.round(M.waitMin)} min</b> pritje`;
-    if(M.waitShare!=null) s+=` (pritja zë <b>${Math.round(M.waitShare)}%</b> të kohës së ciklit të vëzhguar)`;
-    s+='.'; if(M.waitShare!=null && M.waitShare>=50) s+=' Kjo tregon se koha humbet kryesisht në pritje, jo në punë aktive.'; P1.push(s); }
-  const fb=[]; if(M.interruptions)fb.push(`${M.interruptions} ndërprerje`); if(M.rework)fb.push(`${M.rework} ${M.rework===1?'ripërpunim':'ripërpunime'}`); if(M.errors)fb.push(`${M.errors} ${M.errors===1?'gabim':'gabime'}`);
-  if(fb.length){ let s=`U regjistruan ${slAl(fb)}.`; if(M.neg>=Math.max(3,M.activity)) s+=' Këta tregues sinjalizojnë paqëndrueshmëri në rrjedhën e proceseve.'; P1.push(s); }
-  if(M.withHyp) P1.push(`Janë ngritur ${M.withHyp} shkaqe të mundshme (hipoteza); ${M.pending} ${M.pending===1?'pret':'presin'} validim dhe ${M.validated} ${M.validated===1?'është':'janë'} validuar.${M.pending>M.validated?' Diagnoza është ende në fazë hipotezash — nevojitet validim para çdo veprimi.':''}`);
-  else P1.push('Nuk u ngritën hipoteza — hyrjet janë thjesht vëzhgime faktike.');
-  if(repAl.length) P1.push(`Bie në sy përsëritja: ${slAl(repAl)} — sinjal për t'u validuar, jo ende përfundim.`);
-
-  // trend verdict
-  let trendSentence, overall;
-  if(!B){ overall='baseline'; trendSentence=`Kjo është ndër ditët e para me të dhëna të mjaftueshme — baza krahasuese (baseline) po ndërtohet, ndaj ende nuk mund të përcaktohet një trend i qartë përmirësimi apo keqësimi të gjendjes në depo.`; }
-  else {
-    let score=0; const cmp=[];
-    if(B.negRate>0 || M.negRate>0){ if(M.negRate<=B.negRate*0.85) score++; else if(M.negRate>=B.negRate*1.15) score--;
-      cmp.push(`tregues negativë për njësi aktiviteti: ${M.negRate.toFixed(2)} sot kundrejt ${B.negRate.toFixed(2)} mesatarja e mëparshme`); }
-    if(M.waitShare!=null && B.waitShare!=null){ if(M.waitShare<=B.waitShare-5) score++; else if(M.waitShare>=B.waitShare+5) score--;
-      cmp.push(`pesha e pritjes ${Math.round(M.waitShare)}% sot kundrejt ${Math.round(B.waitShare)}% më parë`); }
-    overall = score>0?'improve':(score<0?'worsen':'stable');
-    const verd = overall==='improve' ? 'Vërehet një <b>trend përmirësimi</b> të gjendjes në depo.'
-      : overall==='worsen' ? 'Vërehet një <b>trend keqësimi</b> të gjendjes në depo — kërkon vëmendje.'
-      : 'Nuk vërehet ndonjë trend i qartë përmirësimi të proceseve në depo; gjendja është kryesisht <b>e qëndrueshme</b>.';
-    trendSentence = `Krahasuar me mesataren e ${B.n} ditë${B.n!==1?'ve':''} të mëparshme me të dhëna${cmp.length?` (${slAl(cmp)})`:''}: ${verd}`;
-  }
-  // expert recommendation
-  let rec;
-  if(M.waitShare!=null && M.waitShare>=50 && topProc.length) rec=`Përqendrohu te reduktimi i kohës së pritjes, veçanërisht te procesi “${h(topProc[0][0])}”, ku duket humbja kryesore e kohës.`;
-  else if((M.errors+M.rework)>=Math.max(2,Math.round(M.activity/2)) && topProc.length) rec=`Fut kontrolle cilësie te procesi “${h(topProc[0][0])}” për të ulur gabimet dhe ripërpunimet.`;
-  else if(M.pending>0) rec=`Validoji hipotezat e hapura (${M.pending}) para se të ndërmarrësh ndryshime operacionale.`;
-  else rec=`Vazhdo mbledhjen sistematike të matjeve dhe vëzhgimeve për të forcuar bazën krahasuese.`;
-
-  const narrative=`<div class="report" style="padding:14px 16px;margin-bottom:12px;line-height:1.75">
-      <div style="font-weight:700;color:var(--accent);font-size:12px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">Raport ditor · analizë profesionale</div>
-      <p style="margin:0">${P1.join(' ')}</p>
-      <p style="margin:10px 0 0"><b>Trendi i gjendjes:</b> ${trendSentence}</p>
-      <p style="margin:10px 0 0"><span class="etag et-rec">rekomandim</span> ${rec}</p>
-      <p class="meta" style="margin:10px 0 0">Ky raport bazohet vetëm në të dhënat e futura (vëzhgime + matje) dhe ruan ndarjen fakt–hipotezë; përfundimet kërkojnë validim.</p></div>`;
+  const genAt=stored? new Date(stored.generatedAt) : null;
+  const toolbar=`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      ${stored?`<span class="badge ${useStored?'b-ok':'b-muted'}" title="Gjeneruar nga agjenti">${useStored?'📌 Raport i arkivuar':'Raport i arkivuar'} · ${h(genAt.toLocaleDateString())} ${h(genAt.toTimeString().slice(0,5))}</span>
+                <button class="btn sm" id="obsSumToggle">${useStored?'Shiko live':'Shiko të arkivuarin'}</button>`
+              :`<span class="badge b-muted">Live · nga të dhënat aktuale</span>`}
+      ${Store.onAgent()?`<button class="btn sm" id="obsSumRun" title="Sinkronizon WMS, shton gjetjet automatike dhe arkivon raportin për këtë datë">⚙ Gjenero raportin tani</button>`:''}
+      <span class="hint" style="margin:0 0 0 auto">Raporti automatik gjenerohet nga agjenti çdo ditë pas orës ${h((Store.db.wms&&Store.db.wms.dailyReportTime)||'21:30')}.</span>
+    </div>`;
 
   const kpi=(val,lbl,cls)=>`<div style="flex:1;min-width:120px"><div style="font-size:22px;font-weight:800" class="${cls||''}">${val}</div><div class="muted small">${lbl}</div></div>`;
-  box.innerHTML=narrative+`
-    <div class="meta muted small" style="margin-bottom:8px">Gjeneruar ${h(new Date().toLocaleString())} · ${rows.length} vëzhgime më ${h(fmtDateAl(d))}</div>
-    <div style="display:flex;gap:14px;flex-wrap:wrap;padding:10px;background:var(--bg2);border-radius:10px;border:1px solid var(--line)">
+  box.innerHTML=toolbar+narrative+`
+    <div class="meta muted small" style="margin-bottom:8px">${useStored?'Arkivuar':'Gjeneruar'} ${h((genAt||new Date()).toLocaleString())} · ${rows.length} vëzhgime më ${h(fmtDateAl(d))}</div>
+    <details>
+      <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:6px 0">Detajet dhe shifrat</summary>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;padding:10px;background:var(--bg2);border-radius:10px;border:1px solid var(--line);margin-top:8px">
       ${kpi(rows.length,'Vëzhgime')}
       ${kpi(withHyp,'Me hipotezë','')}
       ${kpi(pending,'Presin validim', pending?'warn':'')}
       ${kpi(validated,'Të validuara', validated?'ok':'')}
       ${kpi(M.interruptions+'/'+M.rework+'/'+M.errors,'Ndërprerje / ripërpunim / gabim', (M.errors?'crit':''))}
       ${kpi(Math.round(M.procMin)+'m / '+Math.round(M.waitMin)+'m','Procesim / pritje (obs+matje)')}
+      ${W&&W.prep?kpi(W.prep,'Porosi të përgatitura (WMS)'):''}
+      ${W&&W.outRate!=null?kpi(W.outRate+'%','Check-out / check-in (WMS)', W.outRate<75?'warn':'ok'):''}
     </div>
-
-    <div class="grid g-2" style="margin-top:12px">
+    ${rows.length?`<div class="grid g-2" style="margin-top:12px">
       <div><h3 style="font-size:12.5px;margin:0 0 6px">Sipas tipit të vëzhgimit</h3>${topType.map(([k,c])=>barRow(k,c,maxT,'var(--accent)')).join('')}</div>
       <div><h3 style="font-size:12.5px;margin:0 0 6px">Sipas procesit</h3>${topProc.map(([k,c])=>barRow(k,c,maxP,'var(--imp)')).join('')}</div>
-    </div>
-
+    </div>`:''}
     ${Object.keys(bySev).length?`<div style="margin-top:10px"><b class="small">Rëndësia:</b> ${SEVERITIES.filter(s=>bySev[s.k]).map(s=>`${sevBadge(s.k)} ${bySev[s.k]}`).join(' &nbsp; ')}</div>`:''}
     ${Object.keys(byVal).length?`<div style="margin-top:6px"><b class="small">Validimi:</b> ${Object.entries(byVal).map(([k,c])=>`<span class="badge b-muted">${h(k)}: ${c}</span>`).join(' ')}</div>`:''}
-
-    <h3 style="font-size:12.5px;margin:14px 0 6px">Faktet e vëzhguara <span class="faint">(çka u pa realisht)</span></h3>
-    <ul style="margin:0;padding-left:18px">${rows.map(o=>`<li style="margin:3px 0"><span class="etag et-obs">e vëzhguar</span>${h(o.time||'')} ${h(o.what||'')}${o.type?` <span class="faint small">[${h(o.type)}]</span>`:''}</li>`).join('')}</ul>
-
+    ${rows.length?`<h3 style="font-size:12.5px;margin:14px 0 6px">Faktet e vëzhguara <span class="faint">(çka u pa realisht)</span></h3>
+    <ul style="margin:0;padding-left:18px">${rows.map(o=>`<li style="margin:3px 0"><span class="etag et-obs">e vëzhguar</span>${h(o.time||'')} ${h(o.what||'')}${o.type?` <span class="faint small">[${h(o.type)}]</span>`:''}${o.auto?` <span class="faint small">· auto</span>`:''}</li>`).join('')}</ul>`:''}
     ${openHyp.length?`<h3 style="font-size:12.5px;margin:14px 0 6px">Hipotezat e hapura <span class="faint">(kërkojnë validim)</span></h3>
       <ul style="margin:0;padding-left:18px">${openHyp.map(o=>`<li style="margin:3px 0"><span class="etag et-hyp">hipotezë</span>${h(o.cause)}${o.validationAction?` <span class="faint small">→ ${h(o.validationAction)}</span>`:''}</li>`).join('')}</ul>`:''}
-
     ${dueFollow.length?`<div class="note warn" style="margin-top:12px"><b>Follow-up që duhen bërë (deri më ${h(fmtDateAl(d))}):</b><ul style="margin:6px 0 0;padding-left:18px">${dueFollow.map(o=>`<li>${h(fmtDateAl(o.followUpDate))} — ${h((o.what||o.cause||'').slice(0,70))} <span class="faint small">(${h(o.validationStatus||'pending')})</span></li>`).join('')}</ul></div>`:''}
-
-    ${attCount?`<div class="hint" style="margin-top:8px">📎 ${attCount} fajll(a) evidencë bashkëngjitur vëzhgimeve të kësaj dite.</div>`:''}`;
+    ${attCount?`<div class="hint" style="margin-top:8px">📎 ${attCount} fajll(a) evidencë bashkëngjitur vëzhgimeve të kësaj dite.</div>`:''}
+    </details>`;
+  const tg=$('#obsSumToggle'); if(tg) tg.onclick=()=>{ obsSumLive=!obsSumLive; drawObsSummary(); };
+  const run=$('#obsSumRun'); if(run) run.onclick=async()=>{
+    run.disabled=true; run.textContent='⏳ Po gjenerohet…';
+    try{ const r=await fetch('/report/run?date='+encodeURIComponent(d),{method:'POST'}); const j=await r.json();
+      if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+      await Store.pullFromServer(); obsSumLive=false; drawObsTable();
+      toast(`Raporti u arkivua · ${j.autoObservations||0} gjetje automatike${j.synced?' · WMS sync ✓':''}`); }
+    catch(e){ toast('Gjenerimi dështoi: '+e.message); run.disabled=false; run.textContent='⚙ Gjenero raportin tani'; }
+  };
 }
 let obsFilter={q:'',type:'',status:'',proc:''};
 function observationsFilters(){
@@ -994,9 +1090,10 @@ function drawObsTable(){
 }
 function convertObsToProblem(id){
   const o=Store.get('observations',id); if(!o) return;
-  Store.insert('problems',{ dateIdentified:todayStr(), processId:o.processId, problem:o.what, location:o.location,
+  const norm=r=> typeof bnNormalize==='function'? bnNormalize(r) : r;   // register fields (BN id, phase, RPN…) when the Bottleneck module is loaded
+  Store.insert('problems',norm({ dateIdentified:todayStr(), processId:o.processId, problem:o.what, location:o.location,
     frequency:1, evidence:o.evidence, impact:o.impact, cause:o.cause, severity:o.severity||'Improvement',
-    status:'Under validation', relatedObs:[o.id], priorityScore:0 });
+    status:'Under validation', relatedObs:[o.id], priorityScore:0, source:'Vëzhgim në terren' }));
   Store.update('observations',id,{status:'Converted to problem'});
   toast('Converted to a register entry'); go();
 }
@@ -1310,11 +1407,14 @@ function renderOrders(v){
   v.innerHTML = pagehead('Order Flow Observation',
     'Track a real order through Claim → Picking → Check-out/Packing → Boxing → Dispatch. Record a timestamp at each stage; durations and waiting between stages are computed automatically.',
     `<button class="btn primary" id="addOrder">＋ New order</button>`)
+    + ordersWmsHTML()
+    + `<h3 style="margin:18px 0 8px">Vëzhgime manuale <span class="sub">porosi të ndjekura me dorë (claim, picking, boxing, dispatch) — edhe mbi porositë e WMS-it</span></h3>`
     + `<div id="ordersBody"></div>`;
   $('#addOrder').onclick=()=>openOrderForm();
+  loadOrdersWms();
   drawOrders();
 }
-function openOrderForm(existing){
+function openOrderForm(existing, prefill){
   const fields=[
     {name:'orderRef',label:'Order reference',type:'text',required:true,row:'a'},
     {name:'date',label:'Date',type:'date',required:true,row:'a'},
@@ -1325,11 +1425,11 @@ function openOrderForm(existing){
     {name:'fulfillment',label:'Fulfillment path',type:'select',options:FULFILLMENT_TYPES,row:'c',hint:'How the order was fulfilled. Split = part picked from stock, part cross-docked straight to check-out.'},
     {name:'note',label:'Note',type:'text',ph:'e.g. late items from Seller B staged to check-out; early items picked from racks'},
   ];
-  openForm({title: existing?'Edit order':'New order flow', fields, values: existing||{date:todayStr()},
+  openForm({title: existing?'Edit order':(prefill&&prefill.wmsId?'Vëzhgim · porosia '+prefill.orderRef:'New order flow'), fields, values: existing||prefill||{date:todayStr()},
     onSave:(vals)=>{
       if(existing) Store.update('orders',existing.id,vals);
-      else Store.insert('orders',{...vals, stamps:{}});
-      closeModal(); drawOrders(); toast('Order saved');
+      else Store.insert('orders',{...vals, stamps:{}, ...(prefill&&prefill.wmsId?{wmsId:prefill.wmsId}:{})});
+      closeModal(); drawOrders(); if(typeof drawOrdersWms==='function') drawOrdersWms(); toast('Order saved');
     }});
 }
 function drawOrders(){
@@ -1360,7 +1460,7 @@ function orderCard(o){
   const isCross = o.fulfillment && o.fulfillment.startsWith('Cross-dock');
   const fBadge = o.fulfillment? `<span class="badge ${isSplit?'b-imp':(isCross?'b-new':'b-muted')}">${h(o.fulfillment)}</span>`:'';
   return `<div class="card" style="margin-bottom:14px">
-    <h3>🧾 ${h(o.orderRef)} <span class="sub">${h(o.date)} · ${o.lines||'—'} types · ${o.units||'—'} units · ${h(empName(o.picker))||'no owner'}</span></h3>
+    <h3>🧾 ${h(o.orderRef)} <span class="sub">${h(o.date)} · ${o.lines||'—'} types · ${o.units||'—'} units · ${h(empName(o.picker))||'no owner'}</span>${o.wmsId?` <span class="badge b-muted" title="Vëzhgim mbi një porosi të WMS-it">WMS</span>`:''}</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       ${o.seller?`<span class="small muted">🏷 ${h(o.seller)}</span>`:''} ${fBadge}
     </div>
@@ -1393,11 +1493,14 @@ function renderInbound(v){
   v.innerHTML = pagehead('Product / Inbound Flow',
     'Track a product or batch through Arrival → Receiving → Check-in → Verification → Mapping → Put-away → Storage. Records discrepancies and compares system vs physical location.',
     `<button class="btn primary" id="addProd">＋ New batch</button>`)
+    + inboundWmsHTML()
+    + `<h3 style="margin:18px 0 8px">Vëzhgime manuale <span class="sub">batch-e të regjistruara me dorë dhe vëzhgime fizike mbi furnizimet e WMS-it</span></h3>`
     + `<div id="inbBody"></div>`;
   $('#addProd').onclick=()=>openProdForm();
+  loadInboundWms();
   drawInbound();
 }
-function openProdForm(existing){
+function openProdForm(existing, prefill){
   const fields=[
     {name:'sku',label:'SKU',type:'text',required:true,row:'a'},
     {name:'desc',label:'Description',type:'text',row:'a'},
@@ -1414,11 +1517,11 @@ function openProdForm(existing){
     {name:'discrepancy',label:'Discrepancy',type:'select',options:DISCREPANCIES},
     {name:'note',label:'Note',type:'text'},
   ];
-  openForm({title:existing?'Edit batch':'New inbound batch', fields, values:existing||{date:todayStr()},
+  openForm({title:existing?'Edit batch':(prefill&&prefill.wmsId?'Vëzhgim fizik · furnizimi '+prefill.wmsId:'New inbound batch'), fields, values:existing||prefill||{date:todayStr()},
     onSave:(vals)=>{
       if(existing) Store.update('products',existing.id,vals);
-      else Store.insert('products',{...vals, stamps:{}});
-      closeModal(); drawInbound(); toast('Batch saved');
+      else Store.insert('products',{...vals, stamps:{}, ...(prefill&&prefill.wmsId?{wmsId:prefill.wmsId}:{})});
+      closeModal(); drawInbound(); if(typeof drawInboundWms==='function') drawInboundWms(); toast('Batch saved');
     }});
 }
 function drawInbound(){
@@ -1446,7 +1549,7 @@ function inboundCard(p){
   const isCross = p.handling && p.handling.startsWith('Cross-dock');
   const hBadge = p.handling? `<span class="badge ${isCross?'b-new':(p.handling.startsWith('Staged')?'b-warn':'b-muted')}">${h(p.handling)}</span>`:'';
   return `<div class="card" style="margin-bottom:14px">
-    <h3>📦 ${h(p.sku)} <span class="sub">${h(p.desc||'')} · ${h(p.date)}</span></h3>
+    <h3>📦 ${h(p.sku)} <span class="sub">${h(p.desc||'')} · ${h(p.date)}</span>${p.wmsId?` <span class="badge b-muted" title="Vëzhgim fizik mbi një furnizim të WMS-it">WMS ${h(p.wmsId)}</span>`:''}</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       ${p.seller?`<span class="small muted">🏷 ${h(p.seller)}</span>`:''} ${hBadge} ${p.orderRef?`<span class="small muted">→ order ${h(p.orderRef)}</span>`:''}
     </div>
@@ -2012,15 +2115,18 @@ function renderInsights(v){
   const ins=computeInsights();
   v.innerHTML = pipelineStrip('Diagnose') + pagehead('Insights & Alerts',
     'Patterns detected automatically from your data. Every insight is a <b>data-derived finding</b> and shows its evidence — none is an automatic root-cause conclusion.')
+    + wmsInsightsHTML()
+    + `<h3 style="margin:18px 0 8px">Nga të dhënat e app-it <span class="sub">matjet, vëzhgimet, problemet dhe matrica e aftësive</span></h3>`
     + (ins.length? `<div class="grid g-2">${ins.map(insightCard).join('')}</div>`
        : `<div class="card"><div class="empty">No patterns detected yet. Log more observations, measurements and capability data — insights appear automatically.</div></div>`)
     + aiQueryCard();
   wireAIQuery();
+  loadWmsInsights();
 }
 function insightCard(i){
   const lv={crit:'crit',imp:'warn',warn:'warn'}[i.level]||'';
   const dot={crit:'🔴',imp:'🟠',warn:'🟡'}[i.level]||'💡';
-  return `<div class="card" style="${i.level==='crit'?'border-color:#5a2a2a':''}">
+  return `<div class="card" style="${i.level==='crit'?'border-color:#f3c1c1':''}">
     <h3>${dot} ${h(i.kind)} <span class="sub"><span class="etag et-${i.tag==='hyp'?'hyp':'data'}">${i.tag==='hyp'?'hypothesis':'data-derived'}</span></span></h3>
     <div>${h(i.text)}</div>
     <div class="hint" style="margin-top:8px">Evidence: ${h(i.evidence)}</div></div>`;
@@ -2128,7 +2234,7 @@ function drawHQ(){
   }).join('');
   // orphans: interactions whose department was removed — show so nothing is ever hidden
   const orphan=all.filter(r=>!deps.some(d=>d.id===r.departmentId)).sort(byDate);
-  const orphanHtml = orphan.length? `<div class="card" style="margin-bottom:12px;border-color:#5a3a1a"><h3>⚠ Departament i hequr / i pacaktuar <span class="sub">${orphan.length}</span></h3>${orphan.map(hqRecordHTML).join('')}<div class="hint">Këto interaksione i takonin një departamenti që u fshi. Editoji për t'i ricaktuar te një departament ekzistues.</div></div>`:'';
+  const orphanHtml = orphan.length? `<div class="card" style="margin-bottom:12px;border-color:#f5c9a8"><h3>⚠ Departament i hequr / i pacaktuar <span class="sub">${orphan.length}</span></h3>${orphan.map(hqRecordHTML).join('')}<div class="hint">Këto interaksione i takonin një departamenti që u fshi. Editoji për t'i ricaktuar te një departament ekzistues.</div></div>`:'';
   box.innerHTML=html+orphanHtml;
   $$('#hqBody [data-add]').forEach(b=>b.onclick=()=>{ openHQForm({departmentId:b.dataset.add,date:todayStr()}); });
   $$('#hqBody [data-e]').forEach(b=>b.onclick=()=>openHQForm(Store.get('hqInteractions',b.dataset.e)));
@@ -2611,14 +2717,8 @@ function wmsImportLogs(rawRows, meta){
   Store.persist();
   return {inserted,dups,warn,warnings:[...wset]};
 }
-function wmsImportStats(obj, meta){
-  meta=meta||{};
-  const rec={ id:uid('wst'), at:nowISO(), date:(meta.date||todayStr()),
-    invoiceProductsCheckedIn:num(obj.invoiceProductsCheckedIn), invoiceProductsProcessed:num(obj.invoiceProductsProcessed),
-    invoiceProductsToCheckIn:num(obj.invoiceProductsToCheckIn), ordersReadyToUnmap:num(obj.ordersReadyToUnmap),
-    ordersInProcessing:num(obj.ordersInProcessing), source:'WMS', sourceRef:meta.sourceRef||'', importedAt:nowISO() };
-  Store.col('wmsStats').unshift(rec); Store.persist(); return rec;
-}
+/* WMS imports live in shared.js (same code runs in the agent's 21:30 job); these wrappers persist. */
+function wmsImportStats(obj, meta){ const rec=WODS.importStats(Store.db,obj,meta); Store.persist(); return rec; }
 function wmsOperatorAgg(fromDate,toDate,shiftFilter){
   const logs=Store.col('wmsLogs').filter(l=>{ if(fromDate&&l.date<fromDate)return false; if(toDate&&l.date>toDate)return false; if(shiftFilter&&l.shift!==shiftFilter)return false; return true; });
   const map={};
@@ -2644,9 +2744,46 @@ function renderWMS(v){
   if(onAgent){
     connBadge=`<span class="badge b-ok">🟢 Agjenti i lidhur</span>`
       + `<span class="badge ${cfg.autoSync?'b-ok':'b-muted'}">Auto-sync ${cfg.autoSync?('ON · çdo '+(cfg.interval||30)+' min'):'OFF'}</span>`;
-    connHint=cfg.lastError
-      ? `<div class="hint" style="margin-top:6px;color:#f2a">⚠ ${h(cfg.lastError)==='auth_expired'?'Cookie-ja e WMS ka skaduar — përditësoje te <b>wms-agent.config.json</b> dhe ristarto agjentin.':h(cfg.lastError)}</div>`
-      : `<div class="hint" style="margin-top:6px">Të dhënat merren <b>automatikisht</b> nga agjenti lokal (localhost) me sesionin tënd të autorizuar të WMS-it. S'ka hapa manualë.</div>`;
+    connHint=(cfg.lastError
+      ? `<div class="hint" style="margin-top:6px;color:var(--crit)">⚠ ${h(cfg.lastError)==='auth_expired'?'Sesioni i WMS ka skaduar (ndodh kur PC-ja rri i fikur / në sleep — serveri e mbyll sesionin). Ngjit cookie-n e re më poshtë; agjenti e provon dhe e ruan vetë.':h(cfg.lastError)}</div>`
+      : `<div class="hint" style="margin-top:6px">Të dhënat merren <b>automatikisht</b> nga agjenti lokal (localhost) me sesionin tënd të autorizuar të WMS-it. S'ka hapa manualë.</div>`)
+      + `<div class="hint" id="wmsHealthLine" style="margin-top:4px"></div>`
+      + `<div id="wmsCookieBox" style="margin-top:8px;${cfg.lastError==='auth_expired'?'':'display:none'}">
+           <div class="note" style="margin-bottom:8px"><b>Mënyra pa kopjime — ekstensioni "WMS Agent Link"</b> (instalohet <b>një herë</b>, 30 sekonda):
+             <ol style="margin:6px 0 4px 18px;padding:0">
+               <li>Chrome → shkruaj <code>chrome://extensions</code> → ndiz <b>Developer mode</b> (djathtas lart).</li>
+               <li><b>Load unpacked</b> → zgjidh folderin <code>C:\\Users\\Xhevati\\Desktop\\warehouse-observation-app\\chrome-extension</code>.</li>
+               <li>Hap <a href="https://wms.gjirafamall.com" target="_blank" rel="noopener">wms.gjirafamall.com</a> dhe kyçu si zakonisht.</li>
+             </ol>
+             Nga ai moment, sa herë je i kyçur në WMS në Chrome, ekstensioni ia jep sesionin agjentit vetë (edhe kur skadon dhe rikyçesh). Asgjë nuk del nga ky kompjuter.</div>
+           <div class="small muted" style="margin-bottom:4px">Alternativa manuale (vetëm nëse s'do ekstension): Chrome, i kyçur në WMS deri te dashboard-i → F12 → Network → F5 → një kërkesë e re → Request Headers → <code>cookie:</code> → kopjo gjithë vlerën (~3 000+ shkronja, pa <code>OpenIdConnect.nonce</code>) dhe ngjite këtu:</div>
+           <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+             <textarea id="wmsCookieIn" rows="3" placeholder="gjs=…; ASP.NET_SessionId=…; .AspNet.Cookies=…" style="flex:1;min-width:260px;font-family:monospace;font-size:11.5px"></textarea>
+             <button class="btn primary" id="wmsCookieSave">🔑 Ruaj cookie-n</button>
+           </div>
+           <div class="hint" id="wmsCookieMsg" style="margin-top:4px"></div>
+         </div>
+         ${cfg.lastError==='auth_expired'?'':'<button class="btn sm ghost" id="wmsCookieToggle" style="margin-top:6px">🔑 Ndrysho cookie-n e WMS</button>'}`;
+    setTimeout(()=>{
+      const tg=$('#wmsCookieToggle'); if(tg) tg.onclick=()=>{ const b=$('#wmsCookieBox'); b.style.display=b.style.display==='none'?'':'none'; };
+      const save=$('#wmsCookieSave'); if(save) save.onclick=async()=>{
+        const val=($('#wmsCookieIn').value||'').trim(); const msg=$('#wmsCookieMsg');
+        if(!val){ msg.textContent='Ngjit vlerën e cookie-s së pari.'; return; }
+        save.disabled=true; save.textContent='⏳ Po provohet me WMS…';
+        try{ const r=await fetch('/wms/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:val})}); const j=await r.json();
+          if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+          $('#wmsCookieIn').value=''; msg.innerHTML='<span style="color:var(--ok)">✓ Cookie e pranuar — WMS u përgjigj. Po sinkronizoj…</span>';
+          wmsCfg().lastError=''; Store.persist();
+          await wmsAgentSync(7,1); toast('Cookie e re · sync ✓'); renderWMS($('#view'));
+        }catch(e){ msg.innerHTML='<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'; save.disabled=false; save.textContent='🔑 Ruaj cookie-n'; }
+      };
+    },0);
+    // agent self-report: does it start with Windows, how often does it renew the session, is the session alive right now
+    fetch('/wms/health',{cache:'no-store'}).then(r=>r.json()).then(hh=>{ const el=$('#wmsHealthLine'); if(!el) return;
+      el.innerHTML = `${hh.autostart?'<span class="badge b-ok">Niset me Windows ✓</span>':'<span class="badge b-warn">Nuk niset me Windows</span> <span class="muted">→ ekzekuto <b>install-autostart.bat</b></span>'}`
+        + ` <span class="badge b-muted">Keep-alive çdo ${h(String(hh.keepAliveMin||'?'))} min</span>`
+        + ` <span class="badge ${hh.sessionExpired?'b-crit':'b-ok'}">Sesioni WMS: ${hh.sessionExpired?'i skaduar':'aktiv'}</span>`
+        + ` <span class="muted small">Sesioni mbahet gjallë vetëm sa kohë PC-ja është ndezur dhe agjenti punon — vendos <i>Sleep: Never</i> për të mos skaduar natën.</span>`; }).catch(()=>{});
   } else {
     connBadge=`<span class="badge b-muted">Agjenti jo aktiv</span>`;
     connHint=`<div class="hint" style="margin-top:6px">Për sync <b>automatik</b>: nis <b>start-wms-agent.bat</b> dhe hape app-in nga <b>http://localhost:8790/app.html</b>. Ndryshe, përdor <b>import të autorizuar</b> te skeda <b>Import</b>.</div>`;
@@ -2659,16 +2796,296 @@ function renderWMS(v){
       <span class="muted">Rows: <b>${nData}</b></span>
     </div>
     ${connHint}</div>`;
-  const tabs=[['dashboard','Dashboard'],['operators','Operators'],['import','Import'],['validation','Validation'],['shifts','Shifts'],['log','Sync Log']];
+  const tabs=[['dashboard','Dashboard'],['flow2h','Flow (2h)'],['checkreport','Check-in / Checkout'],['performance','Performance'],['operators','Operators'],['import','Import'],['validation','Validation'],['shifts','Shifts'],['log','Sync Log']];
   v.innerHTML = pagehead('WMS Data & Performance','Marrje, ruajtje, filtrim dhe analizë e të dhënave nga GjirafaWMS — Products Checked In, Orders, dhe performanca për operator/ditë/ndërrim. Të gjurmueshme, pa hamendje.')
     + conn
     + `<div class="filters" id="wmsTabs">${tabs.map(t=>`<button class="btn ${wmsTab===t[0]?'primary':''}" data-wtab="${t[0]}">${t[1]}</button>`).join('')}</div>`
     + `<div id="wmsBody"></div>`;
   $$('#wmsTabs [data-wtab]').forEach(b=>b.onclick=()=>{ wmsTab=b.dataset.wtab; renderWMS(v); });
   const body=$('#wmsBody');
-  ({dashboard:wmsDashboard, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
+  ({dashboard:wmsDashboard, flow2h:wmsFlow2h, checkreport:wmsCheckReport, performance:wmsPerformance, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
 }
 
+/* "Flow (2h)" — the warehouse's own running totals at 08:00, 10:00 ... 20:00 for a chosen date,
+   each against the same hour yesterday, in the style of the team's WhatsApp "AI Operator" bot.
+   The agent (GET /wms/flow2h?date=YYYY-MM-DD) reconstructs every figure (orders, check-ins, picks,
+   checkout products, tempo) from WMS ProductLogs timestamps for any date — see buildFlow2h in
+   wms-agent.js. Card wording follows the AI Operator's own report format. Marks are always rendered
+   oldest→newest (calendar order), and a mark that hasn't happened yet is simply not shown. */
+let wmsFlow2hDate=null;
+function wmsFlow2h(box){
+  if(!wmsFlow2hDate) wmsFlow2hDate=todayStr();
+  box.innerHTML = `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>📅 Data:</b> <input type="date" id="flow2hDate" value="${h(wmsFlow2hDate)}" style="width:auto;min-height:36px">
+        <button class="btn sm" id="flow2hRefresh">↻ Rifresko</button>
+        <span class="hint" style="margin:0 0 0 auto">Rrjedha e depos çdo 2 orë (08:00–20:00), krahasuar me të njëjtën orë dje.</span>
+      </div>
+    </div>
+    <div id="flow2hBody"><div class="empty">Po ngarkohet…</div></div>`;
+  $('#flow2hDate').onchange=e=>{ wmsFlow2hDate=e.target.value||todayStr(); loadFlow2h(); };
+  $('#flow2hRefresh').onclick=()=>loadFlow2h();
+  loadFlow2h();
+}
+async function loadFlow2h(){
+  const body=$('#flow2hBody'); if(!body) return;
+  body.innerHTML=`<div class="empty">Po ngarkohet…</div>`;
+  try{
+    const r=await fetch('/wms/flow2h?date='+encodeURIComponent(wmsFlow2hDate),{cache:'no-store'});
+    const j=await r.json();
+    if(!r.ok || j.error){ body.innerHTML=`<div class="empty">Gabim: ${h(j.error||('HTTP '+r.status))}</div>`; return; }
+    body.innerHTML=renderFlow2hHTML(j) + staffRosterHTML(j.staff||[]) + chatSettingsHTML();
+    wireChatSettings();
+    const sv=$('#staffRosterSave'); if(sv) sv.onclick=async()=>{
+      const list=($('#staffRosterIn').value||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+      if(!list.length){ toast('Lista s\'mund të jetë bosh'); return; }
+      try{ const r=await fetch('/wms/staff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({staff:list})}); const j=await r.json();
+        if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+        toast('Stafi u ruajt · '+j.staff.length+' emra'); loadFlow2h();
+      }catch(e){ toast('Gabim: '+e.message); }
+    };
+  }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}). Hapja e app-it nga http://localhost:8790 kërkohet për këtë skedë.</div>`; }
+}
+/* Google Chat delivery of the Flow (2h) report — the agent posts after every mark (08:00 … 20:00) to the
+   space whose incoming-webhook URL is saved here. The URL is a secret, so it's never shown back once saved. */
+function chatSettingsHTML(){
+  return `<details class="card" style="margin-top:12px" id="chatBox"><summary style="cursor:pointer"><b>Google Chat</b> <span class="faint small" id="chatSummary">· po kontrolloj…</span></summary>
+    <div class="hint" style="margin:8px 0">Raporti i secilës orë (08:00, 10:00 … 20:00) dërgohet automatikisht si mesazh në një hapësirë (space) të Google Chat, sapo të kalojë ora.
+      <ol style="margin:6px 0 0 18px;padding:0">
+        <li>Në Google Chat hap hapësirën ku do t'i marrësh (ose krijo një të re vetëm për veten: <b>+ New chat → Create a space</b>).</li>
+        <li>Emri i hapësirës → <b>Apps &amp; integrations</b> → <b>Webhooks</b> → <b>Add webhook</b> → emër p.sh. "Warehouse flow" → <b>Save</b>.</li>
+        <li>Kopjo URL-në e webhook-ut dhe ngjite këtu.</li>
+      </ol></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="password" id="chatUrlIn" placeholder="https://chat.googleapis.com/v1/spaces/…/messages?key=…" style="flex:1;min-width:260px">
+      <button class="btn primary sm" id="chatSave">Ruaj</button>
+      <button class="btn sm" id="chatTest">Dërgo provë tani</button>
+      <button class="btn sm ghost" id="chatRemove">Hiqe</button>
+    </div>
+    <div class="hint" id="chatMsg" style="margin-top:6px"></div>
+  </details>`;
+}
+async function refreshChatStatus(){
+  const s=$('#chatSummary'); if(!s) return;
+  try{ const j=await (await fetch('/chat/status',{cache:'no-store'})).json();
+    s.textContent = !j.configured ? '· jo e lidhur' : ('· e lidhur ✓'+(j.last?' · dërgimi i fundit: '+j.last.hour+' ('+new Date(j.last.at).toLocaleString()+')':'')+(j.lastError?' · ⚠ gabimi i fundit: '+j.lastError.error:''));
+  }catch(e){ s.textContent='· agjenti s\'përgjigjet'; }
+}
+function wireChatSettings(){
+  const msg=t=>{ const m=$('#chatMsg'); if(m) m.innerHTML=t; };
+  const post=async(path,payload)=>{ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload||{})}); const j=await r.json().catch(()=>({})); if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status)); return j; };
+  const sv=$('#chatSave'), ts=$('#chatTest'), rm=$('#chatRemove'); if(!sv) return;
+  sv.onclick=async()=>{ const url=($('#chatUrlIn').value||'').trim(); if(!url){ msg('Ngjit URL-në e webhook-ut.'); return; }
+    try{ await post('/chat/webhook',{url}); $('#chatUrlIn').value=''; msg('<span style="color:var(--ok)">✓ U ruajt. Shtyp «Dërgo provë tani» për ta testuar.</span>'); refreshChatStatus(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  ts.onclick=async()=>{ msg('Po dërgoj…'); try{ const j=await post('/chat/test'); msg('<span style="color:var(--ok)">✓ U dërgua raporti i orës '+h(j.hour)+' — shiko Google Chat.</span>'); refreshChatStatus(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  rm.onclick=async()=>{ try{ await post('/chat/webhook',{url:''}); msg('Webhook-u u hoq — s\'dërgohen më mesazhe.'); refreshChatStatus(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  refreshChatStatus();
+}
+/* The warehouse staff roster that "Check-ins" is counted against (same rule as AI Operator). Names must be
+   written exactly as WMS shows them (case, extra spaces and accents are ignored). */
+function staffRosterHTML(list){
+  return `<details class="card" style="margin-top:12px"><summary style="cursor:pointer"><b>Stafi i depos (për Check-ins)</b> <span class="faint small">· ${list.length} emra — kliko për ta ndryshuar</span></summary>
+    <div class="hint" style="margin:8px 0">Check-ins numërohen vetëm për këta emra, siç i shfaq WMS-i (një emër për rresht). Shto këtu punëtorët e rinj; llogaritë e Gjirafës jashtë depos dhe rreshtat pa operator nuk numërohen.</div>
+    <textarea id="staffRosterIn" rows="10" style="width:100%;font-size:12.5px">${h(list.join('\n'))}</textarea>
+    <button class="btn primary sm" id="staffRosterSave" style="margin-top:6px">Ruaj stafin</button>
+  </details>`;
+}
+function renderFlow2hHTML(data){
+  const past=data.marks.filter(m=>!m.future);
+  if(!past.length) return `<div class="empty">Ende s'ka arritur ora e parë (08:00) për ${h(fmtDateAl(data.date))}.</div>`;
+  // "(+8%)" like AI Operator; omitted when yesterday's figure is 0 or unknown, as it does
+  const pct=p=> p==null?'':` <span style="color:${p>=0?'var(--ok)':'var(--crit)'}">(${p>=0?'+':''}${p}%)</span>`;
+  const yv=v=> v==null?'—':v;
+  // oldest → newest (calendar order), as asked — a chronological log of the shift, not a chat feed
+  const cards=past.map(m=>`<div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <h3 style="margin:0">Rrjedha e depos — deri në ${h(m.hour)}</h3>
+        <span class="faint small">${h(fmtDateAl(data.date))}</span>
+      </div>
+      <div style="margin-top:6px;line-height:1.9">
+        <div>Orders completed today: <b>${m.orders}</b>${pct(m.ordersPct)} <span class="faint">— yesterday at this hour ${yv(m.ordersPrev)}</span></div>
+        <div>Check-ins: <b>${m.checkedIn}</b> <span class="faint">— yesterday ${yv(m.checkedInPrev)}</span></div>
+        <div>Picks: <b>${m.picks}</b> products <span class="faint">— yesterday ${yv(m.picksPrev)}</span></div>
+        <div>Checkout products: <b>${m.checkedOut}</b>${pct(m.checkedOutPct)} <span class="faint">— yesterday: ${yv(m.checkedOutPrev)}</span></div>
+        <div style="margin-top:4px">Current tempo: <b>${m.tempoOrders}</b> orders/hour · <b>${m.tempoProducts}</b> products/hour <span class="faint">(last 2 hours)</span></div>
+      </div>
+    </div>`).join('');
+  const pf=data.prevFullDay;
+  const footer = pf ? `<div class="note" style="margin-top:6px"><b>Yesterday full day (${h(fmtDateAl(data.prevDate))}):</b> ${pf.checkedIn} check-ins · ${pf.checkedOut} checkout (products) · ${pf.orders} orders</div>` : '';
+  const warn = data.reliable===false ? `<div class="hint" style="margin-top:6px;color:var(--warn)">⚠ Njëra nga ditët e krahasuara ka vëllim shumë të lartë eventesh (mbi kufirin e leximit të sigurt); shifrat e asaj dite mund të kenë një margjinë të vogël gabimi — kufizim i njohur i faqësimit të WMS-it.</div>` : '';
+  return cards + `<div class="hint" style="margin-top:10px">${h(data.note)}</div>` + footer + warn;
+}
+
+/* "Check-in / Checkout Report" tab — built from a warehouse-lead's handwritten spec (2026-09-23),
+   listing what should be tracked for each of Check-in and Checkout. Everything here comes from the
+   agent's GET /wms/checkreport?range=24h|7d|30d, which reads ProductLogs for the chosen window.
+   Two of the originally-requested figures — "stock vs local sellers" and "POD" (proof of delivery) —
+   live in a separate system (deliveryplatform.gjirafamall.com, its own login/database) that this app
+   has no access to; they're shown as an explicit "not available" note, never a guessed number.
+   AVG-time figures are matched per physical unit (WMS's own internal id) and always show what
+   percentage of events could be matched — a low coverage% means read the average with caution,
+   not that it's wrong. */
+let wmsCheckReportRange='24h';
+function wmsCheckReport(box){
+  const ranges=[['24h','24 orë (sot)'],['7d','7 ditë'],['30d','30 ditë']];
+  box.innerHTML = `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>⏱ Periudha:</b> ${ranges.map(r=>`<button class="btn sm ${wmsCheckReportRange===r[0]?'primary':''}" data-range="${r[0]}">${r[1]}</button>`).join('')}
+        <button class="btn sm" id="checkRepRefresh" style="margin-left:auto">↻ Rifresko</button>
+      </div>
+    </div>
+    <div id="checkRepBody"><div class="empty">Po ngarkohet…</div></div>`;
+  $$('[data-range]').forEach(b=>b.onclick=()=>{ wmsCheckReportRange=b.dataset.range; wmsCheckReport(box); });
+  $('#checkRepRefresh').onclick=()=>loadCheckReport();
+  loadCheckReport();
+}
+async function loadCheckReport(){
+  const body=$('#checkRepBody'); if(!body) return;
+  body.innerHTML=`<div class="empty">Po ngarkohet…</div>`;
+  try{
+    const r=await fetch('/wms/checkreport?range='+encodeURIComponent(wmsCheckReportRange),{cache:'no-store'});
+    const j=await r.json();
+    if(!r.ok || j.error){ body.innerHTML=`<div class="empty">Gabim: ${h(j.error||('HTTP '+r.status))}</div>`; return; }
+    body.innerHTML=renderCheckReportHTML(j);
+  }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}). Hapja e app-it nga http://localhost:8790 kërkohet për këtë skedë.</div>`; }
+}
+function fmtDurMs(ms){ if(ms==null) return '—'; const min=ms/60000; if(min<60) return Math.round(min)+' min'; return (Math.round(min/6)/10)+' orë'; }
+function naRow(label, note){ return `<div style="margin-top:4px">${label}: <span class="faint">jo ende e disponueshme</span> <span class="hint" style="display:block;margin-top:2px">${h(note)}</span></div>`; }
+function opTableHTML(rows, valueLabel){
+  if(!rows.length) return '<div class="empty" style="font-size:12px">—</div>';
+  return `<table style="font-size:12.5px"><thead><tr><th>Operator</th><th>${h(valueLabel)}</th><th>Porosi (distinct)</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${h(r.operator)}</td><td>${r.count}</td><td>${r.orders||'—'}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+function renderCheckReportHTML(data){
+  const warn = data.reliable===false ? `<div class="hint" style="margin-bottom:10px;color:var(--warn)">⚠ Periudha ka ditë me vëllim shumë të lartë eventesh (mbi kufirin e leximit të sigurt); shifrat mund të kenë një margjinë të vogël gabimi — kufizim i njohur i faqësimit të WMS-it.</div>` : '';
+  const ci=data.checkin, co=data.checkout;
+  const rangeLabel = data.range.days===1 ? `sot (${h(fmtDateAl(data.range.to))})` : `${h(fmtDateAl(data.range.from))} → ${h(fmtDateAl(data.range.to))}`;
+  return warn + `<div class="grid g-2">
+    <div class="card">
+      <h3>1. Check-in <span class="sub">${rangeLabel}</span></h3>
+      <div style="line-height:1.9">
+        <div>Total check-in: <b>${ci.total}</b> — nga porosi: <b>${ci.withOrder}</b> · për stock: <b>${ci.stockOnly}</b></div>
+        <div>AVG kohë Check-in → Checkout: <b>${fmtDurMs(ci.avgTimeToCheckout.ms)}</b> <span class="faint small">(${ci.avgTimeToCheckout.matched} çifte të përputhura, ${ci.avgTimeToCheckout.coveragePct}% mbulim)</span></div>
+        <div>AVG kohë pritje për map (Check-in → Mapping): <b>${fmtDurMs(ci.avgTimeToMap.ms)}</b> <span class="faint small">(${ci.avgTimeToMap.matched} çifte, ${ci.avgTimeToMap.coveragePct}% mbulim)</span></div>
+        ${naRow('Sa prej checkout janë në POD', ci.pod.note)}
+        ${naRow('Prej POD te klienti (AVG TIME)', ci.pod.note)}
+      </div>
+      <h3 style="margin-top:14px;font-size:13px">Mapping <span class="sub">${ci.mapping.total} evente</span></h3>
+      <div>Nga porosi: <b>${ci.mapping.withOrder}</b> · për stock: <b>${ci.mapping.stockOnly}</b></div>
+      <div style="margin-top:6px">${opTableHTML(ci.mapping.byOperator,'Mapime')}</div>
+      <h3 style="margin-top:14px;font-size:13px">Check-in për operator</h3>
+      ${opTableHTML(ci.byOperator,'Check-in')}
+    </div>
+    <div class="card">
+      <h3>2. Checkout <span class="sub">${rangeLabel}</span></h3>
+      <div style="line-height:1.9">
+        <div>Porosi gati (Prepared) këtë periudhë: <b>${co.preparedOrders}</b></div>
+        <div>Evente checkout: <b>${co.total}</b> — porosi distinkte: <b>${co.distinctOrders}</b></div>
+        <div>Produkte mesatare / porosi: <b>${co.avgItemsPerOrder!=null?co.avgItemsPerOrder.toFixed(2):'—'}</b></div>
+        <div>Porosi që vijnë nga check-in (kjo periudhë): <b>${co.fromCheckin.orders}</b> ${co.fromCheckin.pct!=null?`<span class="faint">(${co.fromCheckin.pct}% e porosive)</span>`:''}</div>
+        ${naRow('Sa porosi janë nga stoku / nga local sellers', co.stockVsLocalSellers.note)}
+        ${naRow('Sa porosi janë në POD', co.pod.note)}
+        ${naRow('Porosi që presin produkt nga shipment tjetër', co.pendingOtherShipment.note)}
+        ${naRow('Kohë sa ekziston porosia në DB', co.orderAgeInDb.note)}
+      </div>
+      <h3 style="margin-top:14px;font-size:13px">Checkout për operator</h3>
+      ${opTableHTML(co.byOperator,'Checkout')}
+    </div>
+  </div>
+  <div class="note" style="margin-top:12px"><span class="etag et-data">source: WMS ProductLogs</span> Check-in = LogType «Checked in» · Checkout = «ProductScanned for checkout» · Mapping = «Mapped product» (LogTypeId 7, vendosja në raft). AVG-kohët përputhen për njësi fizike (id i brendshëm i WMS-it), jo për SKU — përqindja e mbulimit tregon sa nga eventet u përputhën.</div>`;
+}
+
+/* "Performance" tab — the WMS's own productivity model per warehouse-staff member (see buildPerformance in
+   wms-agent.js): weighted operations, operations per active day, band vs the team average, standard hours and
+   utilisation of an 8-hour day, plus the hour-of-day throughput that shows where the flow backs up. */
+let wmsPerfRange='7d';
+function wmsPerformance(box){
+  const ranges=[['7d','7 ditë'],['14d','14 ditë'],['30d','30 ditë']];
+  box.innerHTML = `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>⏱ Periudha:</b> ${ranges.map(r=>`<button class="btn sm ${wmsPerfRange===r[0]?'primary':''}" data-prange="${r[0]}">${r[1]}</button>`).join('')}
+        <button class="btn sm" id="perfRefresh">↻ Rifresko</button>
+        <span class="hint" style="margin:0 0 0 auto">Formula e WMS-it: 1.0 × check-out + 0.8 × check-in + 0.6 × map</span>
+      </div>
+    </div>
+    <div id="perfBody"><div class="empty">Po ngarkohet…</div></div>`;
+  $$('[data-prange]').forEach(b=>b.onclick=()=>{ wmsPerfRange=b.dataset.prange; wmsPerformance(box); });
+  $('#perfRefresh').onclick=()=>loadPerformance();
+  loadPerformance();
+}
+async function loadPerformance(){
+  const body=$('#perfBody'); if(!body) return;
+  body.innerHTML=`<div class="empty">Po ngarkohet… ${wmsPerfRange!=='7d'?'(herën e parë periudhat e gjata marrin 1–2 minuta)':''}</div>`;
+  try{
+    const r=await fetch('/wms/performance?range='+encodeURIComponent(wmsPerfRange),{cache:'no-store'});
+    const j=await r.json();
+    if(!r.ok||j.error){ body.innerHTML=`<div class="empty">Gabim: ${h(j.error==='auth_expired'?'sesioni i WMS ka skaduar':(j.error||('HTTP '+r.status)))}</div>`; return; }
+    body.innerHTML=renderPerformanceHTML(j);
+  }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}).</div>`; }
+}
+function renderPerformanceHTML(d){
+  if(!d.workers.length) return `<div class="empty">S'ka operacione nga stafi i depos në këtë periudhë.</div>`;
+  const band={above:['b-ok','Mbi mesataren'], below:['b-crit','Nën mesataren'], average:['b-muted','Mesatare']};
+  const rangeLabel=d.range.days===1?h(fmtDateAl(d.range.to)):`${h(fmtDateAl(d.range.from))} → ${h(fmtDateAl(d.range.to))}`;
+  const rows=d.workers.map(w=>`<tr><td>${h(w.operator)}</td><td>${w.checkin}</td><td>${w.map}</td><td>${w.checkout}</td><td>${w.activeDays}</td>
+      <td>${w.weighted}</td><td><b>${w.perDay}</b></td><td><span class="badge ${band[w.band][0]}">${band[w.band][1]}</span></td>
+      <td>${w.stdHoursPerDay} h</td><td>${w.utilPct}%</td></tr>`).join('');
+  const maxH=Math.max(1,...d.hourly.map(x=>x.checkin+x.map+x.checkout));
+  const hourly=d.hourly.map(x=>barRow(String(x.hour).padStart(2,'0')+':00', x.checkin+x.map+x.checkout, maxH, 'var(--accent)', `check-in ${x.checkin} · map ${x.map} · check-out ${x.checkout}`)).join('');
+  const warn=d.reliable===false?`<div class="hint" style="margin-bottom:10px;color:var(--warn)">⚠ Disa ditë në periudhë nuk u lexuan të plota nga WMS — shifrat mund të jenë pak më të ulëta.</div>`:'';
+  return warn + `<div class="card" style="margin-bottom:14px">
+      <h3>Produktiviteti për punëtor <span class="sub">${rangeLabel} · mesatarja e ekipit ${d.teamAvgPerDay} op./ditë</span></h3>
+      <div style="overflow-x:auto"><table style="font-size:12.5px"><thead><tr><th>Operatori</th><th>Check-in</th><th>Map</th><th>Check-out</th><th>Ditë aktive</th>
+        <th>Op. të peshuara</th><th>Op./ditë</th><th>Kategoria</th><th>Orë standarde/ditë</th><th>Shfrytëzimi (${d.dayHours}h)</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </div>
+    <div class="card" style="margin-bottom:14px"><h3>Rrjedha sipas orës <span class="sub">operacione të stafit, ${rangeLabel}</span></h3>${hourly}</div>
+    <div class="note"><span class="etag et-data">source: WMS ProductLogs</span> Përkufizimet janë ato të vetë WMS-it: check-out = LogTypeId 4/18, check-in = 2, map = 7, peshat 1.0 / 0.8 / 0.6 (<code>PerformanceOperationTypes</code>); kategoria = ±${d.bandPct}% nga mesatarja e ekipit (<code>PerformanceSettings</code>); orët standarde = numri × koha mesatare e veprimit (check-in 33.2 s, map 18.6 s, check-out 86.1 s, <code>WarehouseActions</code>). Shfrytëzimi mat vetëm kohën standarde të operacioneve të skanuara — jo punët e tjera (paketim, pastrim, ndihmë), prandaj "nën mesataren" nuk do të thotë vetvetiu punë e dobët. Picking mungon: WMS s'regjistron ende skanime picking.</div>`;
+}
+
+/* "Orders prepared" KPI, as a single Line with Markers chart of the daily total (sum across
+   operators) over the last 14 days with data. An earlier version broke this down per operator as a
+   100%-stacked chart, but that composition wasn't clear at a glance — reverted to the plain daily
+   total, which is what this tile always meant. Pure SVG, no library. */
+function niceCeil(v){ if(v<=0) return 10; const mag=Math.pow(10,Math.floor(Math.log10(v))); const norm=v/mag; const step=norm<=1?1:norm<=2?2:norm<=5?5:10; return step*mag; }
+function wmsPrepStackedChartHTML(){
+  const prep=Store.col('wmsPrepared'); if(!prep.length) return '';
+  const byDay={}; prep.forEach(r=>{ byDay[r.date]=(byDay[r.date]||0)+num(r.preparedOrders); });
+  const days=Object.keys(byDay).filter(d=>byDay[d]>0).sort().slice(-14);
+  if(!days.length) return '';
+  const lastDay=days[days.length-1];
+  const lastTotal=byDay[lastDay];
+  const maxV=niceCeil(Math.max(...days.map(d=>byDay[d])));
+  const color='var(--ok)';
+  const W=320,H=92,padL=22,padR=3,padT=14,padB=4;
+  const x=i=> days.length>1? padL+(W-padL-padR)*(i/(days.length-1)) : (padL+W-padR)/2;
+  const y=v=> padT+(H-padT-padB)*(1-v/maxV);
+  const pts=days.map((d,i)=>[x(i), y(byDay[d])]);
+  const poly=pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  const area=`${padL.toFixed(1)},${y(0).toFixed(1)} `+poly+` ${x(days.length-1).toFixed(1)},${y(0).toFixed(1)}`;
+  const markers=pts.map((p,i)=>{ const d=days[i];
+    return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.4" fill="${color}"><title>${h(fmtDateAl(d))}: ${byDay[d]} porosi</title></circle>`; }).join('');
+  const gridSvg=[0,0.25,0.5,0.75,1].map(f=>{ const v=Math.round(maxV*f);
+    return `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W-padR}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1" stroke-dasharray="2,3"/>`
+      +`<text x="${padL-3}" y="${(y(v)+2).toFixed(1)}" text-anchor="end" font-size="6" fill="var(--faint)">${v}</text>`; }).join('');
+  // date ticks along the top — thin them out so labels never overlap in the ~300px-wide plot
+  const dateStep=Math.max(1, Math.ceil(days.length/6));
+  const dateSvg=days.map((d,i)=>(i%dateStep===0||i===days.length-1)
+    ? `<text x="${x(i).toFixed(1)}" y="${(padT-4).toFixed(1)}" text-anchor="middle" font-size="6" fill="var(--faint)">${h(fmtDateAl(d).slice(0,5))}</text>` : '').join('');
+  return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <h3 style="margin:0">Porosi të përgatitura <span class="sub">Line with Markers · ${h(fmtDateAl(days[0]))}–${h(fmtDateAl(lastDay))}</span></h3>
+        <div style="text-align:right"><div class="val" style="font-size:20px;font-weight:800">${lastTotal}</div><div class="faint" style="font-size:11px">${h(fmtDateAl(lastDay))} · sum across operators</div></div>
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="width:100%;height:auto;display:block;margin-top:6px">
+        <defs><linearGradient id="prepFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${color}" stop-opacity=".35"/><stop offset="100%" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+        ${gridSvg}${dateSvg}
+        <polygon points="${area}" fill="url(#prepFill)" stroke="none"/>
+        <polyline points="${poly}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        ${markers}
+      </svg>
+    </div>`;
+}
 function wmsDashboard(box){
   const logs=Store.col('wmsLogs');
   const snap=Store.col('wmsStats')[0];
@@ -2690,10 +3107,10 @@ function wmsDashboard(box){
       ${kc(snap?snap.invoiceProductsCheckedIn:'—','Products Checked In', snap?'live snapshot '+h(new Date(snap.at).toLocaleString()):'import a snapshot')}
       ${kc(snap?snap.invoiceProductsProcessed:'—','Products Processed', snap?'':'—')}
       ${kc(snap?snap.ordersInProcessing:'—','Orders In Processing','')}
-      ${(()=>{ const prep=Store.col('wmsPrepared'); if(!prep.length) return kc(new Set(logs.map(l=>l.operator).filter(Boolean)).size||'—','Operators (in data)','from logs');
-        const byDay={}; prep.forEach(r=>byDay[r.date]=(byDay[r.date]||0)+num(r.preparedOrders)); const days=Object.keys(byDay).sort(); const last=days[days.length-1];
-        return kc(byDay[last]||'—','Orders prepared ('+(last?fmtDateAl(last):'—')+')','sum across operators'); })()}
+      ${Store.col('wmsPrepared').length?'':kc(new Set(logs.map(l=>l.operator).filter(Boolean)).size||'—','Operators (in data)','from logs')}
+      <div class="card kpi" id="kpiCheckinOrders" title="Produkte që stafi i depos bëri check-in sot (i njëjti përkufizim si «Check-ins» te AI Operator) / porosi të ndryshme në të cilat po këto njësi dolën (checkout) sot."><div class="val">…</div><div class="lbl">Check-in products/orders</div><div class="foot">po ngarkohet…</div></div>
     </div>`
+    + wmsPrepStackedChartHTML()
     + (logs.length? `<div class="grid g-2">
         <div class="card"><h3>Product-log events by day <span class="sub">last 14 days with data</span></h3>${dayRows.length?dayRows.map(([k,c])=>barRow(fmtDateAl(k),c,maxDay,'var(--accent)')).join(''):'<div class="empty">—</div>'}</div>
         <div class="card"><h3>Events by operator <span class="sub">top 10</span></h3>${opRows.map(([k,c])=>barRow(k,c,maxOp,'var(--imp)')).join('')}</div>
@@ -2704,6 +3121,17 @@ function wmsDashboard(box){
     + wmsPreparedDashboardHTML()
     + wmsSameDayHTML()
     + `<div class="note" style="margin-top:12px"><span class="etag et-data">source: WMS</span> "Orders prepared" vijnë nga <b>/Order/GetPreparedOrders</b> (për operator/ditë). "Events" janë rreshta ProductLogs (opsionale, kërkojnë filtër produkti).</div>`;
+  loadCheckinOrdersTile();
+}
+async function loadCheckinOrdersTile(){
+  const el=$('#kpiCheckinOrders'); if(!el) return;
+  const set=(val,foot)=>{ el.querySelector('.val').innerHTML=val; el.querySelector('.foot').innerHTML=foot; };
+  if(!wmsOnAgent()){ set('—','kërkon agjentin (localhost:8790)'); return; }
+  try{
+    const r=await fetch('/wms/checkin-summary',{cache:'no-store'}); const j=await r.json();
+    if(!r.ok||j.error){ set('—', j.error==='auth_expired'?'sesioni i WMS ka skaduar':h(j.error||('HTTP '+r.status))); return; }
+    set(`${j.products} / ${j.orders}`, `sot · ${j.productsOut} prej tyre dolën në ${j.orders} porosi${j.reliable===false?' · ⚠ të dhëna jo të plota':''}`);
+  }catch(e){ set('—','agjenti s\'përgjigjet'); }
 }
 function wmsPreparedDashboardHTML(){
   const prep=Store.col('wmsPrepared'); const chk=Store.col('wmsCheckin');
@@ -2723,86 +3151,131 @@ function wmsPreparedDashboardHTML(){
   const C=agg(chk, r=>r.checkedIn);
   const O=agg(chk, r=>r.checkedOut);
   const col=(title,sub,rows,max,color)=>`<div><h3 style="font-size:12.5px;margin:0 0 6px">${title}${sub?` <span class="sub">${sub}</span>`:''}</h3>${rows.length?rows.map(([k,c])=>barRow(k,c,max,color)).join(''):'<div class="empty" style="font-size:12px">—</div>'}</div>`;
-  // ---- combined per-operator table for the latest day (Prepared · Checked In · Checked Out) ----
-  const allDates=[...prep.map(r=>r.date),...chk.map(r=>r.date)].filter(Boolean).sort();
-  const refDay=allDates[allDates.length-1]||null;
-  const pMap={}, ciMap={}, coMap={};
-  prep.forEach(r=>{ if(r.date===refDay) pMap[r.operator]=(pMap[r.operator]||0)+num(r.preparedOrders); });
-  chk.forEach(r=>{ if(r.date===refDay){ ciMap[r.operator]=(ciMap[r.operator]||0)+num(r.checkedIn); coMap[r.operator]=(coMap[r.operator]||0)+num(r.checkedOut); } });
-  const opsAll=[...new Set([...Object.keys(pMap),...Object.keys(ciMap),...Object.keys(coMap)])]
-    .map(op=>({op, p:pMap[op]||0, ci:ciMap[op]||0, co:coMap[op]||0}))
-    .sort((a,b)=>(b.p+b.ci+b.co)-(a.p+a.ci+a.co));
-  const tot={p:opsAll.reduce((a,x)=>a+x.p,0), ci:opsAll.reduce((a,x)=>a+x.ci,0), co:opsAll.reduce((a,x)=>a+x.co,0)};
-  const cell=(v,color)=>`<td style="text-align:right">${v?`<b style="color:${color}">${v}</b>`:'<span class="muted">0</span>'}</td>`;
-  const opTable=`<div style="overflow:auto"><table class="tbl">
-    <thead><tr><th>Operator</th><th style="text-align:right" title="orders (/Order/GetPreparedOrders)">Prepared <span class="sub">porosi</span></th><th style="text-align:right" title="products (ProductLogs «Checked in»)">Checked In <span class="sub">produkte</span></th><th style="text-align:right" title="products (ProductLogs «Check out»)">Checked Out <span class="sub">produkte</span></th></tr></thead>
-    <tbody>${opsAll.length?opsAll.map(r=>`<tr><td>${h(r.op)}</td>${cell(r.p,'var(--ok)')}${cell(r.ci,'var(--fact)')}${cell(r.co,'var(--imp)')}</tr>`).join(''):emptyRow(4,'—')}
-      <tr style="border-top:2px solid var(--line)"><td><b>Total</b></td><td style="text-align:right"><b>${tot.p}</b></td><td style="text-align:right"><b>${tot.ci}</b></td><td style="text-align:right"><b>${tot.co}</b></td></tr></tbody></table></div>`;
-  return `<div class="card" style="margin:14px 0"><h3>By operator — Prepared · Checked In · Checked Out <span class="sub">latest day ${refDay?h(fmtDateAl(refDay)):'—'} · source: /Order/GetPreparedOrders + /Warehouse/ProductLogs</span></h3>
-      ${opTable}
-      <div class="hint" style="margin:8px 0 14px">Njësi të ndryshme: <b>Prepared</b> = porosi (orders); <b>Checked In / Checked Out</b> = produkte (events). Picking dhe check-out shpesh bëhen nga persona të ndryshëm.</div>
+  // Daily realisation in %: each process against its normal day (median of the days with work in the
+  // last 14), then the average of the processes that have data that day. Median, so that weekends and
+  // one-off peaks do not move the base.
+  const median=a=>{ const s=a.filter(x=>x>0).sort((x,y)=>x-y); if(!s.length) return 0; const m=s.length>>1; return s.length%2? s[m] : (s[m-1]+s[m])/2; };
+  const procs=[['P',P,'Prepared'],['CI',C,'Checked In'],['CO',O,'Checked Out']].map(([k,A,name])=>({k,name,base:median(A.days.map(d=>d[1])),by:Object.fromEntries(A.days)}));
+  const pctDays=[...new Set([P,C,O].flatMap(A=>A.days.map(d=>d[0])))].sort().reverse().slice(0,14).map(d=>{
+    const parts=procs.filter(p=>p.base>0 && p.by[d]!=null).map(p=>({k:p.k,name:p.name,pct:Math.round(p.by[d]/p.base*100)}));
+    return {d, parts, avg: parts.length? Math.round(parts.reduce((a,x)=>a+x.pct,0)/parts.length) : null}; });
+  const pctColor=p=> p>=95? 'var(--ok)' : p>=75? 'var(--warn)' : 'var(--crit)';
+  const pctCol=`<div><h3 style="font-size:12.5px;margin:0 0 6px">Realizimi ditor <span class="sub">% e ditës normale</span></h3>${pctDays.length? pctDays.map(x=>{
+      // figures only, no bar; the second line takes the bar's height so the rows line up with the other columns
+      return `<div style="margin:6px 0" title="${h(x.parts.map(p=>p.name+': '+p.pct+'%').join(' · '))}"><div style="display:flex;justify-content:space-between;gap:6px;font-size:12px"><span class="wrap">${h(fmtDateAl(x.d))}</span><b style="color:${x.avg==null?'var(--muted)':pctColor(x.avg)}">${x.avg==null?'—':x.avg+'%'}</b></div>
+        <div class="faint" style="height:12px;margin-top:3px;font-size:11px;line-height:12px;text-align:right;white-space:nowrap">${x.parts.map(p=>p.k+' '+p.pct+'%').join(' · ')}</div></div>`; }).join('') : '<div class="empty" style="font-size:12px">—</div>'}</div>`;
+  // The old per-operator "latest day" table lived here; removed in favour of the "Operators" tab,
+  // which shows the same Prepared/Checked In/Checked Out breakdown for any date range, not just today.
+  return `<div class="card" style="margin:14px 0"><h3>Prepared · Checked In · Checked Out — trendi ditor <span class="sub">last 14 days · source: /Order/GetPreparedOrders + /Warehouse/ProductLogs</span></h3>
       <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
         ${col('Prepared by day', 'porosi', P.days.map(([k,c])=>[fmtDateAl(k),c]), P.maxD, 'var(--ok)')}
         ${col('Checked In by day', 'produkte', C.days.map(([k,c])=>[fmtDateAl(k),c]), C.maxD, 'var(--fact)')}
         ${col('Checked Out by day', 'produkte', O.days.map(([k,c])=>[fmtDateAl(k),c]), O.maxD, 'var(--imp)')}
+        ${pctCol}
       </div>
+      <div class="hint" style="margin-top:8px">📊 <b>Realizimi ditor</b>: secili proces krahasohet me ditën e tij normale (mediana e ditëve me punë në 14 ditët e fundit: Prepared ${Math.round(procs[0].base)} porosi, Checked In ${Math.round(procs[1].base)} e Checked Out ${Math.round(procs[2].base)} produkte). Përqindja e madhe = mesatarja e tri proceseve; P / CI / CO = secili veç. Ngjyra e shifrës: e gjelbër ≥ 95%, portokalli 75–94%, e kuqe &lt; 75%. Dita e sotme është e pjesshme deri në fund të ditës.</div>
       <div class="hint" style="margin-top:10px">ℹ️ <b>Checked In by day</b> (nga log-u i eventeve, për operator/ditë) mund të ndryshojë pak nga karta <b>Products Checked In</b> lart (numëruesi live i WMS-it, <code>GetDashboardStats</code>). Të dy janë të saktë por masin ndryshe: karta lart = numëruesi zyrtar i WMS-it (i lidhur me faturat, dritare rrotulluese); këtu = evente «Checked in» për ditën kalendarike 00:00–tani. Diferenca vjen nga kufiri i ditës dhe përkufizimi, jo nga një gabim.</div></div>`;
 }
 
-let wmsOpFilter={from:'',to:'',shift:''};
+/* "Operators" tab — daily per-operator Prepared / Checked In / Checked Out over a date range, built
+   from the AUTO-SYNCED WMS data. The Dashboard used to have its own "By operator" table for just the
+   latest day (removed — this tab supersedes it for any date range). The tab originally read
+   Store.col('wmsLogs'), a collection only the manual "Import" workflow ever fills — since the agent's
+   automatic sync took over (wmsPrepared / wmsCheckin), wmsLogs has stayed empty and this tab showed
+   nothing but "no data" ever since. */
+let wmsOpFilter={from:'',to:''};
+function wmsOpDefaultRange(){
+  const days=[...new Set([...Store.col('wmsPrepared'),...Store.col('wmsCheckin')].map(r=>r.date))].filter(Boolean).sort();
+  if(!days.length) return;
+  wmsOpFilter.to=days[days.length-1];
+  wmsOpFilter.from=days[Math.max(0,days.length-14)];
+}
+/* one row per operator/day */
+function wmsOperatorDailyAgg(fromDate,toDate){
+  const byKey={};
+  const get=(op,date)=>{ const k=op+'|'+date; return byKey[k]||(byKey[k]={operator:op,date,prepared:0,checkedIn:0,checkedOut:0}); };
+  Store.col('wmsPrepared').forEach(r=>{ if(!r.operator||!r.date) return; if(fromDate&&r.date<fromDate) return; if(toDate&&r.date>toDate) return;
+    get(r.operator,r.date).prepared+=num(r.preparedOrders); });
+  Store.col('wmsCheckin').forEach(r=>{ if(!r.operator||!r.date) return; if(fromDate&&r.date<fromDate) return; if(toDate&&r.date>toDate) return;
+    const g=get(r.operator,r.date); g.checkedIn+=num(r.checkedIn); g.checkedOut+=num(r.checkedOut); });
+  return Object.values(byKey).sort((a,b)=> a.date<b.date?1:a.date>b.date?-1:(b.prepared+b.checkedIn+b.checkedOut)-(a.prepared+a.checkedIn+a.checkedOut));
+}
+/* rolled up per operator across the whole range, plus a few derived stats */
+function wmsOperatorSummary(fromDate,toDate){
+  const daily=wmsOperatorDailyAgg(fromDate,toDate);
+  const byOp={};
+  daily.forEach(d=>{ const g=byOp[d.operator]||(byOp[d.operator]={operator:d.operator,prepared:0,checkedIn:0,checkedOut:0,days:new Set(),lastDate:d.date});
+    g.prepared+=d.prepared; g.checkedIn+=d.checkedIn; g.checkedOut+=d.checkedOut;
+    if(d.prepared||d.checkedIn||d.checkedOut) g.days.add(d.date);
+    if(d.date>g.lastDate) g.lastDate=d.date; });
+  const tot={prepared:0,checkedIn:0,checkedOut:0}; Object.values(byOp).forEach(g=>{ tot.prepared+=g.prepared; tot.checkedIn+=g.checkedIn; tot.checkedOut+=g.checkedOut; });
+  return Object.values(byOp).map(g=>({ operator:g.operator, prepared:g.prepared, checkedIn:g.checkedIn, checkedOut:g.checkedOut,
+    daysActive:g.days.size, lastDate:g.lastDate,
+    avgPrepared: g.days.size? Math.round(g.prepared/g.days.size*10)/10 : 0,
+    outRate: g.checkedIn>0? Math.round(g.checkedOut/g.checkedIn*100) : null,
+    sharePrepared: tot.prepared? Math.round(g.prepared/tot.prepared*100) : 0,
+  })).sort((a,b)=>(b.prepared+b.checkedIn+b.checkedOut)-(a.prepared+a.checkedIn+a.checkedOut));
+}
 function wmsOperators(box){
-  const shifts=['',...(Store.col('wmsShifts').map(s=>s.name)),'UNKNOWN'];
+  if(!wmsOpFilter.from && !wmsOpFilter.to) wmsOpDefaultRange();
   box.innerHTML = `<div class="filters">
-      <label class="small muted" style="align-self:center">From <input type="date" id="wof" value="${h(wmsOpFilter.from)}"></label>
-      <label class="small muted" style="align-self:center">To <input type="date" id="wot" value="${h(wmsOpFilter.to)}"></label>
-      <select id="wosh">${shifts.map(s=>`<option value="${h(s)}" ${wmsOpFilter.shift===s?'selected':''}>${s?h(s):'All shifts'}</option>`).join('')}</select>
+      <label class="small muted" style="align-self:center">Nga <input type="date" id="wof" value="${h(wmsOpFilter.from)}"></label>
+      <label class="small muted" style="align-self:center">Deri <input type="date" id="wot" value="${h(wmsOpFilter.to)}"></label>
+      <button class="btn sm" id="wo7">7 ditët e fundit</button>
+      <button class="btn sm" id="wo30">30 ditët e fundit</button>
       <button class="btn" id="woExport">⬇ Export CSV</button>
     </div><div id="wopTable"></div>`;
   $('#wof').onchange=e=>{wmsOpFilter.from=e.target.value;drawWmsOps();};
   $('#wot').onchange=e=>{wmsOpFilter.to=e.target.value;drawWmsOps();};
-  $('#wosh').onchange=e=>{wmsOpFilter.shift=e.target.value;drawWmsOps();};
+  const setLast=n=>{ const days=[...new Set([...Store.col('wmsPrepared'),...Store.col('wmsCheckin')].map(r=>r.date))].filter(Boolean).sort();
+    if(!days.length) return; wmsOpFilter.to=days[days.length-1]; wmsOpFilter.from=days[Math.max(0,days.length-n)];
+    $('#wof').value=wmsOpFilter.from; $('#wot').value=wmsOpFilter.to; drawWmsOps(); };
+  $('#wo7').onclick=()=>setLast(7); $('#wo30').onclick=()=>setLast(30);
   $('#woExport').onclick=wmsExportOps;
   drawWmsOps();
 }
 function drawWmsOps(){
-  const rows=wmsOperatorAgg(wmsOpFilter.from,wmsOpFilter.to,wmsOpFilter.shift);
+  const rows=wmsOperatorSummary(wmsOpFilter.from,wmsOpFilter.to);
   const box=$('#wopTable'); if(!box) return;
-  box.innerHTML = rows.length? `<div class="tablewrap"><table><thead><tr><th>Operator</th><th>Date</th><th>Shift</th><th>Orders</th><th>Products*</th><th>First</th><th>Last</th><th>Hours</th><th>Events/h</th><th></th></tr></thead>
+  const rangeLbl=(wmsOpFilter.from&&wmsOpFilter.to)?`${fmtDateAl(wmsOpFilter.from)} – ${fmtDateAl(wmsOpFilter.to)}`:'krejt periudha';
+  box.innerHTML = rows.length? `<div class="hint" style="margin-bottom:6px">Periudha: <b>${h(rangeLbl)}</b> · burimi: /Order/GetPreparedOrders + /Warehouse/ProductLogs (i njëjti sync automatik si te Dashboard)</div>
+    <div class="tablewrap"><table><thead><tr><th>Operator</th><th style="text-align:right">Ditë aktive</th><th style="text-align:right">Prepared <span class="sub">total</span></th><th style="text-align:right">Mesatare/ditë</th><th style="text-align:right">Checked In</th><th style="text-align:right">Checked Out</th><th style="text-align:right">Out/In</th><th style="text-align:right">Pjesa e porosive</th><th>Aktiv së fundmi</th><th></th></tr></thead>
     <tbody>${rows.map((r,i)=>`<tr>
-      <td>${h(r.operator)}</td><td class="small">${h(fmtDateAl(r.date))}</td>
-      <td>${r.shift==='UNKNOWN'?'<span class="badge b-warn">UNKNOWN</span>':h(r.shift)}</td>
-      <td><b>${r.orders}</b></td><td>${r.events}</td>
-      <td class="small">${fmtTime(r.first)}</td><td class="small">${fmtTime(r.last)}</td>
-      <td class="small">${r.hours?r.hours.toFixed(1):'—'}</td><td>${r.evPerHour??'—'}</td>
-      <td><button class="btn sm" data-wop="${i}">Detail</button></td></tr>`).join('')}</tbody></table></div>
-      <div class="hint" style="margin-top:6px">*"Products" = numri i ngjarjeve ProductLogs të operatorit (jo domosdo produkte të përfunduara). "Orders" = OrderId të dallueshëm. Events/h = ngjarje ÷ (koha e fundit − e parë) — jo productivity i mirëfilltë pa kohë aktive.</div>`
-    : `<div class="card"><div class="empty">S'ka të dhëna për këtë filtër. Importo log-et te skeda Import.</div></div>`;
+      <td>${h(r.operator)}</td>
+      <td style="text-align:right">${r.daysActive}</td>
+      <td style="text-align:right"><b>${r.prepared||'<span class="muted">0</span>'}</b></td>
+      <td style="text-align:right">${r.avgPrepared||'—'}</td>
+      <td style="text-align:right">${r.checkedIn||'<span class="muted">0</span>'}</td>
+      <td style="text-align:right">${r.checkedOut||'<span class="muted">0</span>'}</td>
+      <td style="text-align:right">${r.outRate!=null?`<span class="badge ${r.outRate>=90?'b-ok':(r.outRate>=60?'b-warn':'b-crit')}">${r.outRate}%</span>`:'—'}</td>
+      <td style="text-align:right">${r.sharePrepared?r.sharePrepared+'%':'—'}</td>
+      <td class="small">${h(fmtDateAl(r.lastDate))}</td>
+      <td><button class="btn sm" data-wop="${i}">Detaje</button></td></tr>`).join('')}</tbody></table></div>
+      <div class="hint" style="margin-top:6px">"Prepared" = porosi (orders, nga GetPreparedOrders); "Checked In/Out" = produkte (evente ProductLogs). "Pjesa e porosive" = % e totalit të Prepared në këtë periudhë mes gjithë operatorëve — tregon përqendrimin e ngarkesës.</div>`
+    : `<div class="card"><div class="empty">S'ka të dhëna WMS për këtë periudhë. Sigurohu që agjenti është duke sinkronizuar (skeda Dashboard).</div></div>`;
   $$('#wopTable [data-wop]').forEach(b=>b.onclick=()=>wmsOperatorDetail(rows[+b.dataset.wop]));
 }
 function wmsOperatorDetail(r){
-  const hist=wmsOperatorAgg('','','').filter(x=>x.operator===r.operator).sort((a,b)=>a.date<b.date?1:-1).slice(0,30);
-  const lt=Object.entries(r.logTypes||{}).sort((a,b)=>b[1]-a[1]);
+  const hist=wmsOperatorDailyAgg(wmsOpFilter.from,wmsOpFilter.to).filter(x=>x.operator===r.operator);
   openModal('Operator · '+r.operator,
     `<div style="display:grid;gap:4px;font-size:13px;margin-bottom:10px">
-       <div><b>Date:</b> ${h(fmtDateAl(r.date))} · <b>Shift:</b> ${h(r.shift)}</div>
-       <div><b>Orders processed:</b> ${r.orders} · <b>Product events:</b> ${r.events}</div>
-       <div><b>First:</b> ${fmtTime(r.first)} · <b>Last:</b> ${fmtTime(r.last)} · <b>Hours:</b> ${r.hours?r.hours.toFixed(1):'—'}</div>
-       <div><b>Events/hour:</b> ${r.evPerHour??'—'} · <b>Orders/hour:</b> ${r.ordPerHour??'—'}</div>
+       <div><b>Ditë aktive:</b> ${r.daysActive} · <b>Aktiv së fundmi:</b> ${h(fmtDateAl(r.lastDate))}</div>
+       <div><b>Prepared (total):</b> ${r.prepared} · <b>mesatare/ditë:</b> ${r.avgPrepared||'—'} · <b>pjesa e porosive:</b> ${r.sharePrepared||0}%</div>
+       <div><b>Checked In:</b> ${r.checkedIn} · <b>Checked Out:</b> ${r.checkedOut} · <b>Out/In:</b> ${r.outRate!=null?r.outRate+'%':'—'}</div>
      </div>
-     ${lt.length?`<div class="small"><b>By LogType:</b> ${lt.map(([k,c])=>`<span class="badge b-muted">${h(k)}: ${c}</span>`).join(' ')}</div>`:''}
-     <h3 style="font-size:12.5px;margin:12px 0 6px">Daily history</h3>
-     <div class="tablewrap"><table><thead><tr><th>Date</th><th>Shift</th><th>Orders</th><th>Events</th><th>Hours</th><th>Ev/h</th></tr></thead>
-     <tbody>${hist.map(x=>`<tr><td class="small">${h(fmtDateAl(x.date))}</td><td>${h(x.shift)}</td><td>${x.orders}</td><td>${x.events}</td><td>${x.hours?x.hours.toFixed(1):'—'}</td><td>${x.evPerHour??'—'}</td></tr>`).join('')}</tbody></table></div>`,
+     <h3 style="font-size:12.5px;margin:12px 0 6px">Historia ditore</h3>
+     <div class="tablewrap"><table><thead><tr><th>Data</th><th style="text-align:right">Prepared</th><th style="text-align:right">Checked In</th><th style="text-align:right">Checked Out</th></tr></thead>
+     <tbody>${hist.map(x=>`<tr><td class="small">${h(fmtDateAl(x.date))}</td><td style="text-align:right">${x.prepared||'—'}</td><td style="text-align:right">${x.checkedIn||'—'}</td><td style="text-align:right">${x.checkedOut||'—'}</td></tr>`).join('')}</tbody></table></div>`,
     `<button class="btn primary" id="mok">Close</button>`);
   $('#mok').onclick=closeModal;
 }
 function wmsExportOps(){
-  const rows=wmsOperatorAgg(wmsOpFilter.from,wmsOpFilter.to,wmsOpFilter.shift);
+  const rows=wmsOperatorSummary(wmsOpFilter.from,wmsOpFilter.to);
   if(!rows.length){ toast('Nothing to export'); return; }
-  const keys=['date','shift','operator','orders','events','first','last','hours','evPerHour','ordPerHour'];
+  const keys=['operator','daysActive','prepared','avgPrepared','checkedIn','checkedOut','outRate','sharePrepared','lastDate'];
   const esc=v=>{ if(v==null)return''; v=String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
-  const csv=[keys.join(',')].concat(rows.map(r=>keys.map(k=>esc(k==='hours'?(r.hours?r.hours.toFixed(2):''):r[k])).join(','))).join('\n');
-  downloadFile('wms-operator-performance-'+todayStr()+'.csv','﻿'+csv,'text/csv;charset=utf-8');
+  const csv=[keys.join(',')].concat(rows.map(r=>keys.map(k=>esc(r[k])).join(','))).join('\n');
+  downloadFile('wms-operator-performance-'+(wmsOpFilter.from||'all')+'_'+(wmsOpFilter.to||todayStr())+'.csv','﻿'+csv,'text/csv;charset=utf-8');
 }
 
 /* decode an uploaded file buffer as UTF-8 / UTF-16 / UTF-32 (WMS exports are often UTF-32/UTF-16) */
@@ -2987,52 +3460,9 @@ function wmsImportOrders(rows, meta){
   return {inserted:ins,dups};
 }
 /* Prepared orders by operator (from /Order/GetPreparedOrders) — rows: {date, operator, preparedOrders} */
-function wmsImportPrepared(rows, meta){
-  meta=meta||{}; const t0=Date.now(); const col=Store.col('wmsPrepared');
-  const key=r=>['WMS',r.date,r.operator].join('|');
-  const existing=new Set(col.map(key)); let ins=0,upd=0,dups=0;
-  rows.forEach(raw=>{
-    const rec={ date:(raw.date||'').slice(0,10), operator:(raw.operator||raw.Name||'').toString().trim(),
-      preparedOrders:num(raw.preparedOrders!=null?raw.preparedOrders:raw.PreparedOrders), source:'WMS', sourceRef:meta.sourceRef||'', importedAt:nowISO() };
-    if(!rec.date||!rec.operator) return;
-    const k=key(rec); const ex=col.find(x=>key(x)===k);
-    if(ex){ if(ex.preparedOrders!==rec.preparedOrders){ ex.preparedOrders=rec.preparedOrders; ex.importedAt=rec.importedAt; upd++; } else dups++; }
-    else { rec.id=uid('wp'); col.unshift(rec); existing.add(k); ins++; }
-  });
-  Store.col('wmsSyncLog').unshift({ id:uid('slog'), at:nowISO(), operation:'Prepared orders import', dateRange:meta.dateRange||'',
-    retrieved:rows.length, inserted:ins, updated:upd, duplicates:dups, warnings:0, errors:0, durationMs:Date.now()-t0, status:'VALID' });
-  wmsCfg().lastSuccess=nowISO(); Store.persist();
-  return {inserted:ins,updated:upd,dups};
-}
-function wmsImportCheckin(rows, meta){
-  meta=meta||{}; const t0=Date.now(); const col=Store.col('wmsCheckin');
-  const key=r=>['WMS',r.date,r.operator].join('|');
-  let ins=0,upd=0,dups=0;
-  rows.forEach(raw=>{
-    const rec={ date:(raw.date||'').slice(0,10), operator:(raw.operator||'').toString().trim(),
-      checkedIn:num(raw.checkedIn!=null?raw.checkedIn:raw.CheckedIn), checkedOut:num(raw.checkedOut!=null?raw.checkedOut:raw.CheckedOut),
-      source:'WMS', sourceRef:meta.sourceRef||'', importedAt:nowISO() };
-    if(!rec.date||!rec.operator) return;
-    const k=key(rec); const ex=col.find(x=>key(x)===k);
-    if(ex){ if(ex.checkedIn!==rec.checkedIn || ex.checkedOut!==rec.checkedOut){ ex.checkedIn=rec.checkedIn; ex.checkedOut=rec.checkedOut; ex.importedAt=rec.importedAt; upd++; } else dups++; }
-    else { rec.id=uid('wc'); col.unshift(rec); ins++; }
-  });
-  Store.col('wmsSyncLog').unshift({ id:uid('slog'), at:nowISO(), operation:'Products checked in import', dateRange:meta.dateRange||'',
-    retrieved:rows.length, inserted:ins, updated:upd, duplicates:dups, warnings:0, errors:0, durationMs:Date.now()-t0, status:'VALID' });
-  wmsCfg().lastSuccess=nowISO(); Store.persist();
-  return {inserted:ins,updated:upd,dups};
-}
-function wmsImportFlow(daily, meta){
-  meta=meta||{}; const col=Store.col('wmsFlow');
-  (daily||[]).forEach(raw=>{
-    const date=(raw.date||'').slice(0,10); if(!date) return;
-    const rec={ date, checkedIn:num(raw.checkedIn), checkedOut:num(raw.checkedOut), source:'WMS', sourceRef:meta.sourceRef||'', importedAt:nowISO() };
-    const ex=col.find(x=>x.date===date);
-    if(ex){ ex.checkedIn=rec.checkedIn; ex.checkedOut=rec.checkedOut; ex.importedAt=rec.importedAt; }
-    else { rec.id=uid('wf'); col.unshift(rec); }
-  });
-  Store.persist();
-}
+function wmsImportPrepared(rows, meta){ const r=WODS.importPrepared(Store.db,rows,meta); wmsCfg().lastSuccess=nowISO(); Store.persist(); return r; }
+function wmsImportCheckin(rows, meta){ const r=WODS.importCheckin(Store.db,rows,meta); wmsCfg().lastSuccess=nowISO(); Store.persist(); return r; }
+function wmsImportFlow(daily, meta){ WODS.importFlow(Store.db,daily,meta); Store.persist(); }
 function wmsSameDayHTML(){
   const flow=Store.col('wmsFlow'); if(!flow.length) return '';
   const days=flow.slice().sort((a,b)=>a.date<b.date?1:-1).slice(0,14); // newest first
@@ -3219,7 +3649,9 @@ function wmsShiftsView(box){
     <div class="tablewrap"><table><thead><tr><th>Name</th><th>Start</th><th>End</th><th>Weekend</th><th>Active</th><th></th></tr></thead>
     <tbody>${rows.map(s=>`<tr><td><b>${h(s.name)}</b></td><td>${h(s.start)}</td><td>${h(s.end)}</td><td>${s.weekend?'✓':'—'}</td><td>${s.active!==false?'✓':'—'}</td>
       <td><button class="btn sm" data-she="${s.id}">Edit</button> <button class="btn sm danger" data-shd="${s.id}">✕</button></td></tr>`).join('')||emptyRow(6,'No shifts')}</tbody></table></div>
-    <div class="hint" style="margin-top:6px">Rregulla e overlap-it: nëse një timestamp bie brenda <b>më shumë se një</b> ndërrimi aktiv (p.sh. N1∩N2 13:00–15:00), shift-i shënohet <b>UNKNOWN</b> — nuk hamendësohet.</div></div>`;
+    <div class="hint" style="margin-top:6px">Rregulla e overlap-it: nëse një timestamp bie brenda <b>më shumë se një</b> ndërrimi aktiv (p.sh. N1∩N2 13:00–15:00), shift-i shënohet <b>UNKNOWN</b> — nuk hamendësohet.</div></div>`
+    + shiftStatsHTML();
+  wireShiftStats();
   $('#wmsAddShift').onclick=()=>wmsShiftForm();
   $$('#wmsBody [data-she]').forEach(b=>b.onclick=()=>wmsShiftForm(Store.get('wmsShifts',b.dataset.she)));
   $$('#wmsBody [data-shd]').forEach(b=>b.onclick=()=>{ const s=Store.get('wmsShifts',b.dataset.shd); confirmDelete(s.name,()=>{ Store.remove('wmsShifts',s.id); renderWMS($('#view')); }); });
@@ -3248,16 +3680,19 @@ function wmsLog(box){
 /* =========================================================================
    BOOT
    =======================================================================*/
-function boot(){
+async function boot(){
   Store.load();
   if(!Store.db.validations) Store.db.validations=[];
+  // Shared copy first: on the agent, adopt/merge the machine-wide database BEFORE anything (incl. the
+  // boot WMS sync) persists — otherwise a stale tab could overwrite newer data with its own.
+  if(Store.onAgent()){ await Store.pullFromServer({initial:true}); Store.startPolling(); }
   // If opened as a local file (file://) but the agent is running, show a clear link to the
   // correct localhost app — that origin has the live WMS sync and is the canonical instance.
   if(location.protocol==='file:'){
     try{ fetch('http://localhost:8790/wms/health',{cache:'no-store'}).then(r=>{ if(r&&r.ok){
       const b=document.createElement('div');
-      b.style.cssText='position:sticky;top:0;z-index:9999;background:#123527;color:#7fe3b6;padding:10px 16px;font-size:14px;text-align:center;border-bottom:1px solid #1e4a34';
-      b.innerHTML='🟢 Agjenti është aktiv. Ky është versioni <b>file://</b> (pa sync). Për të dhëna live, hape këtu: <a href="http://localhost:8790/app.html" style="color:#b6f0d3;font-weight:700">http://localhost:8790/app.html</a>';
+      b.style.cssText='position:sticky;top:0;z-index:9999;background:#e7f5ec;color:#1e8449;padding:10px 16px;font-size:14px;text-align:center;border-bottom:1px solid #b9e0c6';
+      b.innerHTML='🟢 Agjenti është aktiv. Ky është versioni <b>file://</b> (pa sync). Për të dhëna live, hape këtu: <a href="http://localhost:8790/app.html" style="color:#115b92;font-weight:700">http://localhost:8790/app.html</a>';
       document.body.insertBefore(b, document.body.firstChild);
     }}).catch(()=>{}); }catch(e){}
   }
@@ -3269,5 +3704,87 @@ function boot(){
   // WMS auto-sync: whenever the app is served by the local agent, sync now + on schedule.
   // Boot sync always runs on the agent (so it "just works"); the toggle only gates the recurring timer.
   try{ if(wmsOnAgent() && wmsCfg().autoSync!==false){ wmsAgentSync(7).then(()=>{ if((location.hash||'')==='#wms') renderWMS($('#view')); }); wmsScheduleAuto(); } }catch(e){}
+}
+/* =========================================================================
+   RAPORTET — archive of the agent's daily (21:30) and weekly (Friday 21:35)
+   narrative reports, plus live previews and manual (re)generation.
+   =======================================================================*/
+let rapTab='weekly', rapOpen=null;   // rapOpen = {kind:'daily'|'weekly', key}
+function renderRaportet(v){
+  const onAgent=Store.onAgent();
+  const wcfg=Store.db.wms||{};
+  const dayT=wcfg.dailyReportTime||'21:30', wkT=wcfg.weeklyReportTime||'21:35';
+  v.innerHTML = pagehead('Raportet',
+    `Raporte narrative të gjeneruara automatikisht nga agjenti: <b>ditore</b> çdo ditë pas orës ${h(dayT)} (mbyllja e turnit) dhe <b>javore</b> çdo të premte pas orës ${h(wkT)}. Bazohen në shifrat WMS dhe në ditar; ruajnë ndarjen fakt–hipotezë.`,
+    `<button class="btn" id="rapPrint">🖨 Print / PDF</button>`)
+    + `<div class="filters" id="rapTabs"><button class="btn ${rapTab==='weekly'?'primary':''}" data-t="weekly">Javore</button><button class="btn ${rapTab==='daily'?'primary':''}" data-t="daily">Ditore</button></div>`
+    + `<div id="rapBody"></div>`;
+  $('#rapPrint').onclick=()=>window.print();
+  $$('#rapTabs [data-t]').forEach(b=>b.onclick=()=>{ rapTab=b.dataset.t; rapOpen=null; renderRaportet(v); });
+  (rapTab==='weekly'?rapWeekly:rapDaily)($('#rapBody'), onAgent);
+}
+function rapMeta(r){ const g=new Date(r.generatedAt); return `${g.toLocaleDateString()} ${g.toTimeString().slice(0,5)}${r.scheduled?' · automatik':' · manual'}`; }
+function rapStat(label,val,cls){ return val==null||val===''?'':`<span class="badge ${cls||'b-muted'}" style="margin-right:4px">${h(label)}: ${h(String(val))}</span>`; }
+async function rapRun(url, btn, after){
+  if(!btn) return; const old=btn.textContent; btn.disabled=true; btn.textContent='⏳ Po gjenerohet… (sync WMS, mund të zgjasë deri 2 min)';
+  try{ const r=await fetch(url,{method:'POST'}); const j=await r.json(); if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+    await Store.pullFromServer(); toast('Raporti u arkivua'+(j.synced?' · WMS sync ✓':'')); after&&after(j); }
+  catch(e){ toast('Gjenerimi dështoi: '+e.message); btn.disabled=false; btn.textContent=old; }
+}
+function rapWeekly(box, onAgent){
+  const reps=Store.col('weeklyReports').slice().sort((a,b)=>a.weekStart<b.weekStart?1:-1);
+  const cur=WODS.weekBounds(todayStr());
+  const wkNo=ws=>WODS.weekNumber(Store.db,ws);
+  const dateVal=(rapOpen&&rapOpen.kind==='weekly'&&rapOpen.key)||cur.start;
+  box.innerHTML=`<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b>Java aktuale:</b> <span class="badge b-muted">Java ${h(String(wkNo(cur.start)))} · ${h(fmtDateAl(cur.start))} – ${h(fmtDateAl(cur.end))}</span>
+        <button class="btn sm" id="rapWeekLive">👁 Shiko live</button>
+        ${onAgent?`<span style="margin-left:auto;display:flex;gap:6px;align-items:center"><span class="small muted">Gjenero për javën e datës</span><input type="date" id="rapWeekDate" value="${h(dateVal)}" style="width:auto;min-height:34px"><button class="btn sm primary" id="rapWeekRun">⚙ Gjenero / rigjenero</button></span>`:`<span class="hint" style="margin:0 0 0 auto">Gjenerimi bëhet nga agjenti (hape app-in te http://localhost:8790).</span>`}
+      </div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Java</th><th>Periudha</th><th>Gjeneruar</th><th class="wrap">Shifra kyçe</th><th></th></tr></thead>
+      <tbody>${reps.length?reps.map(r=>`<tr>
+        <td><b>Java ${h(String(r.weekNo!=null?r.weekNo:wkNo(r.weekStart)))}</b></td>
+        <td>${h(fmtDateAl(r.weekStart))} – ${h(fmtDateAl(r.weekEnd))}</td>
+        <td class="small">${h(rapMeta(r))}</td>
+        <td class="wrap">${r.stats?rapStat('Porosi',r.stats.prepTotal)+rapStat('Mes./ditë pune',r.stats.avgWork)+rapStat('Out/In',r.stats.outRate!=null?r.stats.outRate+'%':null,r.stats.outRate!=null&&r.stats.outRate<75?'b-warn':'b-ok')+rapStat('Vëzhgime',r.stats.obs)+rapStat('Kritike',r.stats.critical,r.stats.critical?'b-crit':'b-muted')+rapStat('Matje',r.stats.meas):''}</td>
+        <td><button class="btn sm ${rapOpen&&rapOpen.kind==='weekly'&&rapOpen.key===r.weekStart?'primary':''}" data-open="${h(r.weekStart)}">Shiko</button> ${onAgent?`<a class="btn sm ghost" href="/reports/weekly-${h(r.weekStart)}.html" target="_blank" rel="noopener" title="Hap si faqe të veçantë për print/dërgim">↗</a>`:''}</td>
+      </tr>`).join(''):emptyRow(5,'Ende s\'ka raporte javore të arkivuara. Gjenero një me butonin lart — agjenti sinkronizon shifrat WMS të javës dhe e përpilon.')}</tbody></table></div>
+    <div id="rapView" style="margin-top:14px"></div>`;
+  const view=$('#rapView');
+  const show=(html,label)=>{ view.innerHTML=`<div class="meta muted small" style="margin-bottom:6px">${label}</div>`+html; view.scrollIntoView({behavior:'smooth',block:'start'}); };
+  $$('#rapBody [data-open]').forEach(b=>b.onclick=()=>{ rapOpen={kind:'weekly',key:b.dataset.open}; const r=reps.find(x=>x.weekStart===b.dataset.open); rapWeekly(box,onAgent); if(r) $('#rapView').innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; });
+  $('#rapWeekLive').onclick=()=>{ const n=WODS.buildWeeklyNarrative(Store.db, todayStr()); show(n.empty?'<div class="empty">S\'ka të dhëna për këtë javë.</div>':n.html, 'Pamje live nga të dhënat aktuale (jo e arkivuar)'); };
+  const run=$('#rapWeekRun'); if(run) run.onclick=()=>{ const d=$('#rapWeekDate').value||todayStr(); rapRun('/report/week?date='+encodeURIComponent(d), run, ()=>{ rapOpen={kind:'weekly',key:WODS.weekBounds(d).start}; renderRaportet($('#view')); const r=Store.col('weeklyReports').find(x=>x.weekStart===rapOpen.key); if(r&&$('#rapView')) $('#rapView').innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; }); };
+  if(rapOpen&&rapOpen.kind==='weekly'){ const r=reps.find(x=>x.weekStart===rapOpen.key); if(r) view.innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; }
+}
+function rapDaily(box, onAgent){
+  const reps=Store.col('dailyReports').slice().sort((a,b)=>a.date<b.date?1:-1);
+  const dateVal=(rapOpen&&rapOpen.kind==='daily'&&rapOpen.key)||todayStr();
+  box.innerHTML=`<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b>Dita:</b> <input type="date" id="rapDayDate" value="${h(dateVal)}" style="width:auto;min-height:34px">
+        <button class="btn sm" id="rapDayLive">👁 Shiko live</button>
+        ${onAgent?`<button class="btn sm primary" id="rapDayRun" style="margin-left:auto">⚙ Gjenero / rigjenero për këtë datë</button>`:''}
+      </div>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Data</th><th>Gjeneruar</th><th class="wrap">Shifra kyçe</th><th></th></tr></thead>
+      <tbody>${reps.length?reps.map(r=>`<tr>
+        <td><b>${h(fmtDateAl(r.date))}</b></td>
+        <td class="small">${h(rapMeta(r))}</td>
+        <td class="wrap">${r.stats?rapStat('Porosi',r.stats.prep)+rapStat('Out/In',r.stats.outRate!=null?r.stats.outRate+'%':null,r.stats.outRate!=null&&r.stats.outRate<75?'b-warn':'b-ok')+rapStat('Vëzhgime',r.stats.obs)+rapStat('Auto',r.stats.auto)+rapStat('Kritike',r.stats.critical,r.stats.critical?'b-crit':'b-muted')+rapStat('Presin validim',r.stats.pending):''}</td>
+        <td><button class="btn sm ${rapOpen&&rapOpen.kind==='daily'&&rapOpen.key===r.date?'primary':''}" data-open="${h(r.date)}">Shiko</button> ${onAgent?`<a class="btn sm ghost" href="/reports/daily-${h(r.date)}.html" target="_blank" rel="noopener" title="Hap si faqe të veçantë për print/dërgim">↗</a>`:''}</td>
+      </tr>`).join(''):emptyRow(4,'Ende s\'ka raporte ditore të arkivuara. Gjenerohen vetë çdo mbrëmje; ose gjenero një me butonin lart.')}</tbody></table></div>
+    <div id="rapView" style="margin-top:14px"></div>`;
+  const view=$('#rapView');
+  const showRep=r=>{ view.innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; };
+  $$('#rapBody [data-open]').forEach(b=>b.onclick=()=>{ rapOpen={kind:'daily',key:b.dataset.open}; rapDaily(box,onAgent); const r=Store.col('dailyReports').find(x=>x.date===b.dataset.open); if(r) showRep(r); $('#rapView').scrollIntoView({behavior:'smooth',block:'start'}); });
+  $('#rapDayLive').onclick=()=>{ const d=$('#rapDayDate').value||todayStr(); const n=WODS.buildDailyNarrative(Store.db,d); view.innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Pamje live për ${h(fmtDateAl(d))} nga të dhënat aktuale (jo e arkivuar)</div>`+(n.empty?'<div class="empty">S\'ka të dhëna për këtë datë.</div>':n.html); };
+  const run=$('#rapDayRun'); if(run) run.onclick=()=>{ const d=$('#rapDayDate').value||todayStr(); const skipAuto=Store.col('observations').some(o=>o.date===d&&!o.auto&&/WMS/i.test(o.source||''));
+    rapRun('/report/run?date='+encodeURIComponent(d)+(skipAuto?'&auto=0':''), run, ()=>{ rapOpen={kind:'daily',key:d}; renderRaportet($('#view')); const r=Store.col('dailyReports').find(x=>x.date===d); if(r&&$('#rapView')) $('#rapView').innerHTML=`<div class="meta muted small" style="margin-bottom:6px">Raport i arkivuar · ${h(rapMeta(r))}</div>`+r.html; }); };
+  if(rapOpen&&rapOpen.kind==='daily'){ const r=reps.find(x=>x.date===rapOpen.key); if(r) showRep(r); }
 }
 document.addEventListener('DOMContentLoaded',boot);

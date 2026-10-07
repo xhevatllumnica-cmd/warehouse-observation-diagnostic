@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "WMS Station",
+  "version": "1.0",
+  "description": "Tregon Tabelës ditore cila llogari e WMS-it është e kyçur në këtë kompjuter të tavolinës (vetëm emri i llogarisë). Nuk lexon cookie, porosi apo të dhëna të tjera.",
+  "permissions": ["alarms", "storage"],
+  "host_permissions": ["https://wms.gjirafamall.com/*", "http://10.10.1.230:8791/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["https://wms.gjirafamall.com/*"], "js": ["content.js"], "run_at": "document_idle" }],
+  "action": { "default_popup": "popup.html", "default_title": "WMS Station" }
+}

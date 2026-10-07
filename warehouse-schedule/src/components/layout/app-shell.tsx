@@ -2,6 +2,7 @@
 
 import {
   BarChart3Icon,
+  BriefcaseBusinessIcon,
   CalendarDaysIcon,
   Clock3Icon,
   FileUpIcon,
@@ -17,6 +18,7 @@ const NAV = [
   { href: "/orari", label: "Orari", icon: CalendarDaysIcon },
   { href: "/punonjesit", label: "Punonjësit", icon: UsersIcon },
   { href: "/shiftet", label: "Shift-et", icon: Clock3Icon },
+  { href: "/pozitat", label: "Pozitat", icon: BriefcaseBusinessIcon },
   { href: "/statistikat", label: "Statistikat", icon: BarChart3Icon },
   { href: "/importo", label: "Importo", icon: FileUpIcon },
 ];

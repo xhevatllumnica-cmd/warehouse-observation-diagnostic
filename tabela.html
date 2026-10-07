@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="sq">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tabela ditore</title>
+<style>
+/* light by default, in Gjirafa's colours (orange #e67e22, blue #115b92); ?theme=dark for a dark screen */
+:root{ --bg:#f4f5f7; --panel:#ffffff; --line:#e2e5ea; --text:#2b2f36; --muted:#5d6876; --faint:#8a94a2; --accent:#115b92; --brand:#e67e22; --ok:#1e8449; --warn:#c4520c; --crit:#c62828; }
+:root[data-theme="dark"]{ --bg:#0b1220; --panel:#131c2e; --line:#24314a; --text:#e8eef9; --muted:#8fa1bf; --faint:#5d6f8d; --accent:#4c8dff; --brand:#f0a020; --ok:#2fbf71; --warn:#f0a020; --crit:#e5484d; }
+*{ box-sizing:border-box; }
+body{ margin:0; background:var(--bg); color:var(--text); font:15px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+.wrap{ padding:16px clamp(12px,2vw,28px) 24px; max-width:1800px; margin:0 auto; }
+header{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:14px; }
+h1{ font-size:clamp(20px,2.2vw,32px); margin:0; font-weight:750; letter-spacing:.2px; }
+.sub{ color:var(--muted); font-size:clamp(12px,1vw,15px); }
+.clock{ margin-left:auto; font-size:clamp(24px,3vw,44px); font-weight:700; font-variant-numeric:tabular-nums; }
+.btn{ background:transparent; color:var(--muted); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font:inherit; font-size:13px; cursor:pointer; }
+.btn:hover{ color:var(--text); border-color:var(--accent); }
+.btn.primary{ background:var(--brand); border-color:var(--brand); color:#fff; }
+.grid{ display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin-bottom:14px; }
+.card{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0; }
+.card .lbl{ color:var(--muted); font-size:clamp(12px,1vw,15px); font-weight:600; text-transform:uppercase; letter-spacing:.4px; }
+.card .big{ font-size:clamp(34px,4.2vw,64px); font-weight:800; line-height:1.05; margin:4px 0; font-variant-numeric:tabular-nums; }
+.card .foot{ color:var(--muted); font-size:clamp(12px,1vw,16px); }
+.card.warn{ border-color:var(--warn); } .card.warn .big{ color:var(--warn); }
+.card.ok .big{ color:var(--ok); }
+.stgrid{ display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); margin-bottom:14px; }
+.stcard{ cursor:pointer; border-left:5px solid var(--line); }
+.stcard.busy{ border-left-color:var(--brand); }
+.stcard:hover{ border-color:var(--accent); }
+.stcard .big{ font-size:clamp(30px,3.4vw,52px); }
+.stcard .who{ font-size:clamp(16px,1.5vw,24px); font-weight:700; margin-top:6px; }
+.stcard .who b{ color:var(--brand); }
+.stcard .free{ color:var(--faint); font-weight:600; }
+.stcard .prev{ font-size:clamp(13px,1.1vw,17px); color:var(--muted); margin-top:3px; }
+.stcard .prev.faint{ color:var(--faint); }
+.sec{ font-size:clamp(13px,1.1vw,16px); font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin:4px 0 8px; }
+.bar{ height:10px; background:var(--line); border-radius:6px; overflow:hidden; margin:8px 0 4px; }
+.bar > i{ display:block; height:100%; background:var(--ok); }
+table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+th{ text-align:left; color:var(--muted); font-size:clamp(11px,.9vw,14px); font-weight:600; text-transform:uppercase; letter-spacing:.4px; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+td{ padding:9px 10px; border-bottom:1px solid var(--line); font-size:clamp(15px,1.45vw,24px); white-space:nowrap; }
+td.num, th.num{ text-align:right; }
+td .st{ font-weight:700; } td .faint, .faint{ color:var(--faint); }
+tr.idle td{ color:var(--faint); }
+.hours{ display:flex; align-items:flex-end; gap:2px; height:28px; }
+.hours i{ display:block; width:clamp(5px,.6vw,10px); background:var(--accent); border-radius:2px 2px 0 0; opacity:.85; }
+.hours i.now{ background:var(--ok); }
+.tablewrap{ overflow-x:auto; }
+.note{ color:var(--faint); font-size:12px; margin-top:10px; }
+.msg{ padding:10px 14px; border-radius:10px; border:1px solid var(--warn); color:var(--warn); margin-bottom:12px; }
+dialog{ background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:18px; width:min(560px,94vw); }
+dialog::backdrop{ background:rgba(0,0,0,.55); }
+dialog .row{ display:flex; gap:10px; align-items:center; margin:6px 0; }
+dialog .row span{ width:170px; font-weight:600; }
+dialog select{ flex:1; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:7px; font:inherit; }
+.h2{ font-size:clamp(14px,1.2vw,18px); font-weight:700; margin:0 0 8px; }
+@media (max-width:640px){ .clock{ margin-left:0; } td{ font-size:15px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div style="width:6px;align-self:stretch;background:var(--brand);border-radius:3px"></div><div><h1>Tabela ditore</h1><div class="sub" id="dateLine">—</div></div>
+    <div class="clock" id="clock">--:--</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input type="date" id="datePick" class="btn" title="Zgjidh datën" style="padding:5px 8px">
+      <button class="btn" id="btnToday" title="Kthehu te sot">Sot</button>
+      <button class="btn" id="btnRefresh">⟳</button>
+      <button class="btn" id="btnFull">⛶ Ekran i plotë</button>
+    </div>
+  </header>
+  <div id="msg"></div>
+  <div class="grid" id="cards"><div class="card"><div class="foot">Po lexohen të dhënat nga WMS…</div></div></div>
+  <div class="sec" id="secTitle">Tavolinat — sot</div>
+  <div id="stInfo" class="note" style="margin:-4px 0 8px"></div>
+  <div class="stgrid" id="stcards"></div>
+  <div class="card"><div class="h2">Porosi për orë sipas tavolinës</div><div class="tablewrap"><table id="tbl"></table></div>
+    <div class="note" id="note"></div></div>
+</div>
+<dialog id="dlg1"><div class="h2" id="d1Title">Tavolina</div>
+  <div class="note" style="margin:0 0 8px">Nuk ka nevojë të shtosh askënd: kush bën check-out ose check-in vendoset vetë në tavolinën e vet të zakonshme, ose në të parën e lirë. Mapimi, POD dhe refuzimet plotësohen gjithashtu vetë. Këtu vetëm <b>korrigjon</b> nëse dikush sot ka punuar në një tavolinë tjetër: largo (✕) ose shto. Korrigjimi vlen për këtë ditë dhe mbahet mend si tavolina e operatorit për ditët në vazhdim. Kush hiqet nga këtu vendoset vetë në një tavolinë tjetër të lirë.</div>
+  <div id="d1List"></div>
+  <div class="row" style="margin-top:10px"><select id="d1Add"></select><button class="btn" id="d1AddBtn">+ Shto</button></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" id="d1Cancel">Anulo</button><button class="btn primary" id="d1Save">Ruaj</button></div></dialog>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const hm=iso=>{ if(!iso) return '—'; const d=new Date(iso.length===19? iso : iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
+const fmt=v=> v==null? '—' : String(v).replace('.',',');
+const dmy=iso=> iso? iso.slice(8,10)+'.'+iso.slice(5,7) : '';
+try{ const t=new URLSearchParams(location.search).get('theme'); if(t) document.documentElement.dataset.theme=t; }catch(e){}
+let D=null;
+const localToday=()=>{ const n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0'); };
+let pickedDate=''; try{ pickedDate=new URLSearchParams(location.search).get('date')||''; }catch(e){}
+const selDate=()=> pickedDate && pickedDate<localToday()? pickedDate : '';
+let lastMin=-1;
+function tick(){ const n=new Date(); $('#clock').textContent=String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0');
+  // every new minute redraw from the data already loaded, so a cut-off card appears at 12:55 / 14:55 / 17:25 sharp
+  const m=n.getHours()*60+n.getMinutes(); if(m!==lastMin){ const first=lastMin<0; lastMin=m; if(!first && D && !D.past) draw(); } }
+setInterval(tick,1000); tick();
+async function load(force){
+  try{ const dq=selDate();   // a past day (date picker, or /tabela?date=YYYY-MM-DD)
+    if(dq) $('#cards').innerHTML='<div class="card"><div class="foot">Po lexohet dita '+dmy(dq)+'.'+dq.slice(0,4)+' nga WMS…</div></div>';
+    const r=await fetch('/tabela/data?'+(dq? 'date='+encodeURIComponent(dq) : force? 'refresh=1' : ''),{cache:'no-store'}); D=await r.json(); draw(); }
+  catch(e){ $('#msg').innerHTML='<div class="msg">Agjenti nuk përgjigjet ('+esc(e.message)+'). Provohet sërish pas 2 minutash.</div>'; }
+}
+function draw(){
+  const days=['E diel','E hënë','E martë','E mërkurë','E enjte','E premte','E shtunë'], d=new Date(D.date+'T12:00:00');
+  $('#dateLine').textContent=days[d.getDay()]+', '+dmy(D.date)+'.'+D.date.slice(0,4)+(D.past? ' · ditë e kaluar (jo live)' : '');
+  const L=D.live||{}, C=D.cut||{}, now=new Date(), nowMin=now.getHours()*60+now.getMinutes();
+  let msg='';
+  if(L.error) msg+='<div class="msg">'+(L.error==='auth_expired'? 'Sesioni i WMS ka skaduar — shifrat live nuk rifreskohen derisa të futet cookie i ri.' : 'Shifrat live nuk u lexuan nga WMS ('+esc(L.error)+').')+'</div>';
+  $('#msg').innerHTML=msg;
+  const ops=(L.ops||[]); const coOrd=ops.reduce((a,o)=>a+o.orders,0), coH=ops.reduce((a,o)=>a+o.coHours,0);
+  let cards='';
+  if(C.available){ const y=C.carry;
+    cards+=`<div class="card ${y.stillOpen>0?'warn':'ok'}"><div class="lbl">Carryover i djeshëm (${dmy(y.date)})</div><div class="big">${y.carry}</div>
+      <div class="foot">${y.pct!=null? fmt(y.pct)+' % e '+y.ready+' të gatshmeve deri 17:30' : ''}<br>dalë sot ${y.outToday} · ende hapur <b>${y.stillOpen}</b>${y.olderOpen? ' · më të vjetra hapur '+y.olderOpen : ''}</div></div>`;
+    C.cuts.forEach(c=>{ const mins=c.label==='17:30'? 1050 : parseInt(c.label)*60, late=nowMin>mins && c.open>0, pct=c.ready? Math.round(c.out/c.ready*100) : 0;
+      if(!D.past && nowMin < mins-5) return;   // today: a cut-off card appears 5 minutes before its time and stays for the rest of the day
+      cards+=`<div class="card ${late?'warn':''}"><div class="lbl">Gati deri në ${c.label}</div><div class="big">${c.ready}</div>
+        <div class="bar"><i style="width:${pct}%"></i></div><div class="foot">dalë <b>${c.out}</b> · mbetur <b>${c.open}</b>${c.waiting? ' · presin njësi '+c.waiting : ''}</div></div>`; });
+  } else if(D.past) cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Shfaqen vetëm për sot (gjendja aktuale në databazë). Për ditë të kaluara: tavolinat dhe operatorët më poshtë.</div></div>`;
+  else cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Vijnë nga databaza e WMS çdo orë (07–22). Ende pa rifreskim sot${C.gen? ' — i fundit '+dmy(C.gen.slice(0,10))+' '+C.gen.slice(11,16) : ''}.</div></div>`;
+  cards+=`<div class="card"><div class="lbl">Porosi të dala ${D.past? 'atë ditë' : 'sot'}</div><div class="big">${L.ordersOut!=null? L.ordersOut : '—'}</div><div class="foot">ekipi: ${coH? fmt(Math.round(coOrd/coH*10)/10) : '—'} porosi/orë aktive</div></div>`;
+  $('#cards').innerHTML=cards;
+  $('#secTitle').textContent='Tavolinat — '+(D.past? dmy(D.date)+'.'+D.date.slice(0,4) : 'sot');
+  drawStations();
+  const H=now.getHours(), hrs=[]; for(let h=7; h<=Math.max(H,15) && h<=22; h++) hrs.push(h);
+  const byName={}; ops.forEach(o=>byName[o.name]=o);
+  const A={}; (D.cards||[]).forEach(c=>{ if(c.current) A[c.name]=c.current; });
+  const used=new Set((D.cards||[]).flatMap(c=>(c.people||[]).map(p=>p.op)));
+  const spark=(o,key)=>{ const m=(o&&o[key])||{}, mx=Math.max(1,...hrs.map(h=>m[h]||0)); return `<div class="hours">${hrs.map(h=>`<i class="${h===H?'now':''}" style="height:${Math.max(2,Math.round((m[h]||0)/mx*28))}px" title="${h}:00 — ${m[h]||0}"></i>`).join('')}</div>`; };
+  /* a station shows orders (check-out) or units (check-in); a mixed station shows whichever the operator did */
+  const row=(label,name,st)=>{ const o=name? byName[name] : null; if(name) used.add(name);
+    if(!o) return `<tr class="idle"><td><span class="st">${esc(label)}</span></td><td>${name? esc(name) : '<span class="faint">— e lirë —</span>'}</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td></td></tr>`;
+    const co= st.co && (!st.ci || o.orders>0 || !(o.ci>0));
+    const [tot,unit,rate,m]= st.kind==='pod'? [o.pod||0,'POD',null,o.podByHour||{}] : st.kind==='map'? [o.mp||0,'njësi',o.mpRate,o.mpByHour||{}] : st.kind==='ret'? [o.ref||0,'refuzime',null,o.refByHour||{}] : co? [o.orders,'porosi',o.coRate,o.byHour||{}] : [o.ci,'njësi',o.ciRate,o.ciByHour||{}];
+    return `<tr><td><span class="st">${esc(label)}</span></td><td>${esc(o.name)}</td><td class="num"><b>${tot}</b> <span class="faint" style="font-size:.6em">${unit}</span></td><td class="num">${fmt(rate)}</td><td class="num">${m[H]||0}</td><td class="num">${m[H-1]||0}</td><td>${spark(o, st.kind==='pod'?'podByHour':st.kind==='map'?'mpByHour':st.kind==='ret'?'refByHour':co?'byHour':'ciByHour')}</td></tr>`; };
+  let html=`<thead><tr><th>Tavolina</th><th>Operatori</th><th class="num">Sot</th><th class="num">Në orë aktive</th><th class="num">Kjo orë</th><th class="num">Ora e kaluar</th><th>${hrs[0]}:00 → tani</th></tr></thead><tbody>`;
+  const free=[]; (D.stations||[]).forEach(s=>{ if(A[s.name]) html+=row(stLabel(s.name), A[s.name], s); else if(!s.auto) free.push(stLabel(s.name)); });   // the pools are not tables
+  const rest=ops.filter(o=>!used.has(o.name) && (o.orders>0 || o.ci>0)).sort((a,b)=>b.orders-a.orders || b.ci-a.ci);
+  if(rest.length){ html+=`<tr class="ts-section"><td colspan="7" class="faint" style="font-size:13px;padding-top:14px">AKTIVË PA TAVOLINË</td></tr>`; rest.forEach(o=>{ html+=row('—', o.name, {co:o.orders>0, ci:!(o.orders>0)}); }); }
+  if(free.length) html+=`<tr><td colspan="7" class="faint" style="font-size:13px;white-space:normal">TAVOLINA TË LIRA (askush sot): ${free.map(esc).join(' · ')}</td></tr>`;
+  $('#tbl').innerHTML=html+'</tbody>';
+  $('#note').innerHTML=`Live nga WMS: ${hm(L.at)}${L.lastScan? ' (skanimi i fundit '+hm(L.lastScan)+')' : ''}${L.reliable===false? ' · <b>log-u i sotëm u lexua jo i plotë</b>' : ''} · Carryover dhe porositë e gatshme: ${C.gen? C.gen.slice(11,16) : '—'} (databaza, çdo orë).
+    Porosi = porosi me check-out (Checked out + Ready for delivery), si te Statistikat e WH; "në orë aktive" = porosi ÷ orët me të paktën një skanim. Tavolinat caktohen këtu — WMS nuk e regjistron tavolinën e operatorit.`;
+}
+/* station cards: the table's total today (largest), the operator on shift now with their number, and below, smaller,
+   the operators whose shift at this table already ended (N1 after N2 starts) or starts later */
+const stLabel=n=>{ const c=(D.stations||[]).find(s=>s.name===n)||{}; return c.label || String(n).replace(/CHECKOUT/g,'Check-out').replace(/CHECKIN/g,'Check-in').replace(/SELLERS/g,'Sellers'); };
+// Mapimi and POD are work areas, not tables: their cards carry the plain name
+const stTitle=n=>{ const l=stLabel(n), c=(D.stations||[]).find(s=>s.name===n)||{}; return c.kind==='map'||c.kind==='pod'||c.auto||/^Tavolin/i.test(l)? l : 'Tavolina '+l; };
+const stOrder=c=> (c.auto? 5 : c.kind==='map'? 3 : c.kind==='pod'? 4 : c.co&&!c.ci? 0 : c.co&&c.ci? 1 : 2)*100 + (parseInt(String(c.name).replace(/\D+/g,''))||50);
+const allNames=()=>[...new Set([...(D.roster||[]), ...((D.live&&D.live.ops)||[]).map(o=>o.name)])];
+function firstNames(){ const cnt={}; allNames().forEach(n=>{ const f=n.split(' ')[0]; cnt[f]=(cnt[f]||0)+1; });
+  return n=>{ const p=String(n).split(' '); return cnt[p[0]]>1 && p[1]? p[0]+' '+p[1][0]+'.' : p[0]; }; }
+function drawStations(){
+  // which table PCs report the logged-in WMS account (the "WMS Station" extension)
+  const SI=(D.stationInfo||[]).filter(x=>x.ip);
+  $('#stInfo').innerHTML= D.past||!SI.some(x=>x.reports||x.liveUser)? '' : 'PC-të e tavolinave: '+SI.map(x=>x.liveUser? '<b style="color:var(--ok)">●</b> '+esc(x.table)+' — '+esc(x.liveUser) : x.reports? '<span style="color:var(--muted)">○</span> '+esc(x.table)+' (raporti i fundit '+hm(x.lastSeen)+')' : '<span class="faint">○ '+esc(x.table)+' — pa raport sot</span>').join(' · ');
+  const fn=firstNames(), cards=(D.cards||[]).slice().sort((a,b)=>stOrder(a)-stOrder(b));
+  $('#stcards').innerHTML=cards.filter(c=>!(c.auto && !(c.people||[]).length)).map(c=>{ const K=c.kind, ret=K==='ret', co=c.co&&!ret;
+    const big= K==='pod'? (c.pod||0) : K==='map'? c.map : ret? (c.ref||0) : co? c.out : c.units;
+    const unit= K==='pod'? 'porosi të skanuara sot për kurierët (Delivery Platform)' : K==='map'? 'njësi të mapuara sot (në raft)' : ret? 'porosi të refuzuara të pranuara sot (Scanned Refusals)' : co? 'check-out sot (produkte, si te Statistikat 5.4)' : 'njësi të pranuara sot (check-in)';
+    const metric= K==='pod'? 'pod' : K==='map'? 'map' : ret? 'ref' : co? 'out' : 'units';
+    const num=p=> ret && p.ret && !(p.countedAt&&p.countedAt.ret)? numBase(p)+' <span class="faint" style="font-weight:400;font-size:.75em">· kthime '+p.ret+'</span>' : numBase(p);
+    const numBase=p=> !metric? '—' : p.countedAt&&p.countedAt[metric]? '<span class="faint" style="font-weight:400;font-size:.8em">numërohet te '+esc(stTitle(p.countedAt[metric]))+'</span>' : p[metric], cur=(c.people||[]).find(p=>p.op===c.current);
+    const done=(c.people||[]).filter(p=>p!==cur && p.state!=='later').reverse(), later=(c.people||[]).filter(p=>p!==cur && p.state==='later');
+    const P=(D.live&&(K==='ret'? D.live.ref : D.live.pod))||{};
+    const podNote= K!=='pod'&&K!=='ret'? '' : P.error? '<div class="foot" style="color:var(--warn)">'+(P.error==='auth_expired'? 'Sesioni i Delivery Platform ka skaduar — numrat e '+(K==='ret'? 'refuzimeve' : 'POD')+' nuk rifreskohen.' : (K==='ret'? 'Refuzimet' : 'POD')+' nuk u lexua nga Delivery Platform ('+esc(P.error)+').')+'</div>'
+      : '<div class="foot faint">emri = llogaria e kyçur në Delivery Platform'+(P.otherAccounts? ' · '+P.otherAccounts+(K==='ret'? ' porosi' : ' skanime')+' me llogari jashtë listës së stafit' : '')+'</div>'
+      + (K==='ret'? '<div class="foot">kthime të procesuara në WMS: <b>'+(c.ret||0)+'</b> produkte</div>' : '');
+    // POD: the scanned orders by courier post, right under the number (BEKI, Express, Fiks — the others in one faint line)
+    const PO=D.podPosts, posts= K!=='pod'||!PO? '' : PO.loading? '<div class="foot faint">sipas postës: po lexohen dërgesat…</div>'
+      : '<div style="margin:4px 0 2px">'+PO.posts.map(p=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px dashed var(--line)"><span>${esc(p.name)}</span><b style="font-variant-numeric:tabular-nums">${p.n}</b></div>`).join('')
+        +(PO.other||PO.unknown? `<div class="foot faint">${PO.other? 'posta të tjera '+PO.other : ''}${PO.other&&PO.unknown? ' · ' : ''}${PO.unknown? 'pa dërgesë ende '+PO.unknown : ''}</div>` : '')+'</div>';
+    const extra= posts+podNote+(co? '<div class="foot">porosi të përfunduara: '+c.orders+'</div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
+    const logged=p=> p.viaPresence? 'kyçur '+hm(p.loggedFrom)+'–'+(p.live? 'tani' : hm(p.loggedTo)) : null;
+    const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : cur.shift? '<div class="foot">ndërrimi '+cur.shift+'</div>' : ''}`
+      : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>'
+        ;
+    const prev=done.map(p=>`<div class="prev">${esc(fn(p.op))}: ${num(p)}${logged(p)? ' <span class="faint">('+logged(p)+')</span>' : p.shift? ' <span class="faint">('+p.shift+')</span>' : ''}</div>`).join('');
+    const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))} · nga ${p.shift.slice(0,5)}</div>`).join('');
+    const pl=(c.people||[]).map(p=>p.placed), how= c.viaPresence||c.auto||!(c.people||[]).length? '' : (K==='map'||K==='pod'||ret) && !pl.includes('manual')? '<div class="foot faint" title="Plotësohet vetë nga puna e bërë sot në këtë proces">⚙ vendosur automatikisht</div>' : pl.includes('manual')&&pl.includes('auto')? '<div class="foot faint">⚙ automatik + caktuar në tabelë</div>' : pl.includes('auto')? '<div class="foot faint" title="Tavolina e zakonshme e operatorit ose e para e lirë — kliko për ta korrigjuar">⚙ vendosur automatikisht</div>' : pl.includes('manual')? '<div class="foot faint">✎ caktuar në tabelë për këtë ditë</div>' : '';
+    const offs=(c.off||[]).length? '<div class="foot faint">pushim sot: '+c.off.map(n=>esc(fn(n))).join(', ')+'</div>' : '';
+    return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Operatorët vendosen automatikisht — kliko vetëm për korrigjim"'}>
+      <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+esc(c.table)+(c.ip? ' · PC '+esc(c.ip) : ' · pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}${how}</div>`; }).join('');
+  document.querySelectorAll('.stcard:not([data-auto])').forEach(el=>el.onclick=()=>openStation(el.dataset.st));
+  if(D.scheduleLoaded===false) $('#stcards').insertAdjacentHTML('beforeend','<div class="note">Orari i punës për sot nuk u gjet — operatorët numërohen për gjithë ditën.</div>');
+}
+let d1Ops=[], d1Start=[];
+function shiftTxt(n){ const sh=(D.shifts||{})[n]; return sh? (sh==='pushim'? 'pushim' : sh) : 'pa orar'; }
+function d1Draw(){
+  const fn=firstNames();
+  $('#d1List').innerHTML= d1Ops.length? d1Ops.map((n,i)=>`<div class="row"><span style="width:auto;flex:1">${esc(n)} <span class="faint" style="font-weight:400">· ${D.past? "atë ditë" : "sot"} ${esc(shiftTxt(n))}</span></span><button class="btn" data-rm="${i}">✕</button></div>`).join('')
+    : '<div class="faint">— e lirë —</div>';
+  document.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{ d1Ops.splice(+b.dataset.rm,1); d1Draw(); });
+  const tables=(D.assign&&D.assign.tables)||{}, st=$('#dlg1').dataset.st, elsewhere={}; Object.entries(tables).forEach(([t,ops])=>{ if(t!==st) ops.forEach(o=>elsewhere[o]=t); });
+  const names=allNames().filter(n=>!d1Ops.includes(n)).sort((a,b)=>{ const wa=/–/.test(shiftTxt(a)), wb=/–/.test(shiftTxt(b)); return wa!==wb? (wa?-1:1) : a.localeCompare(b); });
+  $('#d1Add').innerHTML='<option value="">— zgjidh operatorin —</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)} — ${D.past? "atë ditë" : "sot"} ${esc(shiftTxt(n))}${elsewhere[n]? ' · edhe te '+esc(stTitle(elsewhere[n])) : ''}</option>`).join('');
+}
+function openStation(st){
+  $('#d1Title').textContent=stTitle(st)+(D.past? ' · për datën '+dmy(D.date)+'.'+D.date.slice(0,4) : ' · sot'); $('#dlg1').dataset.st=st;
+  const eff=(D.assign&&D.assign.effective)||{}, shown=((D.cards||[]).find(c=>c.name===st)||{}).people||[];
+  d1Ops=[...new Set((eff[st]||((D.assign&&D.assign.tables)||{})[st]||[]).filter(n=>shown.some(p=>p.op===n)))]; d1Start=d1Ops.slice(); d1Draw(); $('#dlg1').showModal();
+}
+$('#d1AddBtn').onclick=()=>{ const v=$('#d1Add').value; if(v && !d1Ops.includes(v)){ d1Ops.push(v); d1Draw(); } };
+$('#d1Cancel').onclick=()=>$('#dlg1').close();
+$('#d1Save').onclick=async()=>{ const st=$('#dlg1').dataset.st;
+  try{ await fetch('/tabela/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:st, ops:d1Ops, removed:d1Start.filter(n=>!d1Ops.includes(n)), date:D.past? D.date : undefined})}); }catch(e){}
+  $('#dlg1').close(); load(false); };
+$('#btnRefresh').onclick=()=>load(true);
+$('#btnFull').onclick=()=>{ const el=document.documentElement; if(document.fullscreenElement) document.exitFullscreen(); else if(el.requestFullscreen) el.requestFullscreen(); };
+/* date picker: today (live) or any past day; the choice is kept in the address (?date=) */
+function setDate(v){ pickedDate= v && v<localToday()? v : '';
+  try{ const u=new URL(location.href); if(pickedDate) u.searchParams.set('date',pickedDate); else u.searchParams.delete('date'); history.replaceState(null,'',u); }catch(e){}
+  syncPicker(); load(false); }
+function syncPicker(){ const p=$('#datePick'); p.max=localToday(); p.value=selDate()||localToday(); $('#btnToday').style.display= selDate()? '' : 'none'; }
+$('#datePick').onchange=e=>setDate(e.target.value);
+$('#btnToday').onclick=()=>setDate('');
+syncPicker();
+load(false); setInterval(()=>{ if(!selDate()) load(false); }, 120000);   // a past day does not change — no auto-refresh
+</script>
+<script src="/table-sort.js?v=3"></script>
+</body>
+</html>
