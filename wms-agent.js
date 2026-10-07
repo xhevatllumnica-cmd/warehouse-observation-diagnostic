@@ -913,11 +913,29 @@ async function fetchPodScans(iso){
     const d=r.data||[]; total=Number(r.recordsFiltered)||0;
     d.forEach(x=>{ const k=x.orderId+'|'+x.platformName+'|'+x.scanDateTime; if(seen.has(k)) return; seen.add(k);
       const s=String(x.scanDateTime||''), m=/\/Date\((\d+)\)\//.exec(s), t= m? Number(m[1]) : Date.parse(s.replace(' ','T'));
-      if(!isNaN(t)) rows.push({scanner:String(x.scannerName||'').replace(/\s+/g,' ').trim(), t}); });
+      if(!isNaN(t)) rows.push({scanner:String(x.scannerName||'').replace(/\s+/g,' ').trim(), t, oid:x.orderId, pid:x.platformId}); });   // order + platform: to find the courier post (podPostsFor)
     start+=d.length; if(!d.length || start>=total) break;
   }
   const v={date:iso, rows, total, complete: total==null || rows.length>=total, at:new Date().toISOString()};
   podScanCache[iso]={t:Date.now(), v}; return v;
+}
+/* POD scans of a day by courier post, for the board's POD card (BEKI, Express, Fiks — the lead, 07.10.2026). The scan
+   itself has no courier (GetScannedOrders: receiver is empty), so each scanned order is looked up in the day's POD
+   deliveries (FilterDeliveryItems → driverName) by order and platform. Counted on the same scans as the card's number
+   (accounts on the staff list). The deliveries are read in the background (10–20 s the first time, then cached 5 min), so
+   the board never waits: until they are in, the card says they are being read. */
+const POD_BOARD_POSTS=[['BEKI',/^beki/i],['Express',/^express/i],['Fiks',/^fiks/i]];
+function podPostsFor(iso, pod, staff){
+  if(!pod || pod.error || !pod.rows) return null;
+  const c=podCache[iso], ttl= iso>=isoToday()? 5*60000 : 6*3600000;
+  if(!c || Date.now()-c.t>ttl) fetchPodDay(iso).catch(()=>{});   // (re)read in the background; podInflight keeps it to one read
+  if(!c) return {loading:true};
+  const post=new Map(); (c.v.items||[]).forEach(x=>post.set(x.orderId+'|'+x.platformId, String(x.driverName||'')));
+  const out={posts:POD_BOARD_POSTS.map(([name])=>({name, n:0})), other:0, unknown:0, at:c.v.at};
+  pod.rows.forEach(r=>{ if(!r.scanner || !staff.has(normName(r.scanner))) return;
+    const d=post.get(r.oid+'|'+r.pid); if(d==null){ out.unknown++; return; }
+    const i=POD_BOARD_POSTS.findIndex(([,re])=>re.test(d)); if(i>=0) out.posts[i].n++; else out.other++; });
+  return out;
 }
 /* POD orders per day for Kapaciteti & Stafi (the "Boxing / POD" process volume): only the day's total (recordsFiltered of
    one 1-row request), all accounts. Days older than 2 days do not change any more and are kept in data/pod-daily.json, so
@@ -1062,12 +1080,13 @@ async function tabelaData(force, date){
   try{ pod=await fetchPodScans(today); }catch(e){ pod={error:String(e.message||e)}; }
   try{ ref=await fetchRefusalScans(today); }catch(e){ ref={error:String(e.message||e)}; }
   const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES, ref);
+  const podPosts=podPostsFor(today, pod, warehouseStaffSet());
   // tables: set by hand for that day, else placed automatically (usual table / first free one — tabela-board.js autoPlace)
   const placement=tabelaBoard.autoPlace(stations, live&&live.ops, rec, today, APPDIR, n=>STAFF_ALIASES[normName(n)]||n, !past);
   const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:placement.tables}, live&&live.ops, today, day, normName, STAFF_ALIASES, stationPresence.forDay(today), placement.how);
   const shifts={}; Object.entries(day||{}).forEach(([n,sh])=>{ shifts[n]= sh.off? 'pushim' : sh.start+'–'+sh.end; });
   const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
-  return {date:today, past:!!past, stations, stationInfo:stationPresence.info(today), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+  return {date:today, past:!!past, podPosts, stations, stationInfo:stationPresence.info(today), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
     roster:[...new Set(warehouseStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');

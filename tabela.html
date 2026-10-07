@@ -173,7 +173,11 @@ function drawStations(){
     const podNote= K!=='pod'&&K!=='ret'? '' : P.error? '<div class="foot" style="color:var(--warn)">'+(P.error==='auth_expired'? 'Sesioni i Delivery Platform ka skaduar — numrat e '+(K==='ret'? 'refuzimeve' : 'POD')+' nuk rifreskohen.' : (K==='ret'? 'Refuzimet' : 'POD')+' nuk u lexua nga Delivery Platform ('+esc(P.error)+').')+'</div>'
       : '<div class="foot faint">emri = llogaria e kyçur në Delivery Platform'+(P.otherAccounts? ' · '+P.otherAccounts+(K==='ret'? ' porosi' : ' skanime')+' me llogari jashtë listës së stafit' : '')+'</div>'
       + (K==='ret'? '<div class="foot">kthime të procesuara në WMS: <b>'+(c.ret||0)+'</b> produkte</div>' : '');
-    const extra= podNote+(co? '<div class="foot">porosi të përfunduara: '+c.orders+'</div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
+    // POD: the scanned orders by courier post, right under the number (BEKI, Express, Fiks — the others in one faint line)
+    const PO=D.podPosts, posts= K!=='pod'||!PO? '' : PO.loading? '<div class="foot faint">sipas postës: po lexohen dërgesat…</div>'
+      : '<div style="margin:4px 0 2px">'+PO.posts.map(p=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px dashed var(--line)"><span>${esc(p.name)}</span><b style="font-variant-numeric:tabular-nums">${p.n}</b></div>`).join('')
+        +(PO.other||PO.unknown? `<div class="foot faint">${PO.other? 'posta të tjera '+PO.other : ''}${PO.other&&PO.unknown? ' · ' : ''}${PO.unknown? 'pa dërgesë ende '+PO.unknown : ''}</div>` : '')+'</div>';
+    const extra= posts+podNote+(co? '<div class="foot">porosi të përfunduara: '+c.orders+'</div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
     const logged=p=> p.viaPresence? 'kyçur '+hm(p.loggedFrom)+'–'+(p.live? 'tani' : hm(p.loggedTo)) : null;
     const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : cur.shift? '<div class="foot">ndërrimi '+cur.shift+'</div>' : ''}`
       : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>'
