@@ -160,10 +160,7 @@ function renderStatsBody(d){
   const daily=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Vëllimi — porosi dhe njësi të dala për ditë</h3><button class="btn sm ghost no-print" data-csv="daily" style="margin-left:auto">⬇ CSV</button></div>
     ${t.byDay.map(x=>barRow(`${fmtDateAl(x.date)} ${STATS_WEEKDAYS[(new Date(x.date+'T12:00:00').getDay()+6)%7]}${x.partial?' (sot, e pjesshme)':''}`, x.orders, Math.max(maxO,cfg.targetOrdersPerDay||0), x.weekend?'var(--faint)':'var(--accent)', `${x.orders} porosi · ${x.units} njësi`)).join('')}
     ${statsMeta('porosi të ndryshme me check-out (LogTypeId 4/18) në ditë; njësi = skanime check-out. Shiriti është në shkallë kundrejt targetit '+(cfg.targetOrdersPerDay||'')+'.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
-  const maxH=Math.max(1,...t.byHour.map(x=>x.ordersPerDay));
-  const hourly=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Throughput sipas orës</h3><button class="btn sm ghost no-print" data-csv="hourly" style="margin-left:auto">⬇ CSV</button></div>
-    ${t.byHour.map(x=>barRow(String(x.hour).padStart(2,'0')+':00', x.ordersPerDay, maxH, 'var(--ok)', `${x.ordersPerDay} porosi/ditë · ${x.unitsPerDay} njësi/ditë`)).join('')||'<div class="empty">—</div>'}
-    ${statsMeta('mesatarja për ditë e porosive të dala (sipas orës së check-out-it të parë) dhe e njësive, për çdo orë.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
+  const hourly=statsHourlyCard(d);
   const hmax=Math.max(1,...t.heatmap.flat()), hrs=[...Array(24).keys()].filter(hh=>t.heatmap.some(r=>r[hh]));
   const heat=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Heatmap — ora × dita e javës</h3><button class="btn sm ghost no-print" data-csv="heatmap" style="margin-left:auto">⬇ CSV</button></div>
     <div style="overflow-x:auto"><table class="heat"><thead><tr><th></th>${hrs.map(hh=>`<th>${String(hh).padStart(2,'0')}</th>`).join('')}</tr></thead><tbody>
@@ -214,6 +211,46 @@ function renderStatsBody(d){
   return warn + cards + daily + hourly + heat + putaway + prod + appBlock + pending + settings;
 }
 
+/* "5.1 Throughput sipas orës" can show a day of its own (date picker + SOT), apart from the page's period: that day is read
+   with the same /stats/live?date=… and kept per day and shift (today's for 2 minutes, it is still filling). '' = the period. */
+let statsHourDate='', statsHourMem={}, statsHourSeq=0;
+const statsHourKey=()=>statsHourDate+'|'+statsShift;
+function statsHourSrc(d){ if(!statsHourDate) return d; const m=statsHourMem[statsHourKey()]; return m&&!m.loading&&!m.error? m : null; }
+function statsHourlyCard(d){
+  const own=statsHourDate? statsHourMem[statsHourKey()] : null, src=statsHourSrc(d), today=todayStr();
+  const ctl=`<span class="no-print" style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <input type="date" id="statsHourDate" value="${h(statsHourDate)}" max="${h(today)}" title="Zgjidh një ditë të kaluar" style="width:auto;min-height:32px">
+      <button class="btn sm ${statsHourDate===today?'primary':''}" id="statsHourToday" title="Throughput-i i sotëm sipas orës">SOT</button>
+      ${statsHourDate? '<button class="btn sm ghost" id="statsHourReset" title="Kthehu te periudha e zgjedhur lart">✕ periudha</button>' : ''}
+      <button class="btn sm ghost" data-csv="hourly">⬇ CSV</button></span>`;
+  const sub= statsHourDate? fmtDateAl(statsHourDate)+(statsHourDate===today? ' · sot, dita ende në vazhdim' : '') : 'mesatarja për ditë e periudhës së zgjedhur lart';
+  let body;
+  if(statsHourDate && (!own || own.loading)) body='<div class="empty">Po lexohen të dhënat e ditës nga WMS…</div>';
+  else if(statsHourDate && own.error) body=`<div class="empty">${h(own.error)}</div>`;
+  else { const t=src.throughput, maxH=Math.max(1,...t.byHour.map(x=>x.ordersPerDay)), per=statsHourDate? '' : '/ditë';
+    body=t.byHour.map(x=>barRow(String(x.hour).padStart(2,'0')+':00', x.ordersPerDay, maxH, 'var(--ok)', `${x.ordersPerDay} porosi${per} · ${x.unitsPerDay} njësi${per}`)).join('')||'<div class="empty">—</div>';
+    const sc=src.scope, scope=`${h(sc.warehouse)} · ${h(sc.platform)} · ${sc.days===1? h(fmtDateAl(sc.from)) : h(fmtDateAl(sc.from))+' → '+h(fmtDateAl(sc.to))} · turni: ${h(sc.shift)}`;
+    body+=statsMeta(statsHourDate? 'porosi të dala atë ditë sipas orës së check-out-it të parë, dhe njësi, për çdo orë.' : 'mesatarja për ditë e porosive të dala (sipas orës së check-out-it të parë) dhe e njësive, për çdo orë.','WMS · ProductLogs', scope, src.refreshedAt); }
+  return `<div class="card" id="statsHourCard" style="margin-bottom:14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h3 style="margin:0">5.1 Throughput sipas orës <span class="sub">${h(sub)}</span></h3>${ctl}</div>${body}</div>`;
+}
+async function statsHourLoad(){
+  const key=statsHourKey(), m=statsHourMem[key];
+  if(!statsHourDate || (m && (m.loading || (statsHourDate!==todayStr() && !m.error) || Date.now()-(m.at||0)<120000))) return statsHourRedraw();
+  statsHourMem[key]={loading:true}; statsHourRedraw();
+  try{ const r=await fetch('/stats/live?date='+encodeURIComponent(statsHourDate)+'&shift='+encodeURIComponent(statsShift),{cache:'no-store'}); const j=await r.json();
+    statsHourMem[key]= !r.ok||j.error? {error: j.error==='auth_expired'? 'Sesioni i WMS ka skaduar — ngjit cookie-n e re te WMS Data & Performance.' : (j.error||('HTTP '+r.status)), at:Date.now()} : Object.assign(j,{at:Date.now()}); }
+  catch(e){ statsHourMem[key]={error:'Agjenti s\'përgjigjet ('+e.message+').', at:Date.now()}; }
+  statsHourRedraw();
+}
+function statsHourRedraw(){ const el=$('#statsHourCard'); if(!el || !statsLast) return; el.outerHTML=statsHourlyCard(statsLast); statsHourWire(statsLast); }
+function statsHourWire(d){
+  const di=$('#statsHourDate'); if(!di) return;
+  di.onchange=e=>{ const v=e.target.value; statsHourDate= v && v<=todayStr()? v : ''; statsHourLoad(); };
+  $('#statsHourToday').onclick=()=>{ statsHourDate=todayStr(); statsHourLoad(); };
+  const rs=$('#statsHourReset'); if(rs) rs.onclick=()=>{ statsHourDate=''; statsHourRedraw(); };
+  const cb=$('#statsHourCard [data-csv="hourly"]'); if(cb) cb.onclick=()=>{ const s=statsHourSrc(d); if(!s) return toast('Të dhënat e ditës ende po lexohen');
+    statsCsv('wh-throughput-ora'+(statsHourDate? '-'+statsHourDate : ''), ['Ora', statsHourDate? 'Porosi' : 'Porosi/ditë', statsHourDate? 'Njësi' : 'Njësi/ditë'], s.throughput.byHour.map(x=>[String(x.hour).padStart(2,'0')+':00',x.ordersPerDay,x.unitsPerDay])); };
+}
 function wireStatsBody(d){
   if(!d) return;
   const t=d.throughput, pa=d.putaway, pr=d.productivity, app=statsAppData(d.scope.from, d.scope.to);
@@ -226,6 +263,7 @@ function wireStatsBody(d){
     steps:()=>statsCsv('wh-kohet-e-hapave',['Hapi','Matje','Mediana (s)','p90 (s)','Pritja mediana (s)'], app.steps.map(s=>[s.process,s.n,s.median,s.p90,s.waitMedian])),
   };
   $$('[data-csv]').forEach(b=>b.onclick=()=>csv[b.dataset.csv]());
+  statsHourWire(d); if(statsHourDate) statsHourLoad();   // the hourly card's own day (and its CSV)
   const save=$('#stSave'); if(save) save.onclick=async()=>{
     const thresholds={}; $$('[data-thg]').forEach(i=>{ const k=i.dataset.thg; thresholds[k]={green:Number(i.value), yellow:Number($(`[data-thy="${k}"]`).value)}; });
     try{ const r=await fetch('/stats/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cutoff:$('#stCut').value.trim(), targetOrdersPerDay:Number($('#stTarget').value), thresholds})});
