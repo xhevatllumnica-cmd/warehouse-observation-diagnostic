@@ -14,29 +14,11 @@ A block that was not run, or that failed, keeps its previous result (`pulse/raw/
 
 | Task | When | Runs |
 |---|---|---|
-| `wms-pulse-refresh` | 07, 13, 18 | every block of `pulse/queries.sql` (M, A–L) and every block of `pulse/queries.bn.sql` (Bottleneck Register) |
-| `wms-board-hourly` | every hour 07–22 (cron `5 7-22 * * 1-6`) | only block **M**: the daily board's cut-offs and carryover (page `/tabela`, "Metrikat e mia") |
+| `wms-pulse-refresh` | every hour 07–22, every day (cron `0 7-22 * * *`) | every block of `pulse/queries.sql` (A–M; **block M every run**; H, I, J may be skipped outside 07:00 and Mondays) and, at 07, 13 and 18, every block of `pulse/queries.bn.sql` (Bottleneck Register) |
 
-The Tabela ditore says its cut-off figures come "çdo orë (07–22)". `cutoffs()` in `tabela-board.js` shows them only when `board.gen` is from today, so block M has to run at least once a day, and hourly to keep them current. Block M is small: 11 stations and about 20 summary rows, and it runs in about a second.
+The Tabela ditore says its cut-off figures come "çdo orë (07–22)". `cutoffs()` in `tabela-board.js` shows them only when `board.gen` is from today, so block M has to run at least once a day, and hourly to keep them current — the hourly `wms-pulse-refresh` does that (checked 08.10.2026: `board.gen` from that day, `cut.available: true`). No separate block-M task is needed; one would only run M twice an hour. Block M is small: 11 stations and about 20 summary rows, and it runs in about a second.
 
-### Prompt of `wms-board-hourly`
-
-```
-In the warehouse-observation-app folder, read pulse\queries.sql. Run ONLY block M — the first block of the file, the
-SELECT that starts with  SELECT /*pulse:M*/  and ends with the line "… FOR JSON PATH) stations" — as ONE call of the
-WMS tool queryWMSDb, exactly as written, keeping the /*pulse:M*/ marker. If the call times out or errors, run it once
-more. Do not run any other block, do not run shell commands and do not write files: the WMS agent picks up the
-result and rebuilds pulse/data.json by itself. Read-only: SELECT only.
-```
-
-### Prompt line for `wms-pulse-refresh`
-
-The prompt must ask for every block, not a list of letters, so a new block is never left out:
-
-```
-Run EVERY block of pulse\queries.sql (M, A, B, … L — each starts with "-- @X") and EVERY block of pulse\queries.bn.sql,
-each as ONE queryWMSDb call, exactly as written, keeping its /*pulse:X*/ or /*bn:Dx*/ marker. If a call times out or errors, run it once more.
-```
+When a new block is added to `queries.sql`, add its letter to the list in the prompt of `wms-pulse-refresh` (step 2 names every block).
 
 ## Check
 
