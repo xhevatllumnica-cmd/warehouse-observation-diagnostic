@@ -94,7 +94,12 @@ svg .gl{stroke:var(--line);stroke-width:1}
 <div class="tabpanel" id="t-prod">
   <div class="kpis" id="k-prod"></div>
   <section class="card">
-    <h2>Operacione të peshuara për punëtor · 7 ditët e fundit (përfshirë sot)</h2>
+    <h2 id="wkTitle">Operacione të peshuara për punëtor · 7 ditët e fundit (përfshirë sot)</h2>
+    <div id="wkCtl" style="display:none;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 8px;font-size:13px">
+      <label>Prej <input type="date" id="wkFrom" style="font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:6px;padding:3px 6px"></label>
+      <label>Deri <input type="date" id="wkTo" style="font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:6px;padding:3px 6px"></label>
+      <button type="button" id="wkReset" style="font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:6px;padding:3px 10px;cursor:pointer">7 ditët e fundit</button>
+      <span class="meta" id="wkNote" style="margin:0"></span></div>
     <div class="meta">Formula: <code>1.0×check-out + 0.8×check-in + 0.6×map</code> · LogType 2 / 7 / 4,18 · punëtorë me depo shtëpie 01 (pa llogari shitësish)</div>
     <div class="tw" id="tb-week"></div>
   </section>
@@ -323,6 +328,38 @@ function bars(id,labels,series,{stacked=false,h=220,yfmt=v=>fmt(v)}={}){
 }
 const median=a=>{ const s=a.filter(x=>x!=null).slice().sort((x,y)=>x-y); if(!s.length) return null; const m=Math.floor(s.length/2); return s.length%2? s[m] : (s[m-1]+s[m])/2; };
 
+/* "Operacione të peshuara për punëtor": by default the WMS block's own 7 days (today included, block D); with the PREJ /
+   DERI calendars, any days from the per-person-per-day block (capacity.opsDay, block I: from 01.07 up to yesterday,
+   refreshed every morning). Same formula: 1.0 × check-out + 0.8 × check-in + 0.6 × map. The choice survives the
+   5-minute re-read of the data. */
+let wkRange=null;
+function drawWeek(P){
+  const D=P.D, C=P.capacity||{}, has=!!(C.opsDay&&C.opsDay.length&&C.opsMeta&&C.opsFrom&&C.opsTo);
+  const cols=lbl=>[{h:"Punëtori",f:lbl},{h:"Check-in",n:1},{h:"Map",n:1},{h:"Check-out",n:1},{h:"Ditë",n:1},{h:"Ops të peshuara",n:1,d:1,bar:1},{h:"Ops / ditë",n:1,f:(v,r)=>fmt(r[4]? r[5]/r[4] : null,1)}];
+  const title=document.getElementById("wkTitle"), ctl=document.getElementById("wkCtl");
+  if(has){
+    ctl.style.display="flex";
+    const f=document.getElementById("wkFrom"), t=document.getElementById("wkTo"), rs=document.getElementById("wkReset");
+    f.min=t.min=C.opsFrom; f.max=t.max=C.opsTo; f.value=wkRange? wkRange.from : ""; t.value=wkRange? wkRange.to : "";
+    const set=()=>{ let a=f.value, b=t.value; if(!a&&!b){ wkRange=null; return drawWeek(P); }
+      if(!a) a=b; if(!b) b=a; if(a>b){ const x=a; a=b; b=x; } if(a<C.opsFrom) a=C.opsFrom; if(b>C.opsTo) b=C.opsTo;
+      wkRange={from:a, to:b}; drawWeek(P); };
+    f.onchange=set; t.onchange=set; rs.onclick=()=>{ wkRange=null; drawWeek(P); };
+    rs.style.fontWeight= wkRange? "400" : "700";
+    document.getElementById("wkNote").textContent=`ditët e zgjedhura: ${dt(C.opsFrom)} – ${dt(C.opsTo)} (deri dje; rifreskohen çdo mëngjes) · "7 ditët e fundit" përfshin edhe sot`;
+  }
+  if(!wkRange || !has){
+    title.textContent="Operacione të peshuara për punëtor · 7 ditët e fundit (përfshirë sot)";
+    table("tb-week",cols(who),D.week.map(r=>[...r,0])); return;
+  }
+  const meta={}; C.opsMeta.forEach(m=>meta[m.u]=m); const by={};
+  C.opsDay.forEach(r=>{ if(r.d<wkRange.from||r.d>wkRange.to) return; const m=meta[r.u]||{}, k=m.n||("#"+r.u);
+    const o=by[k]||(by[k]={k, tmp:!!m.tmp, ci:0, mp:0, co:0, days:new Set()}); o.ci+=+r.ci||0; o.mp+=+r.mp||0; o.co+=+r.co||0; o.days.add(r.d); });
+  const tmp=new Set(Object.values(by).filter(o=>o.tmp).map(o=>o.k));
+  const rows=Object.values(by).map(o=>[o.k, o.ci, o.mp, o.co, o.days.size, Math.round((o.co+0.8*o.ci+0.6*o.mp)*10)/10, 0]).filter(r=>r[5]>0).sort((a,b)=>b[5]-a[5]);
+  title.textContent="Operacione të peshuara për punëtor · "+(wkRange.from===wkRange.to? dt(wkRange.from) : dt(wkRange.from)+" – "+dt(wkRange.to));
+  table("tb-week",cols(v=>esc(v)+(tmp.has(v)?" "+pill("temp","w"):"")),rows);
+}
 function render(P){
   const D=P.D, K=P.K;
   const age=(Date.now()-new Date(P.generatedAt).getTime())/60000;
@@ -338,7 +375,7 @@ function render(P){
    {l:"Check-out · 7d",v:fmt(D.week.reduce((a,r)=>a+r[3],0)),n:"LogType 4 + 18"},
    {l:"Mesatarja e ekipit · 30d",v:fmt(avg,1),n:"ops të peshuara / ditë aktive"},
    {l:"Nën mesatare · 30d",v:D.bands.filter(r=>r[3]==="Below").length,c:"w",n:`nga ${D.bands.length} punëtorë`}]);
-  table("tb-week",[{h:"Punëtori",f:who},{h:"Check-in",n:1},{h:"Map",n:1},{h:"Check-out",n:1},{h:"Ditë",n:1},{h:"Ops të peshuara",n:1,d:1,bar:1},{h:"Ops / ditë",n:1,f:(v,r)=>fmt(r[5]/r[4],1)}],D.week.map(r=>[...r,0]));
+  drawWeek(P);
   document.getElementById("avgops").textContent=fmt(avg,1);document.getElementById("sdops").textContent=fmt(K.sd,1);
   const BC={Spike:"a",Above:"ok",Average:"n",Below:"w"};
   table("tb-bands",[{h:"Punëtori",f:who},{h:"Ops / ditë",n:1,d:1,bar:1},{h:"Ditë aktive",n:1,f:v=>v<=3?`${v} ${pill("mostër e vogël","n")}`:v},{h:"vs mesatares",n:1,f:(v,r)=>{const p=(r[1]/avg-1)*100;return (p>0?"+":"")+fmt(p,0)+"%";}},{h:"Brezi",f:v=>pill(v,BC[v])}],D.bands.map(r=>[r[0],r[1],r[2],r[1],r[3]]));
