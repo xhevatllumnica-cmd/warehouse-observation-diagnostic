@@ -341,7 +341,7 @@ const Store = {
 };
 const seedCollections = ['config','employees','departments','processes','observations','measurements',
   'orders','products','staffSkills','staffObs','problems','kpiRecords','hqInteractions','quickWins','briefings','validations',
-  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions','planActions','planChecks','planKpis','unlinkedReturns'];
+  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions','planActions','planChecks','planKpis','unlinkedReturns','shiftReports'];
 
 function audit(entity,recId,action,before,after){
   const changes=[];
@@ -3718,11 +3718,11 @@ function renderRaportet(v){
   v.innerHTML = pagehead('Raportet',
     `Raporte narrative të gjeneruara automatikisht nga agjenti: <b>ditore</b> çdo ditë pas orës ${h(dayT)} (mbyllja e turnit) dhe <b>javore</b> çdo të premte pas orës ${h(wkT)}. Bazohen në shifrat WMS dhe në ditar; ruajnë ndarjen fakt–hipotezë.`,
     `<button class="btn" id="rapPrint">🖨 Print / PDF</button>`)
-    + `<div class="filters" id="rapTabs"><button class="btn ${rapTab==='weekly'?'primary':''}" data-t="weekly">Javore</button><button class="btn ${rapTab==='daily'?'primary':''}" data-t="daily">Ditore</button></div>`
+    + `<div class="filters" id="rapTabs"><button class="btn ${rapTab==='weekly'?'primary':''}" data-t="weekly">Javore</button><button class="btn ${rapTab==='daily'?'primary':''}" data-t="daily">Ditore</button><button class="btn ${rapTab==='shift'?'primary':''}" data-t="shift">Raporti i ndërrimit</button></div>`
     + `<div id="rapBody"></div>`;
   $('#rapPrint').onclick=()=>window.print();
   $$('#rapTabs [data-t]').forEach(b=>b.onclick=()=>{ rapTab=b.dataset.t; rapOpen=null; renderRaportet(v); });
-  (rapTab==='weekly'?rapWeekly:rapDaily)($('#rapBody'), onAgent);
+  (rapTab==='weekly'?rapWeekly:rapTab==='shift'?rapShiftReport:rapDaily)($('#rapBody'), onAgent);
 }
 function rapMeta(r){ const g=new Date(r.generatedAt); return `${g.toLocaleDateString()} ${g.toTimeString().slice(0,5)}${r.scheduled?' · automatik':' · manual'}`; }
 function rapStat(label,val,cls){ return val==null||val===''?'':`<span class="badge ${cls||'b-muted'}" style="margin-right:4px">${h(label)}: ${h(String(val))}</span>`; }
