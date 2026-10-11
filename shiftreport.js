@@ -12,6 +12,8 @@
      /pulse/data          orders created per day (D.daily: last 15 days; capacity.created: full weeks)
      Store                wmsPrepared (prepared orders per operator × day), observations, unlinkedReturns, processes
    Stored in the shared database: collection "shiftReports", one per date + shift (id "shr-<date>-<N1|N2>"), every change in the audit log.
+   Automatic save by the agent (wms-agent.js, same srAuto): N1 at 15:03, N2 at 21:03 — creates the report or, if the lead
+   already saved it, refreshes only the fields not touched by hand (srApplyAuto). This is also how the backlog of the day is kept.
    =======================================================================*/
 let srDate=null, srShift='N1', srData={}, srSeq=0, srBox=null, srOnAgent=false, srFresh=null;
 const SR_SECTIONS=[
@@ -68,9 +70,11 @@ async function srLoad(date){
   const [T, ST, P]=await Promise.all([get('/tabela/data?date='+date), get('/stats/live?date='+date), get('/pulse/data')]);
   const D={date, T, ST, P, at:Date.now()}; if(seq===srSeq || !srData[date]) srData[date]=D; return D;
 }
-/* the automatic part for one shift: values (numbers and lists) + the text each field is filled with */
-function srAuto(D, shift){
-  const out={v:{}, txt:{}, src:{}, warn:[]}, T=D.T&&!D.T.error? D.T : null, date=D.date, today=date===todayStr();
+/* the automatic part for one shift: values (numbers and lists) + the text each field is filled with.
+   Runs in the browser (db = Store) and in the agent (db = the shared database, D.today = the agent's date) — one logic for both. */
+function srAuto(D, shift, db){
+  const col=n=> db? (db[n]||[]) : Store.col(n), num=v=>{ const x=parseFloat(v); return isNaN(x)? 0 : x; };
+  const out={v:{}, txt:{}, src:{}, warn:[]}, T=D.T&&!D.T.error? D.T : null, date=D.date, today=date===(D.today||todayStr());
   if(!T) out.warn.push('Tabela ditore nuk u lexua'+(D.T&&D.T.error? ' ('+D.T.error+')' : '')+' — shifrat e personave mungojnë.');
   const shifts=(T&&T.shifts)||{}, ops=(T&&T.live&&T.live.ops)||[], byName={}; ops.forEach(o=>byName[o.name]=o);
   const act=o=>o? (o.orders||0)+(o.out||0)+(o.ci||0)+(o.mp||0)+(o.pod||0)+(o.ref||0)+(o.ret||0) : 0;
@@ -83,7 +87,7 @@ function srAuto(D, shift){
   const S=k=>members.reduce((a,n)=>a+((byName[n]||{})[k]||0),0);
   // 1. plan and result
   const target=D.ST&&D.ST.config&&D.ST.config.targetOrdersPerDay;
-  const prepared=Store.col('wmsPrepared').filter(r=>r.date===date && members.includes(r.operator)).reduce((a,r)=>a+num(r.preparedOrders),0), prepAny=Store.col('wmsPrepared').some(r=>r.date===date);
+  const prepared=col('wmsPrepared').filter(r=>r.date===date && members.includes(r.operator)).reduce((a,r)=>a+num(r.preparedOrders),0), prepAny=col('wmsPrepared').some(r=>r.date===date);
   const dm=date.slice(8,10)+'.'+date.slice(5,7), dd=D.P&&D.P.D&&(D.P.D.daily||[]).find(r=>r[0]===dm), cr=D.P&&D.P.capacity&&(D.P.capacity.created||[]).find(x=>x.d===date);
   const received= dd? dd[1]+dd[2] : cr? cr.o : null;
   out.v={target, completed:S('orders'), dayOut:T&&T.live? T.live.ordersOut : null, packed:prepAny? prepared : null, sent:S('pod'), daySent:T&&T.live&&T.live.pod? T.live.pod.total : null, refusals:S('ref'), received,
@@ -93,11 +97,19 @@ function srAuto(D, shift){
   out.txt.packed= prepAny? `${prepared} (WMS "Prepared", operatorët e ${shift})` : ''; out.src.packed= prepAny? 'WMS GetPreparedOrders — WMS nuk ka hap të veçantë paketimi' : 'WMS "Prepared" nuk është sinkronizuar për këtë datë — plotëso me dorë';
   out.txt.sent= T? `${out.v.sent} porosi të skanuara për kurierët nga ${shift} · dita gjithsej ${out.v.daySent??'—'}${out.v.refusals? ' · refuzime të pranuara '+out.v.refusals : ''}` : ''; out.src.sent='Delivery Platform: POD (Scanned Orders) sipas llogarisë';
   out.txt.received= received!=null? received+' (dita gjithsej)' : ''; out.src.received= received!=null? 'WMS: porosi të krijuara (WMS Pulse)' : 'nuk ka shifër për këtë datë — plotëso me dorë';
-  // backlog: only today, from the board's cut-offs (the system keeps no history of it)
-  const cut=T&&T.cut;
-  if(today && cut&&cut.available){ if(shift==='N1') out.txt.backlogStart=`${cut.carry.carry} porosi të gatshme dje pa dalë (carryover ${cut.carry.pct}%)`;
-    const c17=(cut.cuts||[]).find(c=>c.label==='17:30'); if(shift==='N2' && c17) out.txt.backlogEnd=`${c17.open} porosi të gatshme deri 17:30 ende të hapura (gjendja e tanishme)`; }
-  out.src.backlogStart=out.src.backlogEnd= today? 'Tabela ditore (cut-off-et)' : 'për ditët e kaluara sistemi nuk e ruan — plotëso me dorë';
+  /* backlog: the board's cut-offs exist only for today (the system keeps no history), so the figure is the state at the
+     moment the report is filled — the agent saves N1 at 15:03 and N2 at 21:03, which keeps it for that day.
+     N1 start = ready yesterday by 17:30 and not out · N1 end = ready by 15:00 still open · N2 start = N1's end (as saved
+     at 15:03; otherwise the 15:00 cut-off now) · N2 end = ready by 17:30 still open. */
+  const cut=T&&T.cut, at=cut&&cut.gen? ' — tabela M e orës '+String(cut.gen).slice(11,16) : '', cutOf=l=>((cut&&cut.cuts)||[]).find(c=>c.label===l);
+  if(today && cut&&cut.available){ const c15=cutOf('15:00'), c17=cutOf('17:30');
+    if(shift==='N1'){ out.v.backlogStart=cut.carry.carry; out.txt.backlogStart=`${cut.carry.carry} porosi të gatshme dje deri 17:30 pa dalë (carryover ${cut.carry.pct}%)`;
+      if(c15){ out.v.backlogEnd=c15.open; out.txt.backlogEnd=`${c15.open} porosi të gatshme deri 15:00 ende të hapura${at}`; } }
+    else { const n1=col('shiftReports').find(r=>r.date===date && r.shift==='N1'), n1v=n1&&n1.auto&&n1.auto.v&&n1.auto.v.backlogEnd;
+      if(n1v!=null){ out.v.backlogStart=n1v; out.txt.backlogStart=`${n1v} porosi të gatshme deri 15:00 ende të hapura (sipas raportit N1)`; }
+      else if(c15){ out.v.backlogStart=c15.open; out.txt.backlogStart=`${c15.open} porosi të gatshme deri 15:00 ende të hapura${at}`; }
+      if(c17){ out.v.backlogEnd=c17.open; out.txt.backlogEnd=`${c17.open} porosi të gatshme deri 17:30 ende të hapura${at}`; } } }
+  out.src.backlogStart=out.src.backlogEnd= today? 'Tabela ditore (cut-off-et), gjendja në momentin e plotësimit' : 'për ditët e kaluara sistemi nuk e ruan — plotëso me dorë (ose ruhet nga agjenti në 15:03 / 21:03)';
   // 2. staff
   const sh=n=>shifts[n]&&shifts[n]!=='pushim'? ' ('+shifts[n]+')' : ' (jashtë orarit)';
   out.txt.planned= planned.length? `${planned.length}: ${planned.map(n=>n+' '+shifts[n]).join(', ')}` : (T&&T.scheduleLoaded===false? '' : '0'); out.src.planned='Orari i punës';
@@ -108,8 +120,8 @@ function srAuto(D, shift){
   out.txt.taskChanges= multi.length? 'Punuan në disa procese: '+multi.map(n=>{ const o=byName[n]; return n+' ('+Object.keys(PN).filter(k=>(o[k]||0)>0).map(k=>PN[k]).join(', ')+')'; }).join('; ') : ''; out.src.taskChanges='WMS / Delivery Platform: proceset ku ka skanuar secili';
   // 3–5 from observations and returns of that date, in the shift's hours
   const [a,b]=SR_WIN[shift].map(srMin), inWin=t=>{ const m=srMin(t); return m==null || (m>=a && m<b); };
-  const procName=id=>{ const p=Store.get('processes',id); return p? p.name : ''; };
-  const obs=Store.col('observations').filter(o=>o.date===date && inWin(o.time)).sort((x,y)=>String(x.time||'').localeCompare(String(y.time||'')));
+  const procName=id=>{ const p=col('processes').find(x=>x.id===id); return p? p.name : ''; };
+  const obs=col('observations').filter(o=>o.date===date && inWin(o.time)).sort((x,y)=>String(x.time||'').localeCompare(String(y.time||'')));
   const line=o=>`${o.time||'—'} · ${procName(o.processId)||o.type} · ${o.what||o.actual||''}${o.impact? ' → '+o.impact : ''}`.replace(/\s+/g,' ').trim();
   const errs=obs.filter(o=>o.error==='Yes'||o.error===true), rew=obs.filter(o=>o.rework==='Yes'||o.rework===true);
   const delays=obs.filter(o=>/bottleneck|delay|waiting|deviation|interrupt/i.test(o.type||'') || o.interruption==='Yes');
@@ -122,7 +134,7 @@ function srAuto(D, shift){
     const cau=delays.filter(o=>o.cause).map(o=>'- '+o.cause+(o.validationStatus==='Validated'? ' (e konfirmuar)' : ' (hipotezë)')); if(cau.length) out.txt.delayCause=cau.join('\n');
     const mins=delays.reduce((s,o)=>s+(+o.waitingMin||0),0); if(mins) out.txt.delayDuration=mins+' min pritje gjithsej (sipas vëzhgimeve)'; }
   if(safety.length) out.txt.incidents=safety.map(o=>'- '+line(o)).join('\n');
-  const ur=Store.col('unlinkedReturns').filter(r=>r.date===date && inWin(r.time) && /dëmtuar|hapur/i.test(r.condition||''));
+  const ur=col('unlinkedReturns').filter(r=>r.date===date && inWin(r.time) && /dëmtuar|hapur/i.test(r.condition||''));
   if(ur.length) out.txt.damaged=ur.map(r=>`- ${r.time||''} ${r.productCode||r.tracking||''} — ${r.condition}${r.notes? ' · '+r.notes : ''}`.trim()).join('\n');
   ['errCheckin','rework','delayProcess','delayDesc','delayImpact','delayCause','delayDuration'].forEach(k=>out.src[k]=out.src[k]||'Daily Observation të datës, në orët e '+shift);
   out.src.incidents='Daily Observation të llojit Safety'; out.src.damaged='Kthime pa lidhje (E dëmtuar / E hapur)';
@@ -130,6 +142,15 @@ function srAuto(D, shift){
   const day=Object.entries(shifts).filter(([n,s])=>srShiftOf(s)===shift).map(([,s])=>s), cnt={}; day.forEach(s=>cnt[s]=(cnt[s]||0)+1);
   out.txt.schedule=Object.entries(cnt).sort().map(([s,n])=>s+' ('+n+')').join(' · ');
   return out;
+}
+/* the agent's automatic save (N1 15:03, N2 21:03): a new report gets the automatic text; in a report already saved by hand
+   everything typed stays — only fields still equal to the previous automatic text are replaced. Returns the changes. */
+function srApplyAuto(rec, A){
+  const prev=(rec.auto&&rec.auto.txt)||{}, keys=SR_SECTIONS.flatMap(s=>s[1].map(x=>x[0])).concat(['schedule']), changes=[];
+  keys.forEach(k=>{ const cur=rec[k]==null? '' : String(rec[k]), nv=(A.txt&&A.txt[k])||'';
+    if(cur===(prev[k]||'') && cur!==nv){ changes.push({field:k, from:cur, to:nv}); rec[k]=nv; } });
+  rec.auto={v:A.v||{}, src:A.src||{}, txt:A.txt||{}};
+  return changes;
 }
 function srDraw(rec, A){
   const box=$('#srBody'); if(!box) return;
@@ -185,3 +206,4 @@ function srSave(rec, auto){
   toast('Raporti '+srShift+' i '+fmtDateAl(srDate)+' u ruajt');
   rapShiftReport(srBox, srOnAgent);
 }
+if(typeof module!=='undefined' && module.exports) module.exports={srAuto, srApplyAuto, srId, SR_SECTIONS};   // used by wms-agent.js (automatic save)

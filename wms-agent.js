@@ -751,6 +751,44 @@ async function reportTick(){
 setInterval(reportTick, 30*1000);
 setTimeout(reportTick, 8000); // catch-up shortly after start (agent was off at report time)
 
+/* --- shift report (Raportet → "Raporti i ndërrimit"): automatic save -------------------------------------------
+   N1 at cfg.shiftReportN1 (default 15:03), N2 at cfg.shiftReportN2 (default 21:03), once a day each. Same figures as the
+   app's tab (shiftreport.js srAuto): a missing report is created; a report the lead already saved keeps everything typed
+   by hand — only fields still equal to the earlier automatic text are refreshed (srApplyAuto). Catch-up: if the agent
+   was off at that time, it runs later the same day (the record keeps autoSavedAt). The board's cut-offs exist only for
+   today, so this is what keeps the day's backlog. */
+const SR=require('./shiftreport.js');
+const SHIFT_REPORT_TIMES={N1:String(cfg.shiftReportN1||'15:03'), N2:String(cfg.shiftReportN2||'21:03')};
+let srRunning=false;
+async function runShiftReportJob(shift){
+  const date=isoToday(), out={date, shift};
+  try{
+    const T=await tabelaData(true, null); let P=null; try{ P=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')); }catch(e){}
+    const db=loadDb(); if(!db){ out.error='no shared database yet'; return out; }   // load → mutate → save with no await in between
+    const A=SR.srAuto({date, today:date, T, ST:{config:statsConfig()}, P}, shift, db);
+    const col=db.shiftReports||(db.shiftReports=[]), now=new Date().toISOString(), by='Agjenti (ruajtje automatike '+SHIFT_REPORT_TIMES[shift]+')';
+    let rec=col.find(r=>r.date===date && r.shift===shift), action='update';
+    if(!rec){ let id=SR.srId(date,shift); if((db.deleted||{})['shiftReports|id|'+id]) id+='-'+Date.now().toString(36);
+      rec={id, date, shift, responsible:'', createdAt:now, createdBy:by}; col.unshift(rec); action='create'; }
+    const changes=SR.srApplyAuto(rec, A); rec.updatedAt=now; rec.updatedBy=by; rec.autoSavedAt=now;
+    db.audit=db.audit||[]; db.audit.unshift({id:WODS.uid('aud'), at:now, by, entity:'shiftReports', recId:rec.id, action, changes: action==='create'? [] : changes, snapshot: action==='create'? rec.id : null});
+    if(db.audit.length>1000) db.audit.length=1000;
+    db.meta=db.meta||{}; db.meta.shiftReportAuto=Object.assign({}, db.meta.shiftReportAuto, {[shift]:date});
+    out.savedAt=saveDb(db); out.action=action; out.changed=changes.length;
+    console.log('[wms-agent] '+new Date().toLocaleTimeString()+' shift report '+date+' '+shift+': '+action+', '+changes.length+' fields'+(A.warn.length? ' · '+A.warn.join(' '):''));
+  }catch(e){ out.error=String(e&&e.message||e); console.log('[wms-agent] shift report '+shift+' failed: '+out.error); }
+  return out;
+}
+async function shiftReportTick(){
+  if(srRunning) return; const db=loadDb(); if(!db) return; const today=isoToday(), done=(db.meta&&db.meta.shiftReportAuto)||{};
+  const mins=t=>{ const p=String(t).split(':'); return (+p[0])*60+(+p[1]||0); }, now=mins(hhmmNow());
+  // catch-up only up to 3 h after the time: later, the figures (backlog above all) would no longer describe that shift
+  for(const s of ['N1','N2']){ const late=now-mins(SHIFT_REPORT_TIMES[s]);
+    if(late>=0 && late<=180 && done[s]!==today){ srRunning=true; try{ await runShiftReportJob(s); }finally{ srRunning=false; } } }
+}
+setInterval(shiftReportTick, 30*1000);
+setTimeout(shiftReportTick, 12000);
+
 /* --- Google Chat: the Flow (2h) report after each mark ------------------------------------------------
    Posts the same text as a Flow (2h) card to a Google Chat space through its incoming webhook
    (cfg.googleChatWebhook). The webhook URL is a secret — anyone holding it can post to that space — so it
