@@ -7,15 +7,17 @@
        (including the current week up to yesterday), the latest piece-rate period, WMS AverageTimeSeconds.
      Delivery Platform (via /cap/pod): POD orders per day over the same 12 weeks — the "Boxing / POD" volume.
      Observation System (live): standard times per step from Process Measurement (labour seconds per unit / order).
+     Orari i punës (via /schedule and /schedule/days): the operators and each day's shifts — roster and present-today
+       (setting useSchedule, on by default) and the "7 ditët e ardhshme" card; days without a schedule are shown as such.
      Settings (Store.db.config.capacity): productive hours, target utilisation, absence rate, roster, presence,
        target orders/day, assumptions for steps without measurements, optional hourly cost.
    FTE = Σ (volume × standard time) ÷ (productive hours × utilisation), then ÷ (1 − absence rate).
    Individual numbers are for planning and development, not for discipline.
    Loaded after shared.js and before app.js; uses app.js / inbound.js / stats.js helpers at call time.
    =======================================================================*/
-let capData=null, capSeq=0, capPod=null, capOpsPer='12w';
+let capData=null, capSeq=0, capPod=null, capOpsPer='12w', capPulse=null, capSched=null;
 const CAP_DEFAULTS={ shiftHours:8, breakMin:30, util:82.5, absence:7.2, roster:17, present:13, target:1000, suppliesPerDay:100,
-  boxingSec:20, receivingSec:120, loadingSec:null, mappingSec:null, hourlyCost:null, workDaysMonth:22, customPct:0 };
+  boxingSec:20, receivingSec:120, loadingSec:null, mappingSec:null, hourlyCost:null, workDaysMonth:22, customPct:0, useSchedule:true };
 function capCfg(){ return Object.assign({}, CAP_DEFAULTS, (Store.db.config||{}).capacity||{}); }
 function capSave(patch){ Store.db.config.capacity=Object.assign({}, (Store.db.config||{}).capacity||{}, patch); Store.persist(); }
 
@@ -84,7 +86,7 @@ function renderCapacity(v){
     ['cross-dock','malli i shitësit/furnitorit që del pa u vendosur në raft'],['koha std','koha standarde për njësi ose porosi'],
     ['temp','llogari e përbashkët WMS, pa pronar'],['ID','3 shifrat e fundit të llogarisë WMS (kur një emër ka dy llogari)'],['h / min / s','orë / minuta / sekonda']];
   v.innerHTML=`<div style="margin-bottom:12px"><div style="font-size:19px;font-weight:700">Kapaciteti &amp; Stafi</div>
-        <div style="color:var(--muted);font-size:12.5px;margin-top:4px">Sa operatorë duhen për ngarkesën reale, sipas procesit dhe skenarit (ditë mesatare, P90, piku, targeti), krahasuar me stafin. Llogaritet automatikisht nga WMS-i (12 javët e fundit, rifreskim çdo orë) dhe kohët standarde të matura në Observation System. Numrat individualë janë për planifikim dhe zhvillim, jo për ndëshkim.</div></div>
+        <div style="color:var(--muted);font-size:12.5px;margin-top:4px">Sa operatorë duhen për ngarkesën reale, sipas procesit dhe skenarit (ditë mesatare, P90, piku, targeti), krahasuar me stafin. Llogaritet automatikisht nga WMS-i (12 javët e fundit), nga Orari i punës dhe nga kohët standarde të matura në Observation System. Numrat individualë janë për planifikim dhe zhvillim, jo për ndëshkim.</div></div>
       <div class="card" style="padding:10px 14px;margin-bottom:14px"><div class="small" style="font-weight:700;margin-bottom:6px">Shkurtesat në këtë faqe</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:4px 24px;font-size:12px;line-height:1.4">${abbr.map(([k,d])=>`<div><b>${h(k)}</b> <span style="color:var(--muted)">— ${h(d)}</span></div>`).join('')}</div></div>`
     + '<div id="capBody"><div class="empty">Po ngarkohet…</div></div>';
@@ -96,9 +98,35 @@ async function loadCapacity(){
   const seq=++capSeq;
   try{ const r=await fetch('/pulse/data',{cache:'no-store'}); const j=await r.json(); if(seq!==capSeq) return;
     if(!r.ok||j.error){ box.innerHTML=`<div class="empty">${h(j.error||('HTTP '+r.status))}</div>`; return; }
-    if(!j.capacity){ box.innerHTML='<div class="card"><div class="empty">Të dhënat e kapacitetit s\'janë gjeneruar ende — vijnë me rifreskimin e radhës nga databaza e WMS-it (blloqet H, I, J; çdo orë).</div></div>'; return; }
-    capData=j.capacity; drawCapacity(); loadCapPod();
+    if(!j.capacity){ box.innerHTML='<div class="card"><div class="empty">Të dhënat e kapacitetit s\'janë gjeneruar ende — vijnë me rifreskimin e radhës nga databaza e WMS-it (blloqet H, I, J).</div></div>'; return; }
+    capData=j.capacity; capPulse=j; drawCapacity(); loadCapPod(); loadCapSchedule();
   }catch(e){ if(seq===capSeq) box.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}).</div>`; }
+}
+/* the schedule ("Orari i punës"): its people and aliases, and the shifts of today + the next 7 days (for staff and the 7-day plan) */
+async function loadCapSchedule(){
+  const from=todayStr(), to=capIsoAdd(from,7);
+  try{ const [sum, days]=await Promise.all([fetch('/schedule',{cache:'no-store'}).then(r=>r.json()), fetch('/schedule/days?from='+from+'&to='+to,{cache:'no-store'}).then(r=>r.json())]);
+    capSched= sum&&sum.names&&days&&days.days? {sum, days} : {error:(days&&days.error)||(sum&&sum.error)||'orari nuk u lexua'}; }
+  catch(e){ capSched={error:e.message}; }
+  if($('#capBody')) drawCapacity();
+}
+/* A — staff from the schedule: its people who scanned in the WMS in the last 30 days (work per person and day, two WMS
+   accounts of one person merged) are the operators; the others (e.g. the lead) are listed apart. Roster = those operators,
+   present today = those of them on a shift today. Off (useSchedule:false) or no schedule → the manual settings, as before. */
+const capNorm=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+function capStaff(C){
+  const S=capSched; if(!S || S.error || !S.sum.names || !C.opsDay) return null;
+  const alias={}; Object.entries(S.sum.aliases||{}).forEach(([k,v])=>alias[capNorm(k)]=v);
+  const byNorm=new Map(S.sum.names.map(n=>[capNorm(n),n])), meta={}; (C.opsMeta||[]).forEach(m=>meta[m.u]=m);
+  const since=capIsoAdd(C.opsTo||todayStr(),-30), active=new Set();
+  C.opsDay.forEach(r=>{ if(r.d<since || !((+r.ci||0)+(+r.mp||0)+(+r.co||0))) return; const n=(meta[r.u]||{}).n; if(!n) return;
+    const k=byNorm.get(capNorm(alias[capNorm(n)]||n)); if(k) active.add(k); });
+  const ops=S.sum.names.filter(n=>active.has(n)), other=S.sum.names.filter(n=>!active.has(n));
+  const onShift=day=> day? ops.filter(n=>day[n] && !day[n].off) : null;
+  // present = on a shift today; on a day nobody is scheduled (weekend, holiday) the next scheduled working day, named
+  let presentDay=null, present=null;
+  for(const d of Object.keys(S.days.days).sort()){ if(d<todayStr()) continue; const n=(onShift(S.days.days[d])||[]).length; if(n>0){ presentDay=d; present=n; break; } }
+  return {ops, other, present, presentDay, onShift, days:S.days.days, loadedTo:S.days.loadedTo};
 }
 /* POD per day from the Delivery Platform for the same 12 weeks (first read ~30 s, then cached by the agent) */
 async function loadCapPod(){
@@ -108,21 +136,25 @@ async function loadCapPod(){
 }
 function drawCapacity(){
   const box=$('#capBody'); if(!box||!capData) return;
-  const C=capData, cfg=capCfg(), R=capCompute(C, cfg), S=R.S, f1=x=>x==null||isNaN(x)? '—' : (Math.round(x*10)/10).toLocaleString(), f0=x=>x==null||isNaN(x)? '—' : Math.round(x).toLocaleString();
+  // A — with the schedule on, roster and present-today come from it (present falls back to the setting on a day without a
+  // schedule); the settings' own values stay as they are and come back when the schedule is switched off
+  const C=capData, cfg0=capCfg(), ST=capStaff(C), useS=cfg0.useSchedule!==false && !!ST;
+  const cfg= useS? Object.assign({}, cfg0, {roster:ST.ops.length, present: ST.present!=null? ST.present : cfg0.present}) : cfg0;
+  const R=capCompute(C, cfg), S=R.S, f1=x=>x==null||isNaN(x)? '—' : (Math.round(x*10)/10).toLocaleString(), f0=x=>x==null||isNaN(x)? '—' : Math.round(x).toLocaleString();
   const gap=(need,have)=>{ const d=have-need; return d>=0.5? `<span style="color:var(--ok)">tepricë ${f1(d)}</span>` : d<=-0.5? `<span style="color:var(--crit)">mungojnë ${f1(-d)}</span>` : 'mjafton'; };
   const sd=C.sameDay||[], last=sd[sd.length-1], first=sd[0], pct=w=> w&&w.rb? Math.round(w.rbSame/w.rb*100) : null;
   const pay=C.pay||{}, cpo= pay.orders? pay.tc/pay.orders : null;
   const at=new Date(C.at);
   const head=`<div class="card" style="margin-bottom:12px"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <span class="small">Periudha: <b>${h(fmtDateAl(C.from))} → ${h(fmtDateAl(isoMinus1(C.to)))}</b> (12 javë) · same-day: 8 javë</span>
-      <span class="small faint" style="margin-left:auto">Lexuar nga WMS: <b style="${(Date.now()-at)/60000>150?'color:var(--warn)':''}">${h(at.toLocaleString())}</b> · rifreskohet çdo orë</span></div></div>`;
+      <span class="small faint" style="margin-left:auto">Lexuar nga WMS: <b style="${(Date.now()-at)/60000>150?'color:var(--warn)':''}">${h(at.toLocaleString())}</b> · ngarkesa 12-javore numërohet me javë të plota; puna sipas personit deri ${h(fmtDateAl(C.opsTo||isoMinus1(C.to)))}</span></div></div>`;
   const kpis=`<div class="grid g-kpi" style="margin-bottom:12px">
       ${kpiCard(f1(R.fteA('avg')),'FTE · ditë mesatare',`me ${cfg.absence}% mungesa · ${f1(R.fte('avg'))} pa rezervë`)}
       ${kpiCard(f1(R.fteA('p90')),'FTE · ditë P90','')}
       ${kpiCard(f1(R.fteA('target')),'FTE · targeti '+f0(cfg.target)+'/ditë','')}
       ${kpiCard(f1(R.fteA('peak')),'FTE · ditë piku','p.sh. Black Friday', R.fteA('peak')>R.available?'crit':'')}
-      ${kpiCard(f1(R.available),'FTE të disponueshme',`${cfg.roster} në roster × (1 − ${cfg.absence}%) · ${cfg.present} të pranishëm/ditë`)}
-      ${kpiCard(f0(R.tot('avg')/ (cfg.present*(cfg.shiftHours-cfg.breakMin/60))*100)+'%','Shfrytëzimi i orëve të pranisë','ngarkesa standarde ÷ orët e pranisë', 'warn')}
+      ${kpiCard(f1(R.available),'FTE të disponueshme', useS? `${cfg.roster} operatorë në Orarin e punës × (1 − ${cfg.absence}%) · ${cfg.present} ${ST.present==null? 'të pranishëm/ditë (pa orar për ditët në vijim)' : ST.presentDay===todayStr()? 'në orar sot' : 'në orar '+fmtDateAl(ST.presentDay).slice(0,5)+' (sot askush në orar)'}` : `${cfg.roster} në roster × (1 − ${cfg.absence}%) · ${cfg.present} të pranishëm/ditë`)}
+      ${kpiCard(+cfg.present>0? f0(R.tot('avg')/ (cfg.present*(cfg.shiftHours-cfg.breakMin/60))*100)+'%' : '—','Shfrytëzimi i orëve të pranisë','ngarkesa standarde ÷ orët e pranisë', 'warn')}
       ${kpiCard(pct(last)!=null? pct(last)+'%' : '—','Same-day (java e fundit)', first&&last? `java ${first.wk}: ${pct(first)}% → java ${last.wk}: ${pct(last)}%` : '', pct(last)!=null&&pct(last)<95?'warn':'ok')}
       ${kpiCard(cpo!=null? '€'+cpo.toFixed(2) : '—','Kosto / porosi (piece-rate)', pay.mo? `${pay.mo}/${pay.y}: €${f0(pay.tc)} ÷ ${f0(pay.orders)} porosi` : '')}
     </div>`;
@@ -148,7 +180,7 @@ function drawCapacity(){
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px"><span class="small">Ndjeshmëria:</span>${[10,25,50].map(p=>`<span class="small">+${p}% → <b>${f1(R.fteA('avg')*(1+p/100))}</b> FTE</span>`).join(' · ')}
       <label class="small" style="margin-left:auto">Skenar i lirë (%) <input type="number" id="capCustom" value="${h(cfg.customPct||0)}" step="5" style="width:80px;min-height:32px"></label></div></div>`;
   const cmp=`<div class="card" style="margin-bottom:12px"><h3>Krahasimi me stafin</h3><div style="overflow-x:auto"><table style="font-size:12.5px;max-width:860px">
-    <thead><tr><th>Skenari</th><th>FTE të nevojshme</th><th>Kundrejt ${f1(R.available)} të disponueshme (roster − mungesa)</th><th>Kundrejt ${cfg.present} të pranishëm sot</th></tr></thead><tbody>
+    <thead><tr><th>Skenari</th><th>FTE të nevojshme</th><th>Kundrejt ${f1(R.available)} të disponueshme (roster − mungesa)</th><th>Kundrejt ${cfg.present} ${useS&&ST.presentDay&&ST.presentDay!==todayStr()? 'në orar '+h(fmtDateAl(ST.presentDay).slice(0,5)) : 'të pranishëm sot'}</th></tr></thead><tbody>
     ${[['Ditë mesatare','avg'],['Ditë P90','p90'],['Targeti '+f0(cfg.target)+' porosi/ditë','target'],['Ditë piku','peak']].map(([l,k])=>`<tr><td>${l}</td><td><b>${f1(R.fteA(k))}</b></td><td>${gap(R.fteA(k),R.available)}</td><td>${gap(R.fteA(k),+cfg.present)}</td></tr>`).join('')}
     <tr><td>Fundjavë mesatare</td><td><b>${f1(R.weFTE)}</b></td><td colspan="2" class="small">krahaso me personat e planifikuar në fundjavë (Shifts → orari)</td></tr>
     </tbody></table></div></div>`;
@@ -207,19 +239,62 @@ function drawCapacity(){
     <div class="hint">Vlerësim: njësitë e skanuara (check-in, mapping, check-out) × çmimi i versionit të çmimeve që vlente atë ditë${PC.versions.length>1? ' (v'+PC.versions.join(' → v')+')' : PC.versions.length? ' (v'+PC.versions[0]+')' : ''}, ÷ porositë e dala në periudhë. Kontrolli me gushtin: €8.213 i vlerësuar kundrejt €8.322 të paguar (−1,3%; picking-u nuk skanohet).${PC.base==null? ' Shto koston për orë te cilësimet për koston e plotë.' : ''}</div></div>`;
   const costT=`<div class="no-print-break" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:12px;margin-bottom:12px">${costNow}${costPer}</div>`;
   const set=`<details class="card no-print"><summary style="cursor:pointer"><b>⚙ Cilësimet e llogaritjes</b> <span class="sub">ruhen në app; ndikojnë menjëherë</span></summary>
+    <label class="small" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="capUseSched" ${cfg0.useSchedule!==false?'checked':''} style="width:auto;min-height:auto">
+      <span><b>Stafi nga Orari i punës</b> — rosteri = operatorët e orarit me punë në WMS në 30 ditët e fundit${ST? ` (${ST.ops.length}${ST.other.length? '; pa punë në WMS: '+h(ST.other.join(', ')) : ''})` : ''}; të pranishëm = sa janë në orar sot.
+        ${!ST? '<span style="color:var(--warn)">'+(capSched&&capSched.error? 'Orari nuk u lexua ('+h(capSched.error)+') — përdoren vlerat më poshtë.' : 'Orari po lexohet…')+'</span>' : useS? '<span class="faint">Fushat "Operatorë në roster" dhe "Të pranishëm" më poshtë nuk përdoren sa është i ndezur.</span>' : ''}</span></label>
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px">
       ${[['shiftHours','Orë turni',0.5],['breakMin','Pauzë (min)',5],['util','Shfrytëzimi i synuar (%)',0.5],['absence','Mungesat (%)',0.1],['roster','Operatorë në roster',1],['present','Të pranishëm / ditë pune',1],
          ['target','Targeti porosi/ditë',50],['suppliesPerDay','Furnizime / ditë',5],['boxingSec','Boxing s/porosi (supozim)',1],['receivingSec','Receiving s/furnizim (supozim)',5],['loadingSec','Loading s/porosi (bosh = matja)',1],
          ['mappingSec','Mapping s/njësi (bosh = WMS)',0.1],['hourlyCost','Kosto €/orë (opsionale)',0.1],['workDaysMonth','Ditë pune / muaj',1]]
-        .map(([k,l,st])=>`<label class="small" style="display:flex;flex-direction:column;gap:3px;min-width:150px">${l}<input type="number" data-capk="${k}" step="${st}" value="${cfg[k]==null?'':h(cfg[k])}" style="min-height:34px"></label>`).join('')}
+        .map(([k,l,st])=>`<label class="small" style="display:flex;flex-direction:column;gap:3px;min-width:150px">${l}<input type="number" data-capk="${k}" step="${st}" value="${cfg0[k]==null?'':h(cfg0[k])}" style="min-height:34px"></label>`).join('')}
     </div>
     <div class="hint">Mungesat 7,2% = shtatori (orari Excel × Time Keeper). Kohët standarde vijnë automatikisht nga <b>Process Measurement</b>; ku ka &lt; 5 matje shënohen "pak matje". Shto matje për loading, boxing, receiving dhe mapping për saktësi.</div>
     <div class="btnrow" style="margin-top:8px"><button class="btn sm" id="capReset">Rikthe vlerat fillestare</button></div></details>`;
-  box.innerHTML=head+kpis+fteT+cmp+demand+cov+sdT+opsT+costT+set;
+  box.innerHTML=head+kpis+capWeekPlan(C, R, cfg, ST)+fteT+cmp+demand+cov+sdT+opsT+costT+set;
   $$('[data-capk]').forEach(inp=>inp.onchange=e=>{ const k=e.target.dataset.capk, v=e.target.value===''? null : +e.target.value; capSave({[k]:v}); drawCapacity(); });
   const ps=$('#capOpsPer'); if(ps) ps.onchange=e=>{ capOpsPer=e.target.value; drawCapacity(); };
+  const us=$('#capUseSched'); if(us) us.onchange=e=>{ capSave({useSchedule:e.target.checked}); drawCapacity(); };
   const cc=$('#capCustom'); if(cc) cc.onchange=e=>{ capSave({customPct:+e.target.value||0}); drawCapacity(); };
   const rs=$('#capReset'); if(rs) rs.onclick=()=>{ Store.db.config.capacity={}; Store.persist(); drawCapacity(); toast('Cilësimet u rikthyen'); };
+}
+/* B — the next 7 days (from today; after 21:00 from tomorrow): for each day, the workload expected for that WEEKDAY = the
+   median of the same weekday over the last 8 weeks (bulk re-mapping days left out), turned into hours with the SAME steps
+   and standard times as "FTE sipas procesit" (R.rows), against the operators on the schedule that day. No absence reserve:
+   the schedule already shows who is off. C — the first day also carries today's backlog: units not yet mapped (status 6)
+   and the units of ready orders waiting under 72 h (older ones are stuck orders, not capacity). */
+function capWeekPlan(C, R, cfg, ST){
+  const now=new Date(), start= now.getHours()>=21? capIsoAdd(todayStr(),1) : todayStr(), days=[...Array(7)].map((_,i)=>capIsoAdd(start,i));
+  const wdOf=d=>new Date(d+'T12:00:00').getDay(), med=a=>{ const s=capStats(a); return s.n? s.p50 : null; };
+  const coOrdBy={}; (C.coOrd||[]).forEach(x=>coOrdBy[x.d]=x.n);
+  const podBy=(capPod&&capPod.days)||{}, vol=C.vol.slice().sort((a,b)=>a.d<b.d?-1:1);
+  const prof=w=>{ const v=vol.filter(x=>wdOf(x.d)===w).slice(-8);
+    return {n:v.length, ord:med(v.map(x=>coOrdBy[x.d]).filter(x=>x!=null)), co:med(v.map(x=>x.co)), ci:med(v.map(x=>x.ci)),
+      mp:med(v.filter(x=>x.mp<R.bulkLimit).map(x=>x.mp)), pod:med(Object.keys(podBy).filter(d=>wdOf(d)===w).sort().slice(-8).map(d=>podBy[d]))}; };
+  const sOf=drv=>(R.rows.find(r=>r.drv===drv)||{}).s||0, ciAvg=Math.max(1,R.S.ci.avg);
+  const hoursOf=p=>{ const v={ord:p.ord||0, pick:(p.co||0)*(1-R.xdShare), co:p.co||0, sup:(+cfg.suppliesPerDay)*(p.ci||0)/ciAvg, ci:p.ci||0, mp:p.mp||0, pod:p.pod!=null? p.pod : (p.ord||0)};
+    return R.rows.reduce((a,r)=>a+(v[r.drv]||0)*r.s/3600,0); };
+  // backlog now (pulse): units in status 6, and units of ready orders waiting < 72 h
+  const st6=((capPulse&&capPulse.D&&capPulse.D.state)||[]).find(r=>r[0]===6), unm=st6? +st6[1] : null;
+  const wait=((capPulse&&capPulse.orders&&capPulse.orders.wait)||[]).filter(r=>(Date.now()-Date.parse(String(r.a2||r.cr).replace(' ','T')))/36e5<72);
+  const wU=wait.reduce((a,r)=>a+(+r.u||1),0), blH= unm!=null? (unm*sOf('mp') + wU*(sOf('co')+sOf('pick')*(1-R.xdShare)))/3600 : null;
+  const DN=['E diel','E hënë','E martë','E mërkurë','E enjte','E premte','E shtunë'];
+  const rows=days.map((d,i)=>{ const p=prof(wdOf(d)), hrs=hoursOf(p)+(i===0&&blH? blH : 0), need=hrs/R.hrsFTE;
+    const day=ST&&ST.days? ST.days[d] : undefined, on=ST&&day? ST.onShift(day) : null;
+    const shifts={}; (on||[]).forEach(n=>{ const s=day[n], k=s.start+'–'+s.end; (shifts[k]=shifts[k]||[]).push(n); });
+    const lead= ST&&day? ST.other.filter(n=>day[n]&&!day[n].off) : [];
+    return {d, i, p, hrs, need, on, shifts, lead, noSched: !ST || day==null}; });
+  const f0=x=>x==null||isNaN(x)? '—' : Math.round(x).toLocaleString(), f1=x=>x==null||isNaN(x)? '—' : (Math.round(x*10)/10).toLocaleString();
+  const diff=r=>{ if(r.noSched) return '<span class="faint">pa orar</span>'; const d=r.on.length-r.need;
+    return d>=0.5? `<span style="color:var(--ok)">mjafton (+${f1(d)})</span>` : d<=-0.5? `<span style="color:var(--crit);font-weight:700">mungojnë ${f1(-d)}</span>` : 'mjafton'; };
+  return `<div class="card" style="margin-bottom:12px"><h3>7 ditët e ardhshme <span class="sub">ngarkesa e pritur sipas ditës së javës kundrejt operatorëve në Orarin e punës</span></h3>
+    ${!ST? `<div class="hint" style="color:var(--warn);margin-bottom:6px">${capSched&&capSched.error? 'Orari i punës nuk u lexua ('+h(capSched.error)+') — ngarkesa shfaqet pa krahasim me stafin.' : 'Orari i punës po lexohet…'}</div>` : ''}
+    <div style="overflow-x:auto"><table style="font-size:12.5px"><thead><tr><th>Dita</th><th>Në orar (operatorë)</th><th>Porosi të dala</th><th>Check-out</th><th>Check-in</th><th>Mapim</th><th>Orë pune</th><th>FTE e nevojshme</th><th>Diferenca</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td data-sort="${r.d}" style="white-space:nowrap"><b>${DN[wdOf(r.d)]}</b> ${h(fmtDateAl(r.d).slice(0,5))}${r.i===0&&r.d===todayStr()? ' <span class="badge b-new">sot</span>' : ''}</td>
+      <td>${r.noSched? '<span class="faint">pa orar</span>' : `<b>${r.on.length}</b> <span class="small faint">${Object.entries(r.shifts).sort().map(([k,ns])=>`<span title="${h(ns.join(', '))}">${h(k)}: ${ns.length}</span>`).join(' · ')}${r.lead.length? ' · + '+h(r.lead.join(', ')) : ''}</span>`}</td>
+      <td>${f0(r.p.ord)}</td><td>${f0(r.p.co)}</td><td>${f0(r.p.ci)}</td><td>${f0(r.p.mp)}${r.i===0&&unm? ` <span class="small" style="color:var(--warn)">+ ${f0(unm)} pa map</span>` : ''}</td>
+      <td>${f1(r.hrs)}${r.i===0&&blH? ` <span class="small faint">(nga to ${f1(blH)} backlog)</span>` : ''}</td><td><b>${f1(r.need)}</b></td><td>${diff(r)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="hint">Ngarkesa e ditës = mediana e së njëjtës ditë të javës në 8 javët e fundit (njësi; porosi të dala; mapimi pa ditët e zhvendosjeve masive) → orë me të njëjtat hapa dhe kohë standarde si "FTE sipas procesit" → FTE = orët ÷ ${f1(R.hrsFTE)} orë produktive. Pa rezervë mungesash: orari i tregon pushimet. Dita e parë përfshin backlog-un e tanishëm${unm!=null? `: ${f0(unm)} njësi pa map (status 6) dhe ${f0(wU)} njësi nga ${wait.length} porosi të gatshme në pritje nën 72 orë` : ''}; porositë që presin mbi 72 orë janë të ngecura, jo kapacitet. Operatorët = njerëzit e orarit me punë në WMS në 30 ditët e fundit${ST&&ST.other.length? ' (pa: '+h(ST.other.join(', '))+')' : ''}; mbaj kursorin mbi turn për emrat. Orari i ngarkuar deri ${ST&&ST.loadedTo? h(fmtDateAl(ST.loadedTo)) : '—'}.</div></div>`;
 }
 /* Operators by period: block I sends per account × day (opsMeta/opsDay, from the 1st of the month three months back up to
    yesterday), so the table can show the last 12 weeks, any week or any month; the current week/month runs to yesterday. */

@@ -1310,6 +1310,14 @@ http.createServer(async (req,resp)=>{
       return send(404,{error:'not found'});
     }
     if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, Object.assign(shiftSchedule.summary(), {appUrl:scheduleAppUrl(), aliases:STAFF_ALIASES})); }   // aliases: two WMS accounts of one person → the schedule name
+    // the shifts of each day in a range (Kapaciteti & Stafi: staff from the schedule, the next 7 days) — read-only, at most 31 days;
+    // a day the schedule does not cover comes back null (never guessed)
+    if(q.pathname==='/schedule/days' && req.method==='GET'){
+      const ok=s=>/^\d{4}-\d{2}-\d{2}$/.test(String(s||'')), from=q.query.from, to=q.query.to;
+      if(!ok(from) || !ok(to) || from>to) return json(400,{error:'from/to: YYYY-MM-DD, from ≤ to'});
+      const days={}; let n=0; for(let d=from; d<=to; d=isoAddDays(d,1)){ if(++n>31) return json(400,{error:'at most 31 days'}); days[d]=shiftSchedule.forDay(d)||null; }
+      const s=shiftSchedule.summary(); return json(200,{from, to, days, loadedFrom:s.from||null, loadedTo:s.to||null, aliases:STAFF_ALIASES});
+    }
     if(q.pathname==='/schedule/sync' && req.method==='POST'){
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
       const r=await scheduleSync(); return json(r.ok?200:502, Object.assign(r, {summary:shiftSchedule.summary()}));
