@@ -3,8 +3,9 @@
    Two reports per weekday: N1 and N2; on Saturday and Sunday one: Weekend (09:00–18:00). Each line of the template is an editable field; where the data has it, the field is
    filled in automatically, otherwise it is written by hand. Saving freezes the automatic figures, so the report of a day
    does not change later; "Rifresko nga të dhënat" re-reads them and replaces only the fields still as they were filled.
-   Split by shift = by PEOPLE: each operator belongs to the shift of their schedule that day (starting before 12:00 → N1,
-   otherwise N2); someone who worked without being on the schedule goes by their first scan. Day totals are labelled.
+   The people of a shift = those on its schedule that day (start before 12:00 → N1, otherwise N2; Weekend = all of the day).
+   The figures go hour by hour: work inside a person's own scheduled hours (±2 h) counts for their shift, work outside them
+   (or by someone on pushim / not on the schedule) for the shift of that hour (N1 before 14:00, N2 after). Day totals labelled.
    Sources (all already in the app; nothing new is read from the WMS):
      /tabela/data?date=   per operator that day: orders checked out, check-in, mapping, POD, refusals; the day's
                           schedule; the board's cut-offs (backlog — only for today: the system keeps no history of it)
@@ -31,6 +32,10 @@ const SR_WIN={N1:['07:00','15:00'], N2:['13:00','21:00'], Weekend:['09:00','18:0
 const SR_SHIFTS=['N1','N2','Weekend'];
 const srIsWeekend=d=>{ const w=new Date(d+'T12:00:00').getDay(); return w===0 || w===6; };
 const srDefaultShift=(d,cur)=> srIsWeekend(d)? 'Weekend' : (cur==='Weekend'? 'N1' : cur);
+/* Weekend belongs to Saturday/Sunday and N1/N2 to Monday–Friday: choosing a shift on the other kind of day moves the date
+   back to the nearest day of the right kind (Weekend on Monday → the Sunday before; N1 on Sunday → the Friday before). */
+const srAddDay=(d,n)=>{ const x=new Date(d+'T12:00:00'); x.setDate(x.getDate()+n); return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0'); };
+const srDateFor=(d,shift)=>{ let x=d; for(let i=0;i<7 && srIsWeekend(x)!==(shift==='Weekend');i++) x=srAddDay(x,-1); return x; };
 const srId=(d,s)=>'shr-'+d+'-'+s;
 /* one report per date + shift, found by date + shift. A deleted id keeps its tombstone forever (Store.mergeFrom), so a
    report re-created after a delete gets a new id — with the same id it would vanish at the next sync. */
@@ -48,14 +53,24 @@ function rapShiftReport(box, onAgent){
       <label class="small" style="display:flex;gap:6px;align-items:center">Data <input type="date" id="srDate" value="${h(srDate)}" max="${h(todayStr())}" style="width:auto;min-height:34px"></label>
       <button class="btn sm" id="srToday">Sot</button>
       <span style="display:inline-flex;gap:6px;margin-left:8px">${SR_SHIFTS.map(s=>{ const r=srFind(srDate,s);
-        return `<button class="btn sm ${srShift===s?'primary':''}" data-srs="${s}">${s} ${r? '<span title="i ruajtur">✓</span>' : '<span class="faint" title="ende i paruajtur">·</span>'}</button>`; }).join('')}</span>
+        return `<button class="btn sm ${srShift===s?'primary':''}" data-srs="${s}" title="${s==='Weekend'? 'E shtunë / e diel, 09:00–18:00' : 'E hënë – e premte'}">${s} ${r? '<span title="i ruajtur">✓</span>' : '<span class="faint" title="ende i paruajtur">·</span>'}</button>`; }).join('')}</span>
+      ${srShift==='Weekend'? (()=>{ const sun= new Date(srDate+'T12:00:00').getDay()===0? srDate : srAddDay(srDate,1), sat=srAddDay(sun,-1);
+        return `<span style="display:inline-flex;gap:6px">${[[sat,'E shtunë'],[sun,'E diel']].filter(([d])=>d<=todayStr()).map(([d,l])=>`<button class="btn sm ${d===srDate?'primary':'ghost'}" data-srday="${d}">${l} ${h(fmtDateAl(d).slice(0,5))}${srFind(d,'Weekend')? ' ✓' : ''}</button>`).join('')}</span>`; })() : ''}
       <span class="small faint" id="srStatus" style="margin-left:auto">${rec? 'Ruajtur '+h(new Date(rec.updatedAt).toLocaleString())+' · '+h(rec.updatedBy||'') : 'I paruajtur'} ${others.length? '· '+others.join(', ')+' ✓' : ''}</span></div></div>
     <div id="srBody"><div class="empty">Po lexohen të dhënat e ${h(fmtDateAl(srDate))}…</div></div>
     <div class="card no-print" style="margin-top:12px"><h3 style="margin-top:0">Raportet e ruajtura</h3>${srList()}</div>`;
   $$('[data-sropen]').forEach(a=>a.onclick=e=>{ e.preventDefault(); const [d,s]=a.dataset.sropen.split('|'); srDate=d; srShift=s; rapShiftReport(box,onAgent); window.scrollTo(0,0); });
-  $('#srDate').onchange=e=>{ srDate= e.target.value && e.target.value<=todayStr()? e.target.value : todayStr(); srShift=srDefaultShift(srDate,srShift); rapShiftReport(box,onAgent); };
+  /* the date field: typing "10.10.2026" passes through valid dates at every digit (01.10…, year 0002…) — applying each one
+     re-drew the page and took the cursor away. Apply only when the field is left, Enter is pressed, or after a pause,
+     and only a real date (2020 → today). */
+  const di=$('#srDate'); let dt=null;
+  const applyDate=()=>{ clearTimeout(dt); const v=di.value; if(!v || v===srDate) return; if(v<'2020-01-01' || v>todayStr()){ toast('Zgjidh një datë nga 2020 deri sot'); di.value=srDate; return; }
+    srDate=v; srShift=srDefaultShift(srDate,srShift); rapShiftReport(box,onAgent); };
+  di.oninput=di.onchange=()=>{ clearTimeout(dt); dt=setTimeout(()=>{ if(document.activeElement!==di) applyDate(); else dt=setTimeout(applyDate,1500); }, 400); };
+  di.onblur=applyDate; di.onkeydown=e=>{ if(e.key==='Enter') applyDate(); };
   $('#srToday').onclick=()=>{ srDate=todayStr(); srShift=srDefaultShift(srDate,srShift); rapShiftReport(box,onAgent); };
-  $$('[data-srs]').forEach(b=>b.onclick=()=>{ srShift=b.dataset.srs; rapShiftReport(box,onAgent); });
+  $$('[data-srs]').forEach(b=>b.onclick=()=>{ srShift=b.dataset.srs; srDate=srDateFor(srDate, srShift); rapShiftReport(box,onAgent); });
+  $$('[data-srday]').forEach(b=>b.onclick=()=>{ srDate=b.dataset.srday; rapShiftReport(box,onAgent); });
   if(rec) return srDraw(rec, null);
   if(!onAgent){ srDraw(null, {note:'Hape app-in nga http://localhost:8790 që të plotësohen shifrat automatike.'}); return; }
   const sh=srShift; srLoad(srDate).then(D=>{ if(D.date!==srDate || sh!==srShift || srFind(srDate,srShift)) return; srDraw(null, srAuto(D, srShift)); });
@@ -83,25 +98,52 @@ function srAuto(D, shift, db){
   if(!T) out.warn.push('Tabela ditore nuk u lexua'+(D.T&&D.T.error? ' ('+D.T.error+')' : '')+' — shifrat e personave mungojnë.');
   const shifts=(T&&T.shifts)||{}, ops=(T&&T.live&&T.live.ops)||[], byName={}; ops.forEach(o=>byName[o.name]=o);
   const act=o=>o? (o.orders||0)+(o.out||0)+(o.ci||0)+(o.mp||0)+(o.pod||0)+(o.ref||0)+(o.ret||0) : 0;
-  const local=iso=>{ const d=new Date(iso); return d.getHours()*60+d.getMinutes(); };
-  // members of the shift: scheduled in it; plus those who worked without a shift that day, by their first scan
-  const wk=shift==='Weekend', inShift=s=>s!=='pushim' && (wk || srShiftOf(s)===shift);   // Weekend = everyone on the schedule that day
+  // the people of the shift = those on its schedule that day (Weekend = everyone on the schedule that day)
+  const wk=shift==='Weekend', inShift=s=>s!=='pushim' && (wk || srShiftOf(s)===shift);
   const planned=Object.entries(shifts).filter(([n,s])=>inShift(s)).map(([n])=>n).sort();
   const off=Object.entries(shifts).filter(([n,s])=>s==='pushim').map(([n])=>n);
-  const unsched=ops.filter(o=>act(o)>0 && !(o.name in shifts && shifts[o.name]!=='pushim') && (wk || ((local(o.first)<12*60)? 'N1':'N2')===shift)).map(o=>o.name);
-  const members=[...new Set(planned.concat(unsched))], present=members.filter(n=>act(byName[n])>0), absent=planned.filter(n=>!(act(byName[n])>0));
-  const S=k=>members.reduce((a,n)=>a+((byName[n]||{})[k]||0),0);
+  /* present = on THIS shift's schedule and scanned during their own scheduled hours (2 h tolerance each side: early POD
+     batches, overtime), not anywhere in the day: a morning scan
+     under the account of someone on the 13–21 shift does not make them present in N2 (it is listed as "outside the
+     schedule" — possibly a shared login). Today, someone whose start (+30 min) has not come yet is "not started", not absent. */
+  const HOURKEYS=['byHour','outByHour','ciByHour','mpByHour','podByHour','refByHour','retByHour'];
+  const hoursOf=o=>{ const s=new Set(); if(o) HOURKEYS.forEach(k=>Object.entries(o[k]||{}).forEach(([hh,c])=>{ if(c>0) s.add(+hh); })); return [...s].sort((x,y)=>x-y); };
+  const win=n=>{ const m=/^(\d{1,2}):(\d{2})\s*[–-]\s*(\d{1,2}):(\d{2})/.exec(shifts[n]||''); return m? [+m[1]-2, Math.ceil(+m[3]+ +m[4]/60)+2] : null; };
+  const nowD=new Date(), nowMin=nowD.getHours()*60+nowD.getMinutes();
+  const inWinOf=n=>{ const w=win(n); return w? hoursOf(byName[n]).some(hh=>hh>=w[0] && hh<w[1]) : act(byName[n])>0; };
+  /* the figures, hour by hour: a person's work inside their own scheduled hours (±2 h) belongs to their shift; work outside
+     them (or by someone not on the schedule / on pushim) belongs to the shift of that hour (N1 before 14:00, N2 from 14:00).
+     So N1 + N2 = the operators' day total, and a shift that has not started yet has nothing. Weekend takes the whole day. */
+  const hourShift=hh=> wk? 'Weekend' : hh<14? 'N1' : 'N2';
+  const shiftOfWork=(n,hh)=>{ if(wk) return 'Weekend'; const s=shifts[n], w=win(n); return (s && s!=='pushim' && w && hh>=w[0] && hh<w[1])? srShiftOf(s) : hourShift(hh); };
+  const firstH=o=> o&&o.first? new Date(o.first).getHours() : 12;
+  const HK={orders:'byHour', out:'outByHour', ci:'ciByHour', mp:'mpByHour', pod:'podByHour', ref:'refByHour', ret:'retByHour'};
+  const part=(o,k)=>{ if(!o || !(o[k]>0)) return 0; let s=0, inMap=0;
+    Object.entries(o[HK[k]]||{}).forEach(([hh,c])=>{ inMap+=c; if(shiftOfWork(o.name,+hh)===shift) s+=c; });
+    const rest=o[k]-inMap; if(rest>0 && shiftOfWork(o.name, firstH(o))===shift) s+=rest;   // anything without an hour: by the first scan
+    return s; };
+  const S=k=>ops.reduce((a,o)=>a+part(o,k),0);
+  const contrib=ops.filter(o=>Object.keys(HK).some(k=>part(o,k)>0)).map(o=>o.name);
+  const unsched=contrib.filter(n=>!planned.includes(n));   // worked in this shift's hours without being on its schedule
+  // prepared orders (one figure per operator × day) go to the shift that has most of that operator's checked-out orders
+  const prepShift=n=>{ const o=byName[n]; if(!o) return shifts[n]&&shifts[n]!=='pushim'? (wk?'Weekend':srShiftOf(shifts[n])) : null;
+    const c={}; Object.entries(o.byHour||{}).forEach(([hh,v])=>{ const s=shiftOfWork(n,+hh); c[s]=(c[s]||0)+v; });
+    const best=Object.entries(c).sort((a,b)=>b[1]-a[1])[0]; return best? best[0] : shiftOfWork(n, firstH(o)); };
+  const present=planned.filter(inWinOf);
+  const notStarted= today? planned.filter(n=>!inWinOf(n) && srMin(shifts[n])!=null && nowMin<srMin(shifts[n])+30) : [];
+  const absent=planned.filter(n=>!inWinOf(n) && !notStarted.includes(n));
+  const outside=planned.filter(n=>!inWinOf(n) && act(byName[n])>0).map(n=>n+' (ora '+hoursOf(byName[n]).map(x=>String(x).padStart(2,'0')).join(', ')+')');
   // 1. plan and result
   const target=D.ST&&D.ST.config&&D.ST.config.targetOrdersPerDay;
-  const prepared=col('wmsPrepared').filter(r=>r.date===date && members.includes(r.operator)).reduce((a,r)=>a+num(r.preparedOrders),0), prepAny=col('wmsPrepared').some(r=>r.date===date);
+  const prepared=col('wmsPrepared').filter(r=>r.date===date && prepShift(r.operator)===shift).reduce((a,r)=>a+num(r.preparedOrders),0), prepAny=col('wmsPrepared').some(r=>r.date===date);
   const dm=date.slice(8,10)+'.'+date.slice(5,7), dd=D.P&&D.P.D&&(D.P.D.daily||[]).find(r=>r[0]===dm), cr=D.P&&D.P.capacity&&(D.P.capacity.created||[]).find(x=>x.d===date);
   const received= dd? dd[1]+dd[2] : cr? cr.o : null;
   out.v={target, completed:S('orders'), dayOut:T&&T.live? T.live.ordersOut : null, packed:prepAny? prepared : null, sent:S('pod'), daySent:T&&T.live&&T.live.pod? T.live.pod.total : null, refusals:S('ref'), received,
-    planned, present, absent, off, unsched};
+    planned, present, absent, notStarted, outside, off, unsched};
   out.txt.target= target? target+' (objektivi i ditës)' : ''; out.src.target='Statistikat e WH → cilësimet';
-  out.txt.completed= T? `${out.v.completed} porosi nga operatorët e ${shift} · dita gjithsej ${out.v.dayOut??'—'}` : ''; out.src.completed='WMS: porosi të ndryshme me check-out, sipas operatorëve të ndërrimit';
-  out.txt.packed= prepAny? `${prepared} (WMS "Prepared", operatorët e ${shift})` : ''; out.src.packed= prepAny? 'WMS GetPreparedOrders — WMS nuk ka hap të veçantë paketimi' : 'WMS "Prepared" nuk është sinkronizuar për këtë datë — plotëso me dorë';
-  out.txt.sent= T? `${out.v.sent} porosi të skanuara për kurierët nga ${shift} · dita gjithsej ${out.v.daySent??'—'}${out.v.refusals? ' · refuzime të pranuara '+out.v.refusals : ''}` : ''; out.src.sent='Delivery Platform: POD (Scanned Orders) sipas llogarisë';
+  out.txt.completed= T? `${out.v.completed} porosi në ${shift} · dita gjithsej ${out.v.dayOut??'—'}` : ''; out.src.completed='WMS: porosi të ndryshme me check-out, orë pas ore: puna brenda orarit të secilit (±2 orë) për ndërrimin e tij, jashtë tij për ndërrimin e asaj ore';
+  out.txt.packed= prepAny? `${prepared} (WMS "Prepared" i operatorëve që bënë check-out kryesisht në ${shift})` : ''; out.src.packed= prepAny? 'WMS GetPreparedOrders — WMS nuk ka hap të veçantë paketimi' : 'WMS "Prepared" nuk është sinkronizuar për këtë datë — plotëso me dorë';
+  out.txt.sent= T? `${out.v.sent} porosi të skanuara për kurierët në ${shift} · dita gjithsej ${out.v.daySent??'—'}${out.v.refusals? ' · refuzime të pranuara '+out.v.refusals : ''}` : ''; out.src.sent='Delivery Platform: POD (Scanned Orders) sipas llogarisë';
   out.txt.received= received!=null? received+' (dita gjithsej)' : ''; out.src.received= received!=null? 'WMS: porosi të krijuara (WMS Pulse)' : 'nuk ka shifër për këtë datë — plotëso me dorë';
   /* backlog: the board's cut-offs exist only for today (the system keeps no history), so the figure is the state at the
      moment the report is filled — the agent saves N1 at 15:03 and N2 at 21:03, which keeps it for that day.
@@ -119,8 +161,12 @@ function srAuto(D, shift, db){
   // 2. staff
   const sh=n=>shifts[n]&&shifts[n]!=='pushim'? ' ('+shifts[n]+')' : ' (jashtë orarit)';
   out.txt.planned= planned.length? `${planned.length}: ${planned.map(n=>n+' '+shifts[n]).join(', ')}` : (T&&T.scheduleLoaded===false? '' : '0'); out.src.planned='Orari i punës';
-  out.txt.present= T? `${present.length}: ${present.join(', ')}${unsched.length? ' · pa qenë në orar: '+unsched.join(', ') : ''}` : ''; out.src.present='kush ka skanuar në WMS ose Delivery Platform atë ditë';
-  out.txt.absent= absent.length? `Pa aktivitet në WMS/POD: ${absent.join(', ')} (mungesë, vonesë ose punë pa skanim — verifiko)` : (T? 'Asnjë' : ''); out.src.absent='në orar, por pa asnjë skanim atë ditë';
+  out.txt.present= T? `${present.length}: ${present.join(', ')}${unsched.length? '\nPunuan pa qenë në orarin e këtij ndërrimi (pushim ose jashtë listës): '+unsched.join(', ')+' — puna e tyre hyn te shifrat' : ''}` : '';
+  out.src.present='në orarin e ndërrimit dhe me skanime në WMS / Delivery Platform brenda orarit të tyre (±2 orë)';
+  out.txt.absent= T? [absent.length? `Pa aktivitet në WMS/POD gjatë orarit: ${absent.join(', ')} (mungesë, vonesë ose punë pa skanim — verifiko)` : 'Asnjë',
+    notStarted.length? `Orari ende pa filluar: ${notStarted.join(', ')}` : '',
+    outside.length? `Skanime vetëm jashtë orarit të tyre: ${outside.join('; ')} — verifiko (llogari e përdorur nga dikush tjetër?)` : ''].filter(Boolean).join('\n') : '';
+  out.src.absent='në orar, por pa skanim gjatë orarit të tyre';
   const multi=present.filter(n=>{ const o=byName[n]||{}; return ['orders','ci','mp','pod','ref'].filter(k=>(o[k]||0)>0).length>=2; });
   const PN={orders:'check-out',ci:'check-in',mp:'mapim',pod:'POD',ref:'refuzime'};
   out.txt.taskChanges= multi.length? 'Punuan në disa procese: '+multi.map(n=>{ const o=byName[n]; return n+' ('+Object.keys(PN).filter(k=>(o[k]||0)>0).map(k=>PN[k]).join(', ')+')'; }).join('; ') : ''; out.src.taskChanges='WMS / Delivery Platform: proceset ku ka skanuar secili';
@@ -163,7 +209,8 @@ function srDraw(rec, A){
   srFresh=null; const auto= rec? rec.auto||{txt:{},src:{},v:{}} : A||{txt:{},src:{},v:{},warn:[]};
   const val=k=> rec? (rec[k]??'') : (auto.txt&&auto.txt[k]) || '';
   const resp= rec? rec.responsible||'' : '', sched= rec? rec.schedule||'' : (auto.txt&&auto.txt.schedule)||'';
-  const staff=[...new Set(Object.keys(((srData[srDate]||{}).T||{}).shifts||{}).concat(Store.col('employees').filter(e=>e.active!==false).map(e=>e.name)))].sort();
+  // suggestions for "Përgjegjësi": only the people on the schedule of this shift (any name can still be typed)
+  const staff=[...new Set((auto.v&&auto.v.planned)||[])].sort();
   const fieldRow=(k,l)=>{ const long=SR_LONG.has(k), v=val(k), src=auto.src&&auto.src[k], isAuto= v && auto.txt && auto.txt[k] && auto.txt[k]===v;
     return `<div style="display:grid;grid-template-columns:minmax(150px,240px) 1fr;gap:8px;align-items:start;padding:5px 0;border-bottom:1px dashed var(--line)">
       <label for="sr_${k}" class="small" style="padding-top:6px"><b>${h(l)}</b>${src? `<div class="faint" style="font-size:11px">${isAuto? '⚙ ' : ''}${h(src)}</div>` : ''}</label>
@@ -182,7 +229,7 @@ function srDraw(rec, A){
       <div class="btnrow no-print" style="margin-top:12px"><button class="btn primary" id="srSave">💾 Ruaj raportin ${h(srShift)}</button>
         <button class="btn" id="srRefresh" title="Lexon sërish shifrat; ndryshon vetëm fushat që nuk i ke prekur">⟳ Rifresko nga të dhënat</button>
         ${rec? '<button class="btn ghost" id="srDelete">🗑 Fshi</button>' : ''}<button class="btn ghost" id="srPrint">🖨 Printo</button></div>
-      <div class="hint">⚙ = plotësuar automatikisht nga burimi i shënuar; çdo fushë mund të ndryshohet. Ndarja sipas ndërrimit bëhet sipas personave të secilit ndërrim (orari i asaj dite); totalet e ditës shënohen veç. Ruajtja i ngrin shifrat; "Rifresko" ndryshon vetëm fushat që janë ende si u plotësuan.</div></div>
+      <div class="hint">⚙ = plotësuar automatikisht nga burimi i shënuar; çdo fushë mund të ndryshohet. Personat e ndërrimit janë ata në orarin e tij; shifrat ndahen orë pas ore (puna brenda orarit të secilit ±2 orë për ndërrimin e tij, jashtë tij për ndërrimin e asaj ore); totalet e ditës shënohen veç. Ruajtja i ngrin shifrat; "Rifresko" ndryshon vetëm fushat që janë ende si u plotësuan.</div></div>
     <div class="sr-print"><h2 style="margin:0 0 4px">${head}</h2>
       <table style="width:100%;font-size:12px;margin-bottom:8px"><tr><td><b>Data:</b> ${h(fmtDateAl(srDate))}</td><td><b>Ndërrimi:</b> ${h(srShift)}</td><td><b>Përgjegjësi:</b> <span id="srPResp">${h(resp||'—')}</span></td><td><b>Orari i punës:</b> <span id="srPSched">${h(sched||'—')}</span></td></tr></table>
       ${SR_SECTIONS.map(([t,fields])=>`<h3 style="margin:10px 0 4px">${h(t)}</h3><table style="width:100%;font-size:12px;border-collapse:collapse">${fields.map(([k,l])=>printRow(k,l)).join('')}</table>`).join('')}
