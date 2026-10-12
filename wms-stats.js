@@ -37,14 +37,16 @@ module.exports=function makeWmsStats(d){
   function dayAgg(rows, iso, reliable){
     const staff=d.warehouseStaffSet();
     const a={date:iso, reliable, coUnits:new Array(24).fill(0), coOrders:[], kinds:{checkin:new Array(24).fill(0), map:new Array(24).fill(0), checkout:new Array(24).fill(0)},
-      workers:{}, ci:{}, mp:{}, out:{}, ev:{}};
+      workers:{}, ci:{}, mp:{}, out:{}, ev:{}, coUnitsBy:{}};
     const firstCo={};
     rows.forEach(x=>{
       const t=Number(x.LogTypeId), ts=d.parseWmsDate(x.InsertDateTime); if(ts==null) return;
       const dt=new Date(ts), hr=dt.getHours(), minute=hr*60+dt.getMinutes(), unit=x.ProductItemUniqueIdentifierId;
       // an order counts at its first check-out scan, and belongs to the operator who made that scan (heatmap pop-up)
-      if(CO_TYPES.includes(t)){ a.coUnits[hr]++; if(x.OrderId){ const k=String(x.OrderId); if(firstCo[k]==null || minute<firstCo[k][0]){
-        const raw=String(x.UpdatedByName||'').replace(/\s+/g,' ').trim(); firstCo[k]=[minute, d.STAFF_ALIASES[d.normName(raw)]||raw||'(pa emër)']; } } }
+      // units by operator × hour too, so the figures can keep only the staff on the schedule (filtered in summarise)
+      if(CO_TYPES.includes(t)){ a.coUnits[hr]++; const rawC=String(x.UpdatedByName||'').replace(/\s+/g,' ').trim(), byC=d.STAFF_ALIASES[d.normName(rawC)]||rawC||'(pa emër)';
+        const ub=a.coUnitsBy[byC]||(a.coUnitsBy[byC]={}); ub[hr]=(ub[hr]||0)+1;
+        if(x.OrderId){ const k=String(x.OrderId); if(firstCo[k]==null || minute<firstCo[k][0]) firstCo[k]=[minute, byC]; } }
       if(unit){
         if(t===2 && !(a.ci[unit]<=ts)) a.ci[unit]=ts;
         if(t===7 && !(a.mp[unit]<=ts)) a.mp[unit]=ts;
@@ -64,8 +66,8 @@ module.exports=function makeWmsStats(d){
   async function getDay(iso){
     const settled=ageDays(iso)>=d.CACHE_SETTLE_DAYS;
     if(mem[iso] && (settled || Date.now()-mem[iso]._at<RESPONSE_TTL_MS)) return mem[iso];
-    // a settled day cached before the operator was kept per order (no coBy) is read once more from the WMS and re-cached
-    if(settled && disk.days[iso] && disk.days[iso].coBy) return (mem[iso]=Object.assign(disk.days[iso],{_at:Date.now()}));
+    // a settled day cached before the operator was kept per order / per unit (no coBy / coUnitsBy) is read once more and re-cached
+    if(settled && disk.days[iso] && disk.days[iso].coBy && disk.days[iso].coUnitsBy) return (mem[iso]=Object.assign(disk.days[iso],{_at:Date.now()}));
     const dl=await d.fetchDayProductLogs(d.isoToMdy(iso), {noCache:!settled});
     if(dl.error) return {error:dl.error};
     const a=dayAgg(dl.rows, iso, dl.reliable);
@@ -87,26 +89,30 @@ module.exports=function makeWmsStats(d){
     return {day:iso=>!!shift.weekend===isWeekend(iso), minute:m=> b>=a ? (m>=a && m<b) : (m>=a || m<b)};
   }
   const hourIn=(f,h)=>f.minute(h*60);
+  /* only the staff on the schedule count (the warehouse lead, 12.10.2026): an order by the operator of its first check-out
+     scan, a unit by its scanner — filtered here, with the current list, so a name added to the schedule counts at once */
+  const ownOrders=a=>{ const st=d.warehouseStaffSet(); return (a.coOrders||[]).filter(([,,by])=>by && st.has(d.normName(by))); };
+  const ownUnits=a=>{ const st=d.warehouseStaffSet(), u=new Array(24).fill(0); Object.entries(a.coUnitsBy||{}).forEach(([nm,hm])=>{ if(st.has(d.normName(nm))) Object.entries(hm).forEach(([h,c])=>u[+h]+=c); }); return u; };
 
   function summarise(aggs, days, prevAggs, f, today, single, laterAggs){
     const inRange=days.filter(f.day);
     // --- 5.1 throughput -------------------------------------------------------
     const byDay=inRange.map(iso=>{ const a=aggs[iso];
       return {date:iso, weekend:isWeekend(iso), partial:iso===today,
-        orders:a.coOrders.filter(([,m])=>f.minute(m)).length, units:a.coUnits.reduce((s,v,h)=>s+(hourIn(f,h)?v:0),0)}; });
+        orders:ownOrders(a).filter(([,m])=>f.minute(m)).length, units:ownUnits(a).reduce((s,v,h)=>s+(hourIn(f,h)?v:0),0)}; });
     // a single chosen day counts as itself (weekend or today included); longer periods average complete workdays only
     const full=single? byDay : byDay.filter(x=>!x.partial && !x.weekend);
     const avg=arr=>arr.length? arr.reduce((s,x)=>s+x,0)/arr.length : null;
     const prevFull=prevAggs.filter(a=>a && f.day(a.date) && (single || !isWeekend(a.date)));
-    const avgOrders=avg(full.map(x=>x.orders)), prevAvgOrders=avg(prevFull.map(a=>a.coOrders.filter(([,m])=>f.minute(m)).length));
+    const avgOrders=avg(full.map(x=>x.orders)), prevAvgOrders=avg(prevFull.map(a=>ownOrders(a).filter(([,m])=>f.minute(m)).length));
     const byHour=Array.from({length:24},(_,h)=>({hour:h, orders:0, units:0}));
     const heat=Array.from({length:7},()=>new Array(24).fill(0));       // Mon..Sun × hour, orders
     const heatBy=Array.from({length:7},()=>Array.from({length:24},()=>({})));   // same cells: {operator: orders} — sums to heat
     const heatDays=Array.from({length:7},()=>[]);                      // the dates behind each weekday row
     inRange.forEach(iso=>{ const a=aggs[iso], dow=(new Date(iso+'T12:00:00').getDay()+6)%7; heatDays[dow].push(iso);
-      a.coOrders.forEach(([,m,by])=>{ if(!f.minute(m)) return; const h=Math.floor(m/60); byHour[h].orders++; heat[dow][h]++;
+      ownOrders(a).forEach(([,m,by])=>{ if(!f.minute(m)) return; const h=Math.floor(m/60); byHour[h].orders++; heat[dow][h]++;
         const c=heatBy[dow][h], n=by||'(pa emër)'; c[n]=(c[n]||0)+1; });
-      a.coUnits.forEach((v,h)=>{ if(hourIn(f,h)) byHour[h].units+=v; }); });
+      ownUnits(a).forEach((v,h)=>{ if(hourIn(f,h)) byHour[h].units+=v; }); });
     const nDays=inRange.length||1;
     // --- 5.3 check-in → map ----------------------------------------------------
     const allMp={}, allOut={};
@@ -203,7 +209,8 @@ module.exports=function makeWmsStats(d){
         outside:sorted.length-inS.length, first, last, activeMin:last-first, idleCount, idleMin, lateMin:Math.max(0, first-r.a), earlyMin:Math.max(0, endMin-last)}; };
     const evsBy=a.ev||{};
     if(plan){
-      Object.entries(plan).forEach(([name,p])=>{ if(p.off) return;
+      // the WH Lead is on the schedule but does not scan in the WMS: not counted as planned / absent (12.10.2026)
+      Object.entries(plan).forEach(([name,p])=>{ if(p.off || (d.WH_LEADS||[]).includes(name)) return;
         const g=group(p.start,p.end); g.planned.push(name);
         const evs=evsBy[name], o=evs && perf(g, evs);
         if(o) g.ops[name]=o;
@@ -221,7 +228,7 @@ module.exports=function makeWmsStats(d){
         if(i<0) return;
         const g=group(pool[i].s.start, pool[i].s.end), o=perf(g, evs); if(o) g.ops[name]=o; });
     }
-    Object.values(res).forEach(g=>{ g.orders=a.coOrders.filter(([,m])=>inR(g.r,m)).length; g.units=a.coUnits.reduce((s,v,h)=>s+(inR(g.r,h*60)?v:0),0); });
+    Object.values(res).forEach(g=>{ g.orders=ownOrders(a).filter(([,m])=>inR(g.r,m)).length; g.units=ownUnits(a).reduce((s,v,h)=>s+(inR(g.r,h*60)?v:0),0); });
     return {groups:res, unplanned, planned:!!plan};
   }
   function weekOf(iso){ const dt=new Date(iso+'T12:00:00'); const mon=d.isoAddDays(iso, -((dt.getDay()+6)%7)); return Array.from({length:7},(_,i)=>d.isoAddDays(mon,i)); }

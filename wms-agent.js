@@ -309,8 +309,21 @@ const DEFAULT_WAREHOUSE_STAFF=['Xhevat Llumnica','Shpetim Hajrullahu','Erik Mehm
   'Agon Miftari','Rron Miftari','Arian Racaj','Arian Rraca','Albina Sinani','Flaka Selmani','Ensar Hoxha','Kaon Halili',
   'Bardh Thaçi','Shkelzen Musliu','Ardit Shillova','Festim Berisha'];
 const normName=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+/* Two lists: the ROSTER (cfg.warehouseStaff / default) is only the name book that turns the schedule's short names
+   ("Erdi") into WMS account names; the STAFF that every figure counts = the roster ∩ the names in "Orari i punës" (+ the
+   second accounts of the same people, STAFF_ALIASES). Anyone not on the schedule — temp / shared logins, Gjirafa accounts
+   outside the warehouse, sellers, rows without a name — is left out of every list and every total that uses this set
+   (the warehouse lead, 12.10.2026: "even if it changes the final figures"). Without a loaded schedule: the roster. */
 function warehouseStaffList(){ return (Array.isArray(cfg.warehouseStaff) && cfg.warehouseStaff.length) ? cfg.warehouseStaff : DEFAULT_WAREHOUSE_STAFF; }
-function warehouseStaffSet(){ return new Set(warehouseStaffList().map(normName).filter(Boolean)); }
+let staffMemo={at:0, list:null};
+function scheduleStaffList(){
+  if(staffMemo.list && Date.now()-staffMemo.at<60000) return staffMemo.list;
+  let list=warehouseStaffList();
+  try{ const s=shiftSchedule.summary(); if(s && s.loaded && s.names && s.names.length){ const on=new Set(s.names.map(normName));
+    list=list.filter(n=>on.has(normName(STAFF_ALIASES[normName(n)]||n))); } }catch(e){}
+  staffMemo={at:Date.now(), list}; return list;
+}
+function warehouseStaffSet(){ return new Set(scheduleStaffList().map(normName).filter(Boolean)); }
 function parseWmsDate(s){ const m=/\/Date\((\d+)\)\//.exec(s||''); return m?Number(m[1]):null; }
 function isoAddDays(iso,n){ const d=new Date(iso+'T12:00:00'); d.setDate(d.getDate()+n); return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()); }
 function isoToMdy(iso){ const [y,m,d]=iso.split('-'); return m+'/'+d+'/'+y; }
@@ -323,9 +336,11 @@ function cumulativeByMark(rows, iso, staff){
   const blank=()=>({checkedIn:0, checkedInAll:0, checkedOut:0, picks:0, orders:new Set()});
   const acc=hours.map(blank), full=blank();
   rows.forEach(x=>{
-    const isInAll=x.LogType===CHECKIN_LOGTYPE, isIn=isInAll && staff.has(normName(x.UpdatedByName));
-    const isOut=CHECKOUT_LOGTYPES.includes(x.LogType);
-    const isOrder=Number(x.LogTypeId)===ORDER_DONE_LOGTYPE_ID && !!x.OrderId, isPick=/pick/i.test(x.LogType||'');
+    // only the warehouse staff on the schedule count (12.10.2026) — orders, checkout products and picks too, not only check-ins
+    const own=staff.has(normName(x.UpdatedByName));
+    const isInAll=x.LogType===CHECKIN_LOGTYPE, isIn=isInAll && own;
+    const isOut=CHECKOUT_LOGTYPES.includes(x.LogType) && own;
+    const isOrder=Number(x.LogTypeId)===ORDER_DONE_LOGTYPE_ID && !!x.OrderId && own, isPick=/pick/i.test(x.LogType||'') && own;
     if(!isInAll && !isOut && !isOrder && !isPick) return;
     const add=o=>{ if(isIn) o.checkedIn++; if(isInAll) o.checkedInAll++; if(isOut) o.checkedOut++; if(isPick) o.picks++; if(isOrder) o.orders.add(x.OrderId); };
     add(full);
@@ -376,7 +391,7 @@ async function buildFlow2h(db, iso){
   });
   const prevFullDay = prev.error ? null : prev.full;
   return { date:iso, prevDate:prevIso, marks, prevFullDay, staff:warehouseStaffList(), reliable: cur.reliable && (prev.error?true:prev.reliable),
-    note:'Të gjitha shifrat rindërtohen nga log-u i eventeve të WMS-it deri në orën e saktë, me të njëjtat përkufizime si AI Operator (të verifikuara). Orders completed = porosi të ndryshme me skanim checkout. Check-ins = vetëm check-in nga stafi i depos (lista më poshtë) — pa rreshtat pa operator dhe pa llogaritë e Gjirafës jashtë depos. Picks: WMS nuk regjistron skanime picking — prandaj 0, njësoj si te AI Operator.' };
+    note:'Të gjitha shifrat rindërtohen nga log-u i eventeve të WMS-it deri në orën e saktë, me të njëjtat përkufizime si AI Operator (të verifikuara). Të gjitha shifrat (porositë, check-in, checkout, picks) numërojnë vetëm stafin e depos që është në Orarin e punës — pa llogaritë temp, pa rreshtat pa operator dhe pa llogaritë e Gjirafës jashtë depos. Orders completed = porosi të ndryshme me skanim checkout. Picks: WMS nuk regjistron skanime picking — prandaj 0, njësoj si te AI Operator.' };
 }
 
 /* --- "Check-in / Checkout Report" tab -----------------------------------------
@@ -427,6 +442,9 @@ function avgGapMs(fromRows, toRows){
   return {avgMs:avgMs(gaps), matched:gaps.length};
 }
 function buildCheckReport(rows, db, days){
+  // only the warehouse staff on the schedule (12.10.2026); a second account of the same person is shown under their name
+  const staff=warehouseStaffSet();
+  rows=rows.filter(r=>staff.has(normName(r.UpdatedByName))).map(r=>{ const a=STAFF_ALIASES[normName(r.UpdatedByName)]; return a? Object.assign({}, r, {UpdatedByName:a}) : r; });
   const inRows=rows.filter(r=>r.LogType===CHECKIN_LOGTYPE);
   const outRows=rows.filter(r=>CHECKOUT_LOGTYPES.includes(r.LogType));
   const mapRows=rows.filter(r=>Number(r.LogTypeId)===MAPPING_LOGTYPE_ID);
@@ -439,7 +457,7 @@ function buildCheckReport(rows, db, days){
   const outFromCheckinOrders=new Set(outFromCheckin.map(r=>r.OrderId).filter(Boolean));
   const byOrderSize={}; outRows.forEach(r=>{ if(r.OrderId) byOrderSize[r.OrderId]=(byOrderSize[r.OrderId]||0)+1; });
   const orderSizes=Object.values(byOrderSize);
-  const preparedOrders=(db.wmsPrepared||[]).filter(r=>days.includes(r.date)).reduce((a,r)=>a+(Number(r.preparedOrders)||0),0);
+  const preparedOrders=(db.wmsPrepared||[]).filter(r=>days.includes(r.date) && staff.has(normName(r.operator))).reduce((a,r)=>a+(Number(r.preparedOrders)||0),0);
   const NA=note=>({available:false, note});
   const DELIVERY_NOTE='Kërkon lidhje të veçantë me deliveryplatform.gjirafamall.com (sistem tjetër, me login/bazë të vet) — jo ende e disponueshme.';
   return {
@@ -477,6 +495,7 @@ const PERF_WEIGHT={checkout:1.0, checkin:0.8, map:0.6};
 const PERF_SECONDS={checkin:33.2, map:18.6, checkout:86.1};
 const PERF_BAND_PCT=25, PERF_DAY_HOURS=8;
 const STAFF_ALIASES={'arian rraca':'Arian Racaj'};   // two WMS accounts, one person (confirmed by the lead)
+const WH_LEADS=['Xhevat Llumnica'];   // on the schedule, does not process orders in the WMS: never counted as absent (the lead, 12.10.2026)
 const localIso=ms=>{ const d=new Date(ms); return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()); };
 function buildPerformance(rows, days){
   const staff=warehouseStaffSet(), by={};
@@ -511,7 +530,7 @@ const shiftSchedule=require('./shift-schedule.js')({ appDir:APPDIR, normName, wa
 const stationPresence=require('./station-presence.js')({ appDir:APPDIR, cfgFile:CFG_FILE, cfg, normName, aliases:STAFF_ALIASES });
 stationPresence.listen(Number(cfg.stationPort||8791));
 const wmsStats=require('./wms-stats.js')({ appDir:APPDIR, fetchDayProductLogs, isoToday, isoAddDays, isoToMdy, lastNDays, parseWmsDate,
-  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, scheduleForDay:iso=>shiftSchedule.forDay(iso) });
+  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, WH_LEADS, scheduleForDay:iso=>shiftSchedule.forDay(iso) });
 /* Module settings (agent config, one writer). Thresholds are starting values meant to be tuned by the lead:
    ok (green) when the value reaches `green`, warning (yellow) up to `yellow`, red beyond — `higherIsBetter`
    decides the direction. */
@@ -978,8 +997,8 @@ function podPostsFor(iso, pod, staff){
     const i=POD_BOARD_POSTS.findIndex(([,re])=>re.test(d)); if(i>=0) out.posts[i].n++; else out.other++; });
   return out;
 }
-/* POD orders per day for Kapaciteti & Stafi (the "Boxing / POD" process volume): only the day's total (recordsFiltered of
-   one 1-row request), all accounts. Days older than 2 days do not change any more and are kept in data/pod-daily.json, so
+/* POD orders per day for Kapaciteti & Stafi (the "Boxing / POD" process volume): scans by the staff on the schedule only
+   (since 12.10.2026; before, the day's total of all accounts). Days older than 2 days do not change any more and are kept in data/pod-daily.json, so
    the 12-week range is read from the Delivery Platform once and afterwards only the recent days are re-read. */
 const POD_DAILY_FILE=path.join(APPDIR,'data','pod-daily.json');
 let podDailyMem=null, podDailyBusy=null;
@@ -990,11 +1009,13 @@ async function podDailyCounts(from, to){
     if(podDailyMem && podDailyMem.key===from+'|'+to && Date.now()-podDailyMem.t<10*60000) return podDailyMem.v;
     const days={}, settledBefore=isoAddDays(isoToday(),-2); let error=null, changed=false;
     for(let d=from; d<=to && d<=isoToday(); d=isoAddDays(d,1)){
-      if(d<settledBefore && store[d]!=null){ days[d]=store[d]; continue; }
-      const r=await deliveryPostJson('/AcceptDelivery/GetScannedOrders',{draw:1, start:0, length:1, search:{value:'',regex:false}, order:[{column:0,dir:'desc'}],
-        columns:dtCols(5), filters:{startDate:d, endDate:d, groupId:''}});
+      // only the scans of the staff on the schedule (12.10.2026): the day's rows are read and counted by scanner; kept under
+      // "s|<date>" — the older all-accounts totals under "<date>" stay in the file untouched but are no longer used
+      const key='s|'+d; if(d<settledBefore && store[key]!=null){ days[d]=store[key]; continue; }
+      const r=await fetchPodScans(d);
       if(r.error){ error=r.error; if(r.error==='auth_expired'){ deliverySessionExpired=true; break; } continue; }
-      days[d]=Number(r.recordsFiltered)||0; if(d<settledBefore){ store[d]=days[d]; changed=true; }
+      const st=warehouseStaffSet(); days[d]=(r.rows||[]).filter(x=>x.scanner && st.has(normName(x.scanner))).length;
+      if(d<settledBefore && r.complete){ store[key]=days[d]; changed=true; }
     }
     if(changed){ try{ fs.mkdirSync(path.dirname(POD_DAILY_FILE),{recursive:true}); fs.writeFileSync(POD_DAILY_FILE, JSON.stringify(store)); }catch(e){} }
     const v={from, to, days, error, at:new Date().toISOString()};
@@ -1056,7 +1077,9 @@ async function podPending(force){
     // the list of orders over 3 days: newest first (the warehouse lead, 06.10.2026); same age → the later created first
     Object.values(posts).forEach(P=>P.oldList.sort((a,b)=>a.days-b.days || String(b.created).localeCompare(String(a.created))));
     // today's POD operator = the account with the latest POD scan (Delivery Platform, Accept Delivery)
-    let operator=null; try{ const s=await fetchPodScans(today); if(s.rows&&s.rows.length) operator=s.rows.reduce((b,r)=>!b||r.t>b.t? r : b, null).scanner||null; }catch(e){}
+    // — only an account of the staff on the schedule (12.10.2026); the name shown is the person's (second accounts merged)
+    let operator=null; try{ const s=await fetchPodScans(today), st=warehouseStaffSet(); const own=((s&&s.rows)||[]).filter(r=>r.scanner && st.has(normName(r.scanner)));
+      if(own.length){ const raw=own.reduce((b,r)=>!b||r.t>b.t? r : b, null).scanner; operator=STAFF_ALIASES[normName(raw)]||raw; } }catch(e){}
     // fixed order of the couriers set by the warehouse lead (06.10.2026), whatever their numbers; any other courier after them
     const rank=n=>{ const i=POD_POST_ORDER.findIndex(re=>re.test(n)); return i<0? 99 : i; };
     const list=Object.values(posts).sort((a,b)=>rank(a.name)-rank(b.name) || b.total-a.total);
@@ -1127,8 +1150,8 @@ async function tabelaData(force, date){
   const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:placement.tables}, live&&live.ops, today, day, normName, STAFF_ALIASES, stationPresence.forDay(today), placement.how);
   const shifts={}; Object.entries(day||{}).forEach(([n,sh])=>{ shifts[n]= sh.off? 'pushim' : sh.start+'–'+sh.end; });
   const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
-  return {date:today, past:!!past, podPosts, stations, stationInfo:stationPresence.info(today), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
-    roster:[...new Set(warehouseStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
+  return {date:today, past:!!past, podPosts, stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë orarit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+    roster:[...new Set(scheduleStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
 let bnState={lastCheck:null, lastSnapshot:null, lastError:null}, bnCache=null;

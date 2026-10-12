@@ -22,8 +22,8 @@ function liveByOperator(rows, staff, normName, parseWmsDate, aliases){
     const ty=types[id]||(types[id]={id, name:x.LogType||'', n:0}); ty.n++;   // log-type names as the WMS shows them (no personal data)
     const isOut=id===4||id===18, isOrd=isOut && !!x.OrderId, isIn=id===2, isMap=id===MAPPED, isRet=RETURN_DISP.has(id);
     if(!isOrd && !isIn && !isMap && !isRet && !isOut) return;
-    if(isOrd) allOrders.add(x.OrderId);   // the day's orders out: every account, as in Statistikat e WH
     const raw=String(x.UpdatedByName||'').replace(/\s+/g,' ').trim(); if(!raw || !staff.has(normName(raw))) return;
+    if(isOrd) allOrders.add(x.OrderId);   // the day's orders out: only by the staff on the schedule (12.10.2026), as in Statistikat e WH
     const name=(aliases&&aliases[normName(raw)])||raw;   // e.g. two WMS accounts of one person → one name, as in § 5.4
     if(t>last) last=t;
     const o=ops[name]||(ops[name]={name, ord:new Map(), coH:new Set(), ciT:[], mpT:[], retT:[], outT:[], first:t, last:t});
@@ -213,7 +213,8 @@ function stationCards(stations, rec, ops, today, day, normName, aliases, presenc
   const result=new Array((stations||[]).length);
   order.forEach(({st,i})=>{
     const iv=P(st), viaPresence=iv.length>0, assigned=[...new Set((rec.tables[st.name]||[]).map(canon))];
-    const names= viaPresence? [...new Set(iv.map(x=>x.op))] : [...new Set(assigned.concat(autoOf(st).map(o=>o.name)))];
+    // only the staff on the schedule (12.10.2026): an account logged in at the PC that is not on it is not listed
+    const names=(viaPresence? [...new Set(iv.map(x=>x.op))] : [...new Set(assigned.concat(autoOf(st).map(o=>o.name)))]).filter(n=>by[n] || (day && n in day));
     const people=names.map(name=>{
       const wins= viaPresence? iv.filter(x=>x.op===name).map(x=>[x.a-PRES_SLACK, x.b+PRES_SLACK]) : [[dayStart, dayEnd]];
       const c={}; Object.keys(ARR).forEach(m=>c[m]=0); metricsOf(st).forEach(m=>{ c[m]=take(name,m,wins,st.name); });
@@ -265,6 +266,9 @@ function withPod(live, pod, staff, normName, aliases, ref){
     const o=opFor(raw,r.t); o._podT.push(r.t); o.pod++; const h=new Date(r.t).getHours(); o.podByHour[h]=(o.podByHour[h]||0)+1; });
   ((ref&&ref.rows)||[]).forEach(r=>{ const raw=r.receiver; if(!raw || !staff.has(normName(raw))){ rinfo.otherAccounts+=r.n; return; }
     const o=opFor(raw,r.t); for(let i=0;i<r.n;i++) o._refT.push(r.t); o.ref+=r.n; const h=new Date(r.t).getHours(); o.refByHour[h]=(o.refByHour[h]||0)+r.n; });
+  // the day's totals = the staff's own work only (12.10.2026); scans by other accounts stay a bare count (no names)
+  if(info.total!=null) info.total=Math.max(0, info.total-info.otherAccounts);
+  if(rinfo.total!=null) rinfo.total=Math.max(0, rinfo.total-rinfo.otherAccounts);
   return Object.assign({}, live, {ops, pod:info, ref:rinfo});
 }
 

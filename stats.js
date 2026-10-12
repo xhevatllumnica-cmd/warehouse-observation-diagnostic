@@ -176,13 +176,13 @@ function renderStatsBody(d){
   const maxO=Math.max(1,...t.byDay.map(x=>x.orders));
   const daily=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Vëllimi — porosi dhe njësi të dala për ditë</h3><button class="btn sm ghost no-print" data-csv="daily" style="margin-left:auto">⬇ CSV</button></div>
     ${t.byDay.map(x=>barRow(`${fmtDateAl(x.date)} ${STATS_WEEKDAYS[(new Date(x.date+'T12:00:00').getDay()+6)%7]}${x.partial?' (sot, e pjesshme)':''}`, x.orders, Math.max(maxO,cfg.targetOrdersPerDay||0), x.weekend?'var(--faint)':'var(--accent)', `${x.orders} porosi · ${x.units} njësi`)).join('')}
-    ${statsMeta('porosi të ndryshme me check-out (LogTypeId 4/18) në ditë; njësi = skanime check-out. Shiriti është në shkallë kundrejt targetit '+(cfg.targetOrdersPerDay||'')+'.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
+    ${statsMeta('porosi të ndryshme me check-out (LogTypeId 4/18) në ditë nga stafi në Orarin e punës (porosia i takon kujt bëri skanimin e parë të check-out-it); njësi = skanime check-out të stafit. Shiriti është në shkallë kundrejt targetit '+(cfg.targetOrdersPerDay||'')+'.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
   const hourly=statsHourlyCard(d);
   const hmax=Math.max(1,...t.heatmap.flat()), hrs=[...Array(24).keys()].filter(hh=>t.heatmap.some(r=>r[hh]));
   const heat=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Heatmap — ora × dita e javës</h3><button class="btn sm ghost no-print" data-csv="heatmap" style="margin-left:auto">⬇ CSV</button></div>
     <div style="overflow-x:auto"><table class="heat"><thead><tr><th></th>${hrs.map(hh=>`<th>${String(hh).padStart(2,'0')}</th>`).join('')}</tr></thead><tbody>
     ${t.heatmap.map((r,i)=>`<tr><th>${STATS_WEEKDAYS[i]}</th>${hrs.map(hh=>`<td ${r[hh]? `data-heat="${i}|${hh}" title="Kliko: operatorët e kësaj ore"` : ''} style="background:rgba(17,91,146,${(r[hh]/hmax*0.85).toFixed(2)});color:${r[hh]/hmax>0.55?'#fff':'var(--text)'}${r[hh]?';cursor:pointer':''}">${r[hh]||''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
-    ${statsMeta('porosi të dala gjithsej në periudhë, sipas orës së check-out-it të parë dhe ditës së javës. Kliko një shifër për operatorët e saj.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
+    ${statsMeta('porosi të dala nga stafi në Orarin e punës, sipas orës së check-out-it të parë dhe ditës së javës. Kliko një shifër për operatorët e saj.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
   const putaway=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.3 Check-in → map</h3><button class="btn sm ghost no-print" data-csv="putaway" style="margin-left:auto">⬇ CSV</button></div>
     <table style="font-size:12.5px;max-width:560px"><tbody>
       <tr><td>Njësi të check-in-uara dhe të mapuara</td><td><b>${pa.pairs}</b></td></tr>
