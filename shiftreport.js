@@ -1,6 +1,6 @@
 /* =========================================================================
    RAPORTI I NDËRRIMIT — Raportet → tab "Raporti i ndërrimit" (the lead's template, 12.10.2026).
-   Two reports per date: N1 and N2. Each line of the template is an editable field; where the data has it, the field is
+   Two reports per weekday: N1 and N2; on Saturday and Sunday one: Weekend (09:00–18:00). Each line of the template is an editable field; where the data has it, the field is
    filled in automatically, otherwise it is written by hand. Saving freezes the automatic figures, so the report of a day
    does not change later; "Rifresko nga të dhënat" re-reads them and replaces only the fields still as they were filled.
    Split by shift = by PEOPLE: each operator belongs to the shift of their schedule that day (starting before 12:00 → N1,
@@ -12,7 +12,7 @@
      /pulse/data          orders created per day (D.daily: last 15 days; capacity.created: full weeks)
      Store                wmsPrepared (prepared orders per operator × day), observations, unlinkedReturns, processes
    Stored in the shared database: collection "shiftReports", one per date + shift (id "shr-<date>-<N1|N2>"), every change in the audit log.
-   Automatic save by the agent (wms-agent.js, same srAuto): N1 at 15:03, N2 at 21:03 — creates the report or, if the lead
+   Automatic save by the agent (wms-agent.js, same srAuto): N1 at 15:03, N2 at 21:03 (Monday–Friday), Weekend at 18:03 (Sat/Sun) — creates the report or, if the lead
    already saved it, refreshes only the fields not touched by hand (srApplyAuto). This is also how the backlog of the day is kept.
    =======================================================================*/
 let srDate=null, srShift='N1', srData={}, srSeq=0, srBox=null, srOnAgent=false, srFresh=null;
@@ -25,7 +25,12 @@ const SR_SECTIONS=[
   ['6. Veprimet dhe vendimet', [['solved','Problemet e zgjidhura'],['unsolved','Problemet e pazgjidhura'],['nextDay','Veprimet për ditën e ardhshme'],['decisions','Vendimet që kërkojnë miratim nga menaxhmenti']]],
   ['7. Vërejtje shtesë', [['wentWell','Çfarë funksionoi mirë'],['wentBad','Çfarë nuk funksionoi'],['other','Informacion tjetër relevant']]]];
 const SR_LONG=new Set(['delayDesc','delayImpact','delayCause','delayAction','incidents','nearMiss','risks','immediate','openIssues','solved','unsolved','nextDay','decisions','wentWell','wentBad','other','damaged','rework','taskChanges','absent','planned','present']);
-const SR_WIN={N1:['07:00','15:00'], N2:['13:00','21:00']};   // for observations and returns: by time of day (13–15 is in both)
+const SR_WIN={N1:['07:00','15:00'], N2:['13:00','21:00'], Weekend:['09:00','18:00']};   // for observations and returns: by time of day (13–15 is in both N1 and N2)
+/* the shifts of the report: N1 / N2 on weekdays; Weekend (Saturday and Sunday, usually 09:00–18:00) is ONE shift with
+   everyone who worked that day. All three can be chosen on any date; the default follows the day of the week. */
+const SR_SHIFTS=['N1','N2','Weekend'];
+const srIsWeekend=d=>{ const w=new Date(d+'T12:00:00').getDay(); return w===0 || w===6; };
+const srDefaultShift=(d,cur)=> srIsWeekend(d)? 'Weekend' : (cur==='Weekend'? 'N1' : cur);
 const srId=(d,s)=>'shr-'+d+'-'+s;
 /* one report per date + shift, found by date + shift. A deleted id keeps its tombstone forever (Store.mergeFrom), so a
    report re-created after a delete gets a new id — with the same id it would vanish at the next sync. */
@@ -36,20 +41,20 @@ const srMin=t=>{ const m=/^(\d{1,2}):(\d{2})/.exec(String(t||'')); return m? +m[
 const srShiftOf=txt=>{ const s=srMin(txt); return s==null? null : s<12*60? 'N1' : 'N2'; };
 
 function rapShiftReport(box, onAgent){
-  if(!srDate) srDate=todayStr(); srBox=box; srOnAgent=onAgent;
-  const rec=srFind(srDate,srShift), other=srFind(srDate, srShift==='N1'?'N2':'N1');
+  if(!srDate){ srDate=todayStr(); srShift=srDefaultShift(srDate,srShift); } srBox=box; srOnAgent=onAgent;
+  const rec=srFind(srDate,srShift), others=SR_SHIFTS.filter(s=>s!==srShift && srFind(srDate,s));
   box.innerHTML=`<style>.sr-print{display:none} @media print{ .sr-form,.pagehead,#rapTabs{display:none !important} .sr-print{display:block !important} .sr-print td{border-bottom:1px solid #ccc;padding:3px 4px} }</style>
     <div class="card no-print" style="margin-bottom:12px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <label class="small" style="display:flex;gap:6px;align-items:center">Data <input type="date" id="srDate" value="${h(srDate)}" max="${h(todayStr())}" style="width:auto;min-height:34px"></label>
       <button class="btn sm" id="srToday">Sot</button>
-      <span style="display:inline-flex;gap:6px;margin-left:8px">${['N1','N2'].map(s=>{ const r=srFind(srDate,s);
+      <span style="display:inline-flex;gap:6px;margin-left:8px">${SR_SHIFTS.map(s=>{ const r=srFind(srDate,s);
         return `<button class="btn sm ${srShift===s?'primary':''}" data-srs="${s}">${s} ${r? '<span title="i ruajtur">✓</span>' : '<span class="faint" title="ende i paruajtur">·</span>'}</button>`; }).join('')}</span>
-      <span class="small faint" id="srStatus" style="margin-left:auto">${rec? 'Ruajtur '+h(new Date(rec.updatedAt).toLocaleString())+' · '+h(rec.updatedBy||'') : 'I paruajtur'} ${other? '· '+(srShift==='N1'?'N2':'N1')+' ✓' : ''}</span></div></div>
+      <span class="small faint" id="srStatus" style="margin-left:auto">${rec? 'Ruajtur '+h(new Date(rec.updatedAt).toLocaleString())+' · '+h(rec.updatedBy||'') : 'I paruajtur'} ${others.length? '· '+others.join(', ')+' ✓' : ''}</span></div></div>
     <div id="srBody"><div class="empty">Po lexohen të dhënat e ${h(fmtDateAl(srDate))}…</div></div>
     <div class="card no-print" style="margin-top:12px"><h3 style="margin-top:0">Raportet e ruajtura</h3>${srList()}</div>`;
   $$('[data-sropen]').forEach(a=>a.onclick=e=>{ e.preventDefault(); const [d,s]=a.dataset.sropen.split('|'); srDate=d; srShift=s; rapShiftReport(box,onAgent); window.scrollTo(0,0); });
-  $('#srDate').onchange=e=>{ srDate= e.target.value && e.target.value<=todayStr()? e.target.value : todayStr(); rapShiftReport(box,onAgent); };
-  $('#srToday').onclick=()=>{ srDate=todayStr(); rapShiftReport(box,onAgent); };
+  $('#srDate').onchange=e=>{ srDate= e.target.value && e.target.value<=todayStr()? e.target.value : todayStr(); srShift=srDefaultShift(srDate,srShift); rapShiftReport(box,onAgent); };
+  $('#srToday').onclick=()=>{ srDate=todayStr(); srShift=srDefaultShift(srDate,srShift); rapShiftReport(box,onAgent); };
   $$('[data-srs]').forEach(b=>b.onclick=()=>{ srShift=b.dataset.srs; rapShiftReport(box,onAgent); });
   if(rec) return srDraw(rec, null);
   if(!onAgent){ srDraw(null, {note:'Hape app-in nga http://localhost:8790 që të plotësohen shifrat automatike.'}); return; }
@@ -80,9 +85,10 @@ function srAuto(D, shift, db){
   const act=o=>o? (o.orders||0)+(o.out||0)+(o.ci||0)+(o.mp||0)+(o.pod||0)+(o.ref||0)+(o.ret||0) : 0;
   const local=iso=>{ const d=new Date(iso); return d.getHours()*60+d.getMinutes(); };
   // members of the shift: scheduled in it; plus those who worked without a shift that day, by their first scan
-  const planned=Object.entries(shifts).filter(([n,s])=>s!=='pushim' && srShiftOf(s)===shift).map(([n])=>n).sort();
+  const wk=shift==='Weekend', inShift=s=>s!=='pushim' && (wk || srShiftOf(s)===shift);   // Weekend = everyone on the schedule that day
+  const planned=Object.entries(shifts).filter(([n,s])=>inShift(s)).map(([n])=>n).sort();
   const off=Object.entries(shifts).filter(([n,s])=>s==='pushim').map(([n])=>n);
-  const unsched=ops.filter(o=>act(o)>0 && !(o.name in shifts && shifts[o.name]!=='pushim') && ((local(o.first)<12*60)? 'N1':'N2')===shift).map(o=>o.name);
+  const unsched=ops.filter(o=>act(o)>0 && !(o.name in shifts && shifts[o.name]!=='pushim') && (wk || ((local(o.first)<12*60)? 'N1':'N2')===shift)).map(o=>o.name);
   const members=[...new Set(planned.concat(unsched))], present=members.filter(n=>act(byName[n])>0), absent=planned.filter(n=>!(act(byName[n])>0));
   const S=k=>members.reduce((a,n)=>a+((byName[n]||{})[k]||0),0);
   // 1. plan and result
@@ -100,16 +106,16 @@ function srAuto(D, shift, db){
   /* backlog: the board's cut-offs exist only for today (the system keeps no history), so the figure is the state at the
      moment the report is filled — the agent saves N1 at 15:03 and N2 at 21:03, which keeps it for that day.
      N1 start = ready yesterday by 17:30 and not out · N1 end = ready by 15:00 still open · N2 start = N1's end (as saved
-     at 15:03; otherwise the 15:00 cut-off now) · N2 end = ready by 17:30 still open. */
+     at 15:03; otherwise the 15:00 cut-off now) · N2 end = ready by 17:30 still open · Weekend: start as N1, end as N2. */
   const cut=T&&T.cut, at=cut&&cut.gen? ' — tabela M e orës '+String(cut.gen).slice(11,16) : '', cutOf=l=>((cut&&cut.cuts)||[]).find(c=>c.label===l);
   if(today && cut&&cut.available){ const c15=cutOf('15:00'), c17=cutOf('17:30');
-    if(shift==='N1'){ out.v.backlogStart=cut.carry.carry; out.txt.backlogStart=`${cut.carry.carry} porosi të gatshme dje deri 17:30 pa dalë (carryover ${cut.carry.pct}%)`;
-      if(c15){ out.v.backlogEnd=c15.open; out.txt.backlogEnd=`${c15.open} porosi të gatshme deri 15:00 ende të hapura${at}`; } }
+    if(shift==='N1' || wk){ out.v.backlogStart=cut.carry.carry; out.txt.backlogStart=`${cut.carry.carry} porosi të gatshme dje deri 17:30 pa dalë (carryover ${cut.carry.pct}%)`;
+      const ce= wk? c17 : c15; if(ce){ out.v.backlogEnd=ce.open; out.txt.backlogEnd=`${ce.open} porosi të gatshme deri ${ce.label} ende të hapura${at}`; } }
     else { const n1=col('shiftReports').find(r=>r.date===date && r.shift==='N1'), n1v=n1&&n1.auto&&n1.auto.v&&n1.auto.v.backlogEnd;
       if(n1v!=null){ out.v.backlogStart=n1v; out.txt.backlogStart=`${n1v} porosi të gatshme deri 15:00 ende të hapura (sipas raportit N1)`; }
       else if(c15){ out.v.backlogStart=c15.open; out.txt.backlogStart=`${c15.open} porosi të gatshme deri 15:00 ende të hapura${at}`; }
       if(c17){ out.v.backlogEnd=c17.open; out.txt.backlogEnd=`${c17.open} porosi të gatshme deri 17:30 ende të hapura${at}`; } } }
-  out.src.backlogStart=out.src.backlogEnd= today? 'Tabela ditore (cut-off-et), gjendja në momentin e plotësimit' : 'për ditët e kaluara sistemi nuk e ruan — plotëso me dorë (ose ruhet nga agjenti në 15:03 / 21:03)';
+  out.src.backlogStart=out.src.backlogEnd= today? 'Tabela ditore (cut-off-et), gjendja në momentin e plotësimit' : 'për ditët e kaluara sistemi nuk e ruan — plotëso me dorë (ose ruhet nga agjenti: N1 15:03, N2 21:03, Weekend 18:03)';
   // 2. staff
   const sh=n=>shifts[n]&&shifts[n]!=='pushim'? ' ('+shifts[n]+')' : ' (jashtë orarit)';
   out.txt.planned= planned.length? `${planned.length}: ${planned.map(n=>n+' '+shifts[n]).join(', ')}` : (T&&T.scheduleLoaded===false? '' : '0'); out.src.planned='Orari i punës';
@@ -139,7 +145,7 @@ function srAuto(D, shift, db){
   ['errCheckin','rework','delayProcess','delayDesc','delayImpact','delayCause','delayDuration'].forEach(k=>out.src[k]=out.src[k]||'Daily Observation të datës, në orët e '+shift);
   out.src.incidents='Daily Observation të llojit Safety'; out.src.damaged='Kthime pa lidhje (E dëmtuar / E hapur)';
   out.v.obs=obs.length; out.v.returns=ur.length;
-  const day=Object.entries(shifts).filter(([n,s])=>srShiftOf(s)===shift).map(([,s])=>s), cnt={}; day.forEach(s=>cnt[s]=(cnt[s]||0)+1);
+  const day=Object.entries(shifts).filter(([n,s])=>inShift(s)).map(([,s])=>s), cnt={}; day.forEach(s=>cnt[s]=(cnt[s]||0)+1);
   out.txt.schedule=Object.entries(cnt).sort().map(([s,n])=>s+' ('+n+')').join(' · ');
   return out;
 }
@@ -206,4 +212,4 @@ function srSave(rec, auto){
   toast('Raporti '+srShift+' i '+fmtDateAl(srDate)+' u ruajt');
   rapShiftReport(srBox, srOnAgent);
 }
-if(typeof module!=='undefined' && module.exports) module.exports={srAuto, srApplyAuto, srId, SR_SECTIONS};   // used by wms-agent.js (automatic save)
+if(typeof module!=='undefined' && module.exports) module.exports={srAuto, srApplyAuto, srId, SR_SECTIONS, srIsWeekend};   // used by wms-agent.js (automatic save)

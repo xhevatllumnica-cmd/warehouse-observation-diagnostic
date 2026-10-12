@@ -752,13 +752,14 @@ setInterval(reportTick, 30*1000);
 setTimeout(reportTick, 8000); // catch-up shortly after start (agent was off at report time)
 
 /* --- shift report (Raportet → "Raporti i ndërrimit"): automatic save -------------------------------------------
-   N1 at cfg.shiftReportN1 (default 15:03), N2 at cfg.shiftReportN2 (default 21:03), once a day each. Same figures as the
+   Monday–Friday: N1 at cfg.shiftReportN1 (default 15:03), N2 at cfg.shiftReportN2 (default 21:03); Saturday and Sunday:
+   one Weekend report at cfg.shiftReportWeekend (default 18:03). Once a day each. Same figures as the
    app's tab (shiftreport.js srAuto): a missing report is created; a report the lead already saved keeps everything typed
    by hand — only fields still equal to the earlier automatic text are refreshed (srApplyAuto). Catch-up: if the agent
    was off at that time, it runs later the same day (the record keeps autoSavedAt). The board's cut-offs exist only for
    today, so this is what keeps the day's backlog. */
 const SR=require('./shiftreport.js');
-const SHIFT_REPORT_TIMES={N1:String(cfg.shiftReportN1||'15:03'), N2:String(cfg.shiftReportN2||'21:03')};
+const SHIFT_REPORT_TIMES={N1:String(cfg.shiftReportN1||'15:03'), N2:String(cfg.shiftReportN2||'21:03'), Weekend:String(cfg.shiftReportWeekend||'18:03')};   // Weekend: Sat/Sun, one shift 09:00–18:00
 let srRunning=false;
 async function runShiftReportJob(shift){
   const date=isoToday(), out={date, shift};
@@ -783,7 +784,7 @@ async function shiftReportTick(){
   if(srRunning) return; const db=loadDb(); if(!db) return; const today=isoToday(), done=(db.meta&&db.meta.shiftReportAuto)||{};
   const mins=t=>{ const p=String(t).split(':'); return (+p[0])*60+(+p[1]||0); }, now=mins(hhmmNow());
   // catch-up only up to 3 h after the time: later, the figures (backlog above all) would no longer describe that shift
-  for(const s of ['N1','N2']){ const late=now-mins(SHIFT_REPORT_TIMES[s]);
+  for(const s of (SR.srIsWeekend(today)? ['Weekend'] : ['N1','N2'])){ const late=now-mins(SHIFT_REPORT_TIMES[s]);
     if(late>=0 && late<=180 && done[s]!==today){ srRunning=true; try{ await runShiftReportJob(s); }finally{ srRunning=false; } } }
 }
 setInterval(shiftReportTick, 30*1000);
