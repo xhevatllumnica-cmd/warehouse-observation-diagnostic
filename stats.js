@@ -9,6 +9,23 @@
 let statsRange='7d', statsShift='', statsLast=null, statsDate='', statsSeq=0;
 const STATS_WEEKDAYS=['Hën','Mar','Mër','Enj','Pre','Sht','Die'];
 
+/* 5.1 heatmap → pop-up of one cell: the operators behind its orders. An order belongs to the operator who made its first
+   check-out scan — the same scan that puts it in this hour — so the operators' orders add up to the cell's number. */
+function statsHeatPopup(d, i, hh){
+  const t=d.throughput, total=(t.heatmap[i]||[])[hh]||0, by=((t.heatmapBy||[])[i]||[])[hh];
+  const dates=((t.heatmapDays||[])[i]||[]), day=['E hënë','E martë','E mërkurë','E enjte','E premte','E shtunë','E diel'][i];
+  const hrs=String(hh).padStart(2,'0')+':00–'+String(hh+1).padStart(2,'0')+':00';
+  if(!by){ openModal(day+' · '+hrs, `<p>${total} porosi.</p><p class="hint">Ndarja sipas operatorëve vjen pas rinisjes së agjentit — rifresko faqen.</p>`, `<button class="btn" id="hpClose">Mbyll</button>`); $('#hpClose').onclick=closeModal; return; }
+  const rows=Object.entries(by).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])), sum=rows.reduce((s,[,n])=>s+n,0);
+  openModal(`${day} · ${hrs} · ${total} porosi`,
+    `<div class="small faint" style="margin-bottom:8px">${dates.length>1? 'Gjithsej për '+dates.length+' ditët: '+dates.map(fmtDateAl).join(', ') : dates.length? fmtDateAl(dates[0]) : ''}</div>
+    <table style="font-size:13px;width:100%"><thead><tr><th>Operatori</th><th style="text-align:right">Porosi</th><th style="text-align:right">%</th></tr></thead><tbody>
+    ${rows.map(([n,c])=>`<tr><td>${h(n)}</td><td style="text-align:right"><b>${c}</b></td><td style="text-align:right">${total? Math.round(c/total*100) : 0}%</td></tr>`).join('')}
+    <tr class="ts-section"><td><b>Gjithsej</b></td><td style="text-align:right"><b>${sum}</b></td><td></td></tr></tbody></table>
+    <div class="hint" style="margin-top:8px">Porosia i atribuohet operatorit që bëri skanimin e parë të check-out-it (WMS · ProductLogs, LogTypeId 4/18) — po ai skanim e vendos porosinë në këtë orë.</div>`,
+    `<button class="btn" id="hpClose">Mbyll</button>`);
+  $('#hpClose').onclick=closeModal;
+}
 function statsStatus(v, th){
   if(v==null || !th) return 'st-na';
   if(th.higherIsBetter) return v>=th.green?'st-ok':v>=th.yellow?'st-warn':'st-crit';
@@ -164,8 +181,8 @@ function renderStatsBody(d){
   const hmax=Math.max(1,...t.heatmap.flat()), hrs=[...Array(24).keys()].filter(hh=>t.heatmap.some(r=>r[hh]));
   const heat=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Heatmap — ora × dita e javës</h3><button class="btn sm ghost no-print" data-csv="heatmap" style="margin-left:auto">⬇ CSV</button></div>
     <div style="overflow-x:auto"><table class="heat"><thead><tr><th></th>${hrs.map(hh=>`<th>${String(hh).padStart(2,'0')}</th>`).join('')}</tr></thead><tbody>
-    ${t.heatmap.map((r,i)=>`<tr><th>${STATS_WEEKDAYS[i]}</th>${hrs.map(hh=>`<td style="background:rgba(17,91,146,${(r[hh]/hmax*0.85).toFixed(2)});color:${r[hh]/hmax>0.55?'#fff':'var(--text)'}">${r[hh]||''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
-    ${statsMeta('porosi të dala gjithsej në periudhë, sipas orës së check-out-it të parë dhe ditës së javës.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
+    ${t.heatmap.map((r,i)=>`<tr><th>${STATS_WEEKDAYS[i]}</th>${hrs.map(hh=>`<td ${r[hh]? `data-heat="${i}|${hh}" title="Kliko: operatorët e kësaj ore"` : ''} style="background:rgba(17,91,146,${(r[hh]/hmax*0.85).toFixed(2)});color:${r[hh]/hmax>0.55?'#fff':'var(--text)'}${r[hh]?';cursor:pointer':''}">${r[hh]||''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    ${statsMeta('porosi të dala gjithsej në periudhë, sipas orës së check-out-it të parë dhe ditës së javës. Kliko një shifër për operatorët e saj.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
   const putaway=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.3 Check-in → map</h3><button class="btn sm ghost no-print" data-csv="putaway" style="margin-left:auto">⬇ CSV</button></div>
     <table style="font-size:12.5px;max-width:560px"><tbody>
       <tr><td>Njësi të check-in-uara dhe të mapuara</td><td><b>${pa.pairs}</b></td></tr>
@@ -263,6 +280,7 @@ function wireStatsBody(d){
     steps:()=>statsCsv('wh-kohet-e-hapave',['Hapi','Matje','Mediana (s)','p90 (s)','Pritja mediana (s)'], app.steps.map(s=>[s.process,s.n,s.median,s.p90,s.waitMedian])),
   };
   $$('[data-csv]').forEach(b=>b.onclick=()=>csv[b.dataset.csv]());
+  $$('[data-heat]').forEach(td=>td.onclick=()=>{ const [i,hh]=td.dataset.heat.split('|').map(Number); statsHeatPopup(d, i, hh); });
   statsHourWire(d); if(statsHourDate) statsHourLoad();   // the hourly card's own day (and its CSV)
   const save=$('#stSave'); if(save) save.onclick=async()=>{
     const thresholds={}; $$('[data-thg]').forEach(i=>{ const k=i.dataset.thg; thresholds[k]={green:Number(i.value), yellow:Number($(`[data-thy="${k}"]`).value)}; });

@@ -42,7 +42,9 @@ module.exports=function makeWmsStats(d){
     rows.forEach(x=>{
       const t=Number(x.LogTypeId), ts=d.parseWmsDate(x.InsertDateTime); if(ts==null) return;
       const dt=new Date(ts), hr=dt.getHours(), minute=hr*60+dt.getMinutes(), unit=x.ProductItemUniqueIdentifierId;
-      if(CO_TYPES.includes(t)){ a.coUnits[hr]++; if(x.OrderId){ const k=String(x.OrderId); if(firstCo[k]==null || minute<firstCo[k]) firstCo[k]=minute; } }
+      // an order counts at its first check-out scan, and belongs to the operator who made that scan (heatmap pop-up)
+      if(CO_TYPES.includes(t)){ a.coUnits[hr]++; if(x.OrderId){ const k=String(x.OrderId); if(firstCo[k]==null || minute<firstCo[k][0]){
+        const raw=String(x.UpdatedByName||'').replace(/\s+/g,' ').trim(); firstCo[k]=[minute, d.STAFF_ALIASES[d.normName(raw)]||raw||'(pa emër)']; } } }
       if(unit){
         if(t===2 && !(a.ci[unit]<=ts)) a.ci[unit]=ts;
         if(t===7 && !(a.mp[unit]<=ts)) a.mp[unit]=ts;
@@ -55,13 +57,15 @@ module.exports=function makeWmsStats(d){
       a.kinds[kind][hr]++;
       const w=a.workers[name]||(a.workers[name]={checkin:0, map:0, checkout:0}); w[kind]++;
     });
-    a.coOrders=Object.entries(firstCo).map(([k,m])=>[k,m]);
+    a.coOrders=Object.entries(firstCo).map(([k,[m,by]])=>[k,m,by]);   // [order, minute of first check-out, operator of that scan]
+    a.coBy=true;                                                         // marks aggregates that carry the operator (cache entries from before do not)
     return a;
   }
   async function getDay(iso){
     const settled=ageDays(iso)>=d.CACHE_SETTLE_DAYS;
     if(mem[iso] && (settled || Date.now()-mem[iso]._at<RESPONSE_TTL_MS)) return mem[iso];
-    if(settled && disk.days[iso]) return (mem[iso]=Object.assign(disk.days[iso],{_at:Date.now()}));
+    // a settled day cached before the operator was kept per order (no coBy) is read once more from the WMS and re-cached
+    if(settled && disk.days[iso] && disk.days[iso].coBy) return (mem[iso]=Object.assign(disk.days[iso],{_at:Date.now()}));
     const dl=await d.fetchDayProductLogs(d.isoToMdy(iso), {noCache:!settled});
     if(dl.error) return {error:dl.error};
     const a=dayAgg(dl.rows, iso, dl.reliable);
@@ -97,8 +101,11 @@ module.exports=function makeWmsStats(d){
     const avgOrders=avg(full.map(x=>x.orders)), prevAvgOrders=avg(prevFull.map(a=>a.coOrders.filter(([,m])=>f.minute(m)).length));
     const byHour=Array.from({length:24},(_,h)=>({hour:h, orders:0, units:0}));
     const heat=Array.from({length:7},()=>new Array(24).fill(0));       // Mon..Sun × hour, orders
-    inRange.forEach(iso=>{ const a=aggs[iso], dow=(new Date(iso+'T12:00:00').getDay()+6)%7;
-      a.coOrders.forEach(([,m])=>{ if(!f.minute(m)) return; const h=Math.floor(m/60); byHour[h].orders++; heat[dow][h]++; });
+    const heatBy=Array.from({length:7},()=>Array.from({length:24},()=>({})));   // same cells: {operator: orders} — sums to heat
+    const heatDays=Array.from({length:7},()=>[]);                      // the dates behind each weekday row
+    inRange.forEach(iso=>{ const a=aggs[iso], dow=(new Date(iso+'T12:00:00').getDay()+6)%7; heatDays[dow].push(iso);
+      a.coOrders.forEach(([,m,by])=>{ if(!f.minute(m)) return; const h=Math.floor(m/60); byHour[h].orders++; heat[dow][h]++;
+        const c=heatBy[dow][h], n=by||'(pa emër)'; c[n]=(c[n]||0)+1; });
       a.coUnits.forEach((v,h)=>{ if(hourIn(f,h)) byHour[h].units+=v; }); });
     const nDays=inRange.length||1;
     // --- 5.3 check-in → map ----------------------------------------------------
@@ -129,7 +136,7 @@ module.exports=function makeWmsStats(d){
     const prodByHour=Array.from({length:24},(_,h)=>({hour:h, weighted:0}));
     inRange.forEach(iso=>{ const k=aggs[iso].kinds; for(let h=0;h<24;h++) if(hourIn(f,h)) prodByHour[h].weighted+=k.checkout[h]*d.PERF_WEIGHT.checkout+k.checkin[h]*d.PERF_WEIGHT.checkin+k.map[h]*d.PERF_WEIGHT.map; });
     return {
-      throughput:{ byDay, byHour:byHour.filter(x=>x.orders||x.units).map(x=>({hour:x.hour, ordersPerDay:r1(x.orders/nDays), unitsPerDay:r1(x.units/nDays)})), heatmap:heat,
+      throughput:{ byDay, byHour:byHour.filter(x=>x.orders||x.units).map(x=>({hour:x.hour, ordersPerDay:r1(x.orders/nDays), unitsPerDay:r1(x.units/nDays)})), heatmap:heat, heatmapBy:heatBy, heatmapDays:heatDays,
         avgOrdersPerWorkday:r1(avgOrders), prevAvgOrdersPerWorkday:r1(prevAvgOrders), workdaysCounted:full.length,
         totalOrders:byDay.reduce((s,x)=>s+x.orders,0), totalUnits:byDay.reduce((s,x)=>s+x.units,0) },
       putaway:{ pairs:cur.mins.length, medianMin:r1(median(cur.mins)), p90Min:r1(pct(cur.mins,0.9)), prevMedianMin:r1(median(prv.mins)), unmapped:cur.unmapped, unmappedBuckets:cur.buckets },
