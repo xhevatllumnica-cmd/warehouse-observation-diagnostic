@@ -24,3 +24,7 @@ When a new block is added to `queries.sql`, add its letter to the list in the pr
 
 - `http://localhost:8790/tabela/data` → `cut.available: true` and `cut.gen` from today.
 - `pulse/data.json` → `board.gen` from today and `blocks.M.error` empty.
+
+## Staff filter (since 12.10.2026)
+
+The agent passes the staff on the work schedule to the build (`--staff '{"names":[…],"aliases":{…}}'`). The build keeps only their rows — productivity (A.week, A.bands, A.hourU → hour), pay (B.pay) and capacity (I.opsMeta / opsDay / opsOrdU → opsOrd, vol, coOrd, the latest pay period) — matched on the account's full name (`fn`, or `n` in opsMeta). `data.json → staffFilter` names what could not be filtered (`H.hourly` has no account). Bottleneck D3 / D6 / D14 use the same people through `staffKeys` (initials + last 3 digits of the id, from the filtered opsMeta).

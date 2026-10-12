@@ -50,18 +50,34 @@ const A=rows.A, B=rows.B, C=rows.C, Dd=rows.D, E=rows.E;
 const PL={1:'GjirafaMall',2:'Gjirafa50'};
 const r1=x=>Math.round(x*10)/10;
 
+/* The warehouse staff = the names on the work schedule, passed by the agent (--staff '{"names":[…],"aliases":{…}}'; the
+   warehouse lead, 12.10.2026). Rows of any other account (temp / shared logins, Gjirafa accounts outside the warehouse,
+   sellers) are left out of every list AND of the totals built from them. Rows are matched on the account's full name
+   (fn / n in opsMeta). A block read before the full name was added to its query has no fn: it stays as it is until it
+   runs again, and is named in staffFilter.unfiltered. Without --staff nothing is filtered. */
+const normN=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+let STAFF=null; try{ const s=JSON.parse(opt('--staff','null')); if(s && s.names && s.names.length){ const set=new Set(s.names.map(normN));
+  Object.entries(s.aliases||{}).forEach(([k,v])=>{ if(set.has(normN(v))) set.add(normN(k)); }); STAFF={set, n:s.names.length}; } }catch(e){}
+const unfiltered=[];
+const isStaff=fn=> !!fn && STAFF.set.has(normN(fn));
+// an account with no first/last name in the WMS whose username is the name itself (no "@") is matched on the username
+const rowName=r=> r.fn || (r.n && !/@/.test(r.n)? r.n : '');
+const keep=(arr, label)=>{ if(!STAFF || !arr.length) return arr; if(!('fn' in arr[0])){ unfiltered.push(label); return arr; } return arr.filter(r=>isStaff(rowName(r))); };
+
 // productivity
-const week=J(A.week).map(r=>[r.n, r.ci, r.mp, r.co, r.d, r1(r.co*1.0+r.ci*0.8+r.mp*0.6)]).sort((a,b)=>b[5]-a[5]);
-const bandsRaw=J(A.bands).map(r=>[r.n, r1(+r.opd), r.d]);
+const week=keep(J(A.week),'A.week').map(r=>[r.n, r.ci, r.mp, r.co, r.d, r1(r.co*1.0+r.ci*0.8+r.mp*0.6)]).sort((a,b)=>b[5]-a[5]);
+const bandsRaw=keep(J(A.bands),'A.bands').map(r=>[r.n, r1(+r.opd), r.d]);
 const avg=bandsRaw.reduce((s,r)=>s+r[1],0)/Math.max(1,bandsRaw.length);
 const sd=Math.sqrt(bandsRaw.reduce((s,r)=>s+(r[1]-avg)**2,0)/Math.max(1,bandsRaw.length));
 const band=v=> v>avg+2*sd? 'Spike' : v>avg*1.25? 'Above' : v<avg*0.75? 'Below' : 'Average';
 const bands=bandsRaw.map(r=>[...r, band(r[1])]);
-const hour=J(A.hour).map(r=>[r.h, r.ci, r.mp, r.co]);
+// by hour: from the per-account hours when the staff list is given (summed for the staff only)
+const hour= STAFF && A.hourU? (()=>{ const by={}; J(A.hourU).filter(r=>isStaff(r.fn)).forEach(r=>{ const o=by[r.h]||(by[r.h]=[r.h,0,0,0]); o[1]+=r.ci; o[2]+=r.mp; o[3]+=r.co; }); return Object.values(by).sort((a,b)=>a[0]-b[0]); })()
+  : (STAFF && unfiltered.push('A.hour'), J(A.hour).map(r=>[r.h, r.ci, r.mp, r.co]));
 // pay
 const per=J(B.per);
 const period=J(B.period).map(r=>[r.c, r.r, r.q, r.cost, r.q? Math.round(r.cost/r.q*1e6)/1e6 : 0]);
-const pay=J(B.pay).map(r=>[r.n, r.ci, r.mp, r.pk, r.co, r.hrs, r.cost]);
+const pay=keep(J(B.pay),'B.pay').map(r=>[r.n, r.ci, r.mp, r.pk, r.co, r.hrs, r.cost]);
 const dmy=s=>s? s.slice(8,10)+'.'+s.slice(5,7)+'.'+s.slice(0,4) : '';
 const validity=r=>{ const vf=r.vf||'', vt=r.vt||'';
   if(r.op) return dmy(vf).slice(0,5)+' '+vf.slice(11)+' → aktual';
@@ -101,6 +117,30 @@ const capacity= rows.H? { at:rows.H._at||null, from:rows.H.wFrom, to:rows.H.wTo,
     opsFrom: rows.I? rows.I.dFrom||null : null, opsTo: rows.I? rows.I.dTo||null : null, opsAt: rows.I? rows.I._at||null : null,
     sameDay: rows.J? J(rows.J.sameDay) : null, sameDayAt: rows.J? rows.J._at||null : null } : null;
 
+// capacity, the staff only: the accounts and their days, orders out per day (from the per-account counts), and the
+// 12-week daily volumes / orders rebuilt from those rows for the days they cover; the hourly profile has no account
+// (named in staffFilter.unfiltered). An order checked out by two staff accounts counts for each (rare).
+if(capacity && STAFF && capacity.opsMeta){
+  const keepU=new Set(capacity.opsMeta.filter(m=>isStaff(m.n)).map(m=>m.u));
+  capacity.opsMeta=capacity.opsMeta.filter(m=>keepU.has(m.u));
+  if(capacity.opsDay) capacity.opsDay=capacity.opsDay.filter(r=>keepU.has(r.u));
+  const ordU= rows.I && rows.I.opsOrdU? J(rows.I.opsOrdU) : null;
+  if(ordU){ const by={}; ordU.forEach(r=>{ if(keepU.has(r.u)) by[r.d]=(by[r.d]||0)+r.n; }); capacity.opsOrd=Object.keys(by).sort().map(d=>({d, n:by[d]})); }
+  else unfiltered.push('I.opsOrd');
+  const from=capacity.opsFrom, to=capacity.opsTo, day={}, ord={};
+  (capacity.opsDay||[]).forEach(r=>{ const o=day[r.d]||(day[r.d]={ci:0,mp:0,co:0,ops:0}); o.ci+=r.ci; o.mp+=r.mp; o.co+=r.co; o.ops++; });
+  (capacity.opsOrd||[]).forEach(r=>ord[r.d]=r.n);
+  if(from && to){
+    capacity.vol=(capacity.vol||[]).map(v=> v.d>=from && v.d<=to? Object.assign({}, v, day[v.d]||{ci:0,mp:0,co:0,ops:0}) : v);
+    if(ordU) capacity.coOrd=(capacity.coOrd||[]).map(c=> c.d>=from && c.d<=to? {d:c.d, n:ord[c.d]||0} : c); }
+  // the latest closed pay period: the staff's cost and actions, and the orders the staff checked out that month
+  const P=J(B.pay);
+  if(capacity.pay && P.length && 'fn' in P[0]){ const S=P.filter(r=>isStaff(r.fn)), ym=capacity.pay.y+'-'+String(capacity.pay.mo).padStart(2,'0');
+    const mOrd=ordU? Object.entries(ord).filter(([d])=>d.startsWith(ym)).reduce((a,[,n])=>a+n,0) : capacity.pay.orders;
+    capacity.pay=Object.assign({}, capacity.pay, {tc:S.reduce((a,r)=>a+(+r.cost||0),0), ta:S.reduce((a,r)=>a+(+r.ci||0)+(+r.mp||0)+(+r.pk||0)+(+r.co||0),0), orders:mOrd}); }
+  else if(capacity.pay) unfiltered.push('H.pay');
+  unfiltered.push('H.hourly');
+}
 const shipments= rows.K? {at:rows.K._at||null, gen:rows.K.gen, stops:J(rows.K.stops), carriers:J(rows.K.carriers), trucks:J(rows.K.trucks)} : null;
 const returns= rows.L? {at:rows.L._at||null, gen:rows.L.gen, batches:J(rows.L.batches), units:J(rows.L.units), disp:J(rows.L.disp), monthly:J(rows.L.monthly), dispMonthly:J(rows.L.dispMonthly), legacy:J(rows.L.legacy)} : null;
 const board= rows.M? {at:rows.M._at||null, gen:rows.M.gen, outd:J(rows.M.outd), openr:J(rows.M.openr), stations:J(rows.M.stations)} : null;
@@ -111,7 +151,7 @@ const blocks={}; GROUPS.concat(OPTIONAL).forEach(g=>{ const r=rows[g], fl=failed
   if(!r && !fl) return;
   blocks[g]={at, gen: r&&r.gen || null, failedAt: fl&&(!at || fl.ts>Date.parse(at))? new Date(fl.ts).toISOString() : null, error: fl&&(!at || fl.ts>Date.parse(at))? fl.error : null}; });
 const boardStale= !board || !String(board.gen||'').startsWith(today);
-const data={ version:1, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
+const data={ version:1, staffFilter: STAFF? {names:STAFF.n, unfiltered:[...new Set(unfiltered)]} : null, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
   D:{week, bands, hour, pay, period, rates, daily, o2c, upo, status, state, dwell, sect, insp, diff, sup, car, pick, st, inv},
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };

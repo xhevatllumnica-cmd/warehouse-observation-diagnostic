@@ -115,7 +115,18 @@ SELECT /*bn:D3*/ CONVERT(varchar(19),GETDATE(),126) gen,
         AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
       GROUP BY CAST(pl.InsertDateTime AS date), DATEPART(hour,pl.InsertDateTime)) a
   WHERE d>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date))
-  GROUP BY d, h ORDER BY d, h FOR JSON PATH) cell
+  GROUP BY d, h ORDER BY d, h FOR JSON PATH) cell,
+ -- the same check-out orders / check-in / map units per hour and per account (initials + last 3 digits of the id), so the
+ -- register can keep only the staff on the work schedule (12.10.2026)
+ (SELECT CONVERT(varchar(10),CAST(pl.InsertDateTime AS date),23) d, DATEPART(hour,pl.InsertDateTime) h,
+    LEFT(ISNULL(u.FirstName,'?'),1)+'.'+LEFT(ISNULL(u.LastName,'?'),1)+'.' i, RIGHT(CAST(u.UserId AS varchar(12)),3) id,
+    COUNT(DISTINCT CASE WHEN pl.LogTypeId IN (4,18) AND pl.OrderId>0 AND o.OrderId IS NOT NULL THEN CONCAT(pl.OrderId,'-',pl.PlatformId) END) co,
+    SUM(CASE WHEN pl.LogTypeId=2 THEN 1 ELSE 0 END) ci, SUM(CASE WHEN pl.LogTypeId=7 THEN 1 ELSE 0 END) mp
+  FROM ProductLogs pl WITH (NOLOCK) JOIN Users u ON u.UserId=pl.UpdateBy
+    LEFT JOIN Orders o ON o.OrderId=pl.OrderId AND o.PlatformId=pl.PlatformId AND o.WarehouseId=1/*wh*/ AND (0/*pf*/=0 OR o.PlatformId=0/*pf*/)
+  WHERE pl.LogTypeId IN (2,7,4,18) AND pl.InsertDateTime>=DATEADD(day,-35/*nd*/,CAST(GETDATE() AS date)) AND u.UserWarehouseId=1/*wh*/ AND u.UserId>0
+    AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+  GROUP BY CAST(pl.InsertDateTime AS date), DATEPART(hour,pl.InsertDateTime), u.UserId, u.FirstName, u.LastName FOR JSON PATH) cellU
 
 -- @D4 units waiting for mapping — warehouse-01 units now in status 2 (checked in) or 6 (inferred: before mapping) by age
 --    since their last log; and the check-in → first map time (2→7) per day: n, median, p90 (minutes).
@@ -346,5 +357,23 @@ SELECT /*bn:D14*/ CONVERT(varchar(19),GETDATE(),126) gen,
       WHERE pl.InsertDateTime>=DATEADD(day,-49,CAST(GETDATE() AS date)) AND pl.LogTypeId IN (27,4,18) AND u.UserWarehouseId=1/*wh*/ AND u.UserId>0
         AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
       GROUP BY CAST(pl.InsertDateTime AS date), pl.UpdateBy HAVING MIN(DATEPART(hour,pl.InsertDateTime))<12) a) b GROUP BY d ORDER BY d FOR JSON PATH) firstCo,
+ -- the same two, per account (initials + last 3 digits of the id), so the plan's KPIs can keep only the staff on the work
+ -- schedule (12.10.2026): staffU = the person-day rows of "staff", firstCoU = each morning person's first check-out minute
+ (SELECT CONVERT(varchar(10),d,23) d, i, id, coOrd, coH, ci, ciH, mp, mpH FROM (
+    SELECT CAST(pl.InsertDateTime AS date) d, LEFT(ISNULL(MIN(u.FirstName),'?'),1)+'.'+LEFT(ISNULL(MIN(u.LastName),'?'),1)+'.' i, RIGHT(CAST(pl.UpdateBy AS varchar(12)),3) id,
+      COUNT(DISTINCT CASE WHEN pl.LogTypeId IN (4,18) AND pl.OrderId>0 THEN CONCAT(pl.OrderId,'-',pl.PlatformId) END) coOrd,
+      COUNT(DISTINCT CASE WHEN pl.LogTypeId IN (27,4,18) THEN DATEPART(hour,pl.InsertDateTime) END) coH,
+      SUM(CASE WHEN pl.LogTypeId=2 THEN 1 ELSE 0 END) ci, COUNT(DISTINCT CASE WHEN pl.LogTypeId=2 THEN DATEPART(hour,pl.InsertDateTime) END) ciH,
+      SUM(CASE WHEN pl.LogTypeId=7 THEN 1 ELSE 0 END) mp, COUNT(DISTINCT CASE WHEN pl.LogTypeId=7 THEN DATEPART(hour,pl.InsertDateTime) END) mpH
+    FROM ProductLogs pl WITH (NOLOCK) JOIN Users u ON u.UserId=pl.UpdateBy
+    WHERE pl.InsertDateTime>=DATEADD(day,-49,CAST(GETDATE() AS date)) AND pl.LogTypeId IN (2,7,27,4,18) AND u.UserWarehouseId=1/*wh*/ AND u.UserId>0
+      AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+    GROUP BY CAST(pl.InsertDateTime AS date), pl.UpdateBy HAVING COUNT(*)>=10) x ORDER BY d FOR JSON PATH) staffU,
+ (SELECT CONVERT(varchar(10),CAST(pl.InsertDateTime AS date),23) d, LEFT(ISNULL(MIN(u.FirstName),'?'),1)+'.'+LEFT(ISNULL(MIN(u.LastName),'?'),1)+'.' i, RIGHT(CAST(pl.UpdateBy AS varchar(12)),3) id,
+    DATEDIFF(minute, CAST(CAST(pl.InsertDateTime AS date) AS datetime), MIN(pl.InsertDateTime)) f
+  FROM ProductLogs pl WITH (NOLOCK) JOIN Users u ON u.UserId=pl.UpdateBy
+  WHERE pl.InsertDateTime>=DATEADD(day,-49,CAST(GETDATE() AS date)) AND pl.LogTypeId IN (27,4,18) AND u.UserWarehouseId=1/*wh*/ AND u.UserId>0
+    AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
+  GROUP BY CAST(pl.InsertDateTime AS date), pl.UpdateBy HAVING MIN(DATEPART(hour,pl.InsertDateTime))<12 FOR JSON PATH) firstCoU,
  (SELECT CONVERT(varchar(10),CAST(InsertDateTime AS date),23) d, COUNT(DISTINCT ProductItemUniqueIdentifier) n FROM ProductCodeLogs
   WHERE InsertDateTime>=DATEADD(day,-49,CAST(GETDATE() AS date)) GROUP BY CAST(InsertDateTime AS date) ORDER BY 1 FOR JSON PATH) fixes

@@ -71,6 +71,17 @@ function detect(snap, cfgIn){
   const cand=c=>{ c.snapshotId=snap&&snap.id; c.suggest=c.suggest||{}; c.suggest.det=c.suggest.det||2;
     c.tags=Object.assign({fact:[],hyp:[],unconfirmed:[]}, c.tags||{}); out.candidates.push(c); };
   const note=(detector,text,kind)=>out.notes.push({detector,text,kind:kind||'info'});
+  /* the staff on the work schedule only (12.10.2026): cfg.staffKeys = "initials #last-3-digits" of their accounts. D6 keeps
+     their rows; D3 / D14 use their per-account rows (cellU / staffU / firstCoU) when the block has them — a snapshot from
+     before those columns keeps its all-accounts figures (noted). */
+  const SK= Array.isArray(cfg.staffKeys) && cfg.staffKeys.length? new Set(cfg.staffKeys) : null;
+  const own=c=> !SK || SK.has(c.i+' #'+c.id);
+  // D3 cells for the staff: orders in / picked as they are; check-out orders, check-in / map units and accounts per hour rebuilt from cellU
+  const d3Cells=b=>{ const cells=J(b.row.cell); if(!SK) return cells; if(!b.row.cellU){ note('D3','Blloku D3 është nga para ndarjes sipas llogarisë: check-out / check-in / map përfshijnë të gjitha llogaritë deri në ekzekutimin e radhës.','info'); return cells; }
+    const by={}; cells.forEach(c=>{ by[c.d+'|'+c.h]=Object.assign({}, c, {co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0}); });
+    J(b.row.cellU).filter(own).forEach(u=>{ const k=u.d+'|'+u.h, c=by[k]||(by[k]={d:u.d, h:u.h, cr:0, pk:0, co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0});
+      c.co+=u.co||0; c.ci+=u.ci||0; c.mp+=u.mp||0; if(u.co>0) c.coOps++; if(u.ci>0) c.ciOps++; if(u.mp>0) c.mpOps++; });
+    return Object.values(by).sort((a,b)=>a.d<b.d?-1:a.d>b.d?1:a.h-b.h); };
   const run=(k,fn)=>{ if(!B[k]) { note(k,'Blloku '+k+' nuk është ekzekutuar ende.','missing'); return; } try{ fn(B[k]); }catch(e){ note(k,'Gabim në llogaritje: '+e.message,'error'); } };
 
   /* D1 carryover --------------------------------------------------------- */
@@ -144,7 +155,7 @@ function detect(snap, cfgIn){
 
   /* D3 flow per hour + system constraint ---------------------------------- */
   run('D3', b=>{
-    const cells=J(b.row.cell).filter(c=>c.d<today);
+    const cells=d3Cells(b).filter(c=>c.d<today);
     const PH=[ {k:'cr', name:'Porositë hyrëse', unit:'porosi', demand:true}, {k:'pk', name:'Picking', unit:'porosi', ops:null},
       {k:'co', name:'Checkout/Packing', unit:'porosi', ops:'coOps'}, {k:'ci', name:'Check-in', unit:'njësi', ops:'ciOps'}, {k:'mp', name:'Mapping', unit:'njësi', ops:'mpOps'} ];
     const wdCells=cells.filter(c=>!isWe(c.d) && inW(c.d,{from:W.base.from,to:W.cur.to}));
@@ -251,7 +262,7 @@ function detect(snap, cfgIn){
 
   /* D6 productivity — process obstacles first ------------------------------ */
   run('D6', b=>{
-    const cells=J(b.row.cell).filter(c=>c.d<today);
+    const cells=J(b.row.cell).filter(c=>c.d<today && own(c));
     const people={}; cells.forEach(c=>{ const k=c.i+' #'+c.id; (people[k]=people[k]||{i:c.i,id:c.id,tmp:c.tmp,act:c.act,days:[]}).days.push(c); });
     const list=Object.values(people).filter(p=>!p.tmp);
     const rows=list.map(p=>{ const cur=p.days.filter(d=>inW(d.d,W.cur)), base=p.days.filter(d=>inW(d.d,W.base)), all30=p.days.filter(d=>inW(d.d,{from:addDays(today,-30),to:W.cur.to}));
@@ -494,7 +505,13 @@ function detect(snap, cfgIn){
   /* D14 daily KPIs of the improvement plan — metrics only (no candidates); the plan module compares them with its
      frozen baseline and weekly targets. Orders out per day come from D3 (same definition as the analysis). */
   run('D14', b=>{
-    const st=J(b.row.staff).filter(x=>x.d<today), fc=J(b.row.firstCo).filter(x=>x.d<today), fx=J(b.row.fixes);
+    let st=J(b.row.staff).filter(x=>x.d<today), fc=J(b.row.firstCo).filter(x=>x.d<today); const fx=J(b.row.fixes);
+    // the staff on the schedule only: the day's sums and the median first check-out rebuilt from their own rows
+    if(SK && b.row.staffU){ const by={}; J(b.row.staffU).filter(x=>x.d<today && own(x)).forEach(x=>{ const o=by[x.d]||(by[x.d]={d:x.d, coOrd:0, coH:0, ci:0, ciH:0, mp:0, mpH:0, ppl:0});
+        ['coOrd','coH','ci','ciH','mp','mpH'].forEach(k=>o[k]+=x[k]||0); o.ppl++; }); st=Object.values(by).sort((a,b)=>a.d<b.d?-1:1); }
+    else if(SK) note('D14','Blloku D14 është nga para ndarjes sipas llogarisë: KPI-të përfshijnë të gjitha llogaritë deri në ekzekutimin e radhës.','info');
+    if(SK && b.row.firstCoU){ const by={}; J(b.row.firstCoU).filter(x=>x.d<today && own(x)).forEach(x=>(by[x.d]=by[x.d]||[]).push(+x.f));
+      fc=Object.keys(by).sort().map(d=>({d, firstCoMed:q(by[d],0.5), firstCoMin:Math.min(...by[d]), n:by[d].length})); }
     const FX={}; fx.forEach(x=>FX[x.d]=x.n);
     metric('K.coRate',{detector:'D14', kpi:true, label:'Check-out: porosi për orë aktive (staf)', unit:'porosi/orë', better:'higher', target:null,
       series:st.filter(x=>x.coH>0).map(x=>({d:x.d, v:r1(x.coOrd/x.coH), n:x.coH, num:x.coOrd, den:x.coH}))});
@@ -506,7 +523,7 @@ function detect(snap, cfgIn){
       series:fc.map(x=>({d:x.d, v:Math.round(+x.firstCoMed), n:x.n}))});
     metric('K.fixPct',{detector:'D14', kpi:true, label:'Kode produkti të korrigjuara pas check-in-it', unit:'%', better:'lower', target:null,
       series:st.filter(x=>x.ci>0).map(x=>({d:x.d, v:r2((FX[x.d]||0)/x.ci*100), num:FX[x.d]||0, den:x.ci}))});
-    if(B.D3){ const cells=J(B.D3.row.cell).filter(c=>c.d<today), od={}; cells.forEach(c=>{ od[c.d]=(od[c.d]||0)+(c.co||0); });
+    if(B.D3){ const cells=d3Cells(B.D3).filter(c=>c.d<today), od={}; cells.forEach(c=>{ od[c.d]=(od[c.d]||0)+(c.co||0); });
       metric('K.out',{detector:'D3', kpi:true, label:'Porosi të dala (check-out) në ditë', unit:'porosi', better:'higher', target:null, series:Object.keys(od).sort().map(d=>({d, v:od[d]}))}); }
   });
 

@@ -890,10 +890,12 @@ function pulseNewResults(){
 }
 function pulseTick(){
   if(pulseBuilding) return; pulseState.lastCheck=new Date().toISOString();
-  if(!pulseNewResults()) return;
+  // the staff on the work schedule go to the build (it keeps only their rows); a change in that list rebuilds too
+  const staff=JSON.stringify({names:scheduleStaffList(), aliases:STAFF_ALIASES});
+  if(!pulseNewResults() && staff===pulseState.staffSig) return;
   pulseBuilding=true;
-  require('child_process').execFile(process.execPath, [path.join(APPDIR,'pulse','build.js'),'--from-transcripts','--max-age','90'], {cwd:APPDIR, timeout:120000, windowsHide:true}, (err, out, errOut)=>{
-    pulseBuilding=false;
+  require('child_process').execFile(process.execPath, [path.join(APPDIR,'pulse','build.js'),'--from-transcripts','--max-age','90','--staff',staff], {cwd:APPDIR, timeout:120000, windowsHide:true}, (err, out, errOut)=>{
+    pulseBuilding=false; if(!err) pulseState.staffSig=staff;
     if(err){ pulseState.lastError={at:new Date().toISOString(), error:String(errOut||err.message).trim().slice(0,300)}; console.log('[wms-agent] WMS Pulse build failed: '+pulseState.lastError.error); }
     else { pulseState.lastBuild=new Date().toISOString(); pulseState.lastError=null; console.log('[wms-agent] '+String(out).trim().split('\n').pop()); }
   });
@@ -1158,7 +1160,15 @@ const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottl
 let bnState={lastCheck:null, lastSnapshot:null, lastError:null}, bnCache=null;
 function bnConfig(){ const db=loadDb(); return (db&&db.config&&db.config.bottleneck)||{}; }
 // thresholds for the detectors; the problem age limit comes from the query parameter ma (one setting for both)
-function bnThresholds(cfg){ return Object.assign({}, cfg.thresholds||{}, {maxAgeDays:bnAdapter.paramValues(cfg.params||{}).ma}); }
+/* staffKeys: the staff on the work schedule as the Bottleneck blocks know them (initials + last 3 digits of the UserId —
+   the blocks carry no names), taken from the WMS Pulse accounts that the build already kept for the schedule (12.10.2026) */
+let bnStaffMemo={mt:0, keys:null};
+function bnStaffKeys(){
+  try{ const mt=fs.statSync(PULSE_DATA).mtimeMs; if(mt!==bnStaffMemo.mt){ const P=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8'));
+      const ok=P.staffFilter && P.capacity && P.capacity.opsMeta; bnStaffMemo={mt, keys: ok? [...new Set(P.capacity.opsMeta.map(m=>m.i+' #'+m.id))].sort() : null}; } }catch(e){}
+  return bnStaffMemo.keys;
+}
+function bnThresholds(cfg){ const k=bnStaffKeys(); return Object.assign({}, cfg.thresholds||{}, {maxAgeDays:bnAdapter.paramValues(cfg.params||{}).ma}, k? {staffKeys:k} : {}); }
 function bnTick(){
   try{ const cfg=bnConfig(); bnAdapter.writeRunFile(cfg.params||{});
     const r=bnAdapter.collect(360); bnState.lastCheck=new Date().toISOString();
