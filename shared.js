@@ -45,6 +45,27 @@ const PHASES = [
   {n:4, name:'Improve & Report',     from:26,to:30},
 ];
 const col = (db,name)=> db[name] || (db[name]=[]);
+/* The warehouse staff = the names on the work schedule ("Orari i punës") + second accounts of the same people (the
+   warehouse lead, 12.10.2026: no other name in any list, even if the totals change). The agent and the app each give a
+   provider → {names, aliases}; until one is given nothing is filtered. staffCol() = the operator rows of the staff only,
+   a second account shown under the person's name. The stored data is never changed. */
+let staffProvider=null, staffMemo={at:0, v:null};
+const normN = s=> String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+function setStaffProvider(fn){ staffProvider=fn; staffMemo={at:0, v:null}; }
+function staffInfo(){
+  if(!staffProvider) return null;
+  if(staffMemo.v && Date.now()-staffMemo.at<60000) return staffMemo.v;
+  let p=null; try{ p=staffProvider(); }catch(e){}
+  if(!p || !p.names || !p.names.length){ staffMemo={at:Date.now(), v:null}; return null; }
+  const set=new Set(p.names.map(normN)), al={};
+  Object.entries(p.aliases||{}).forEach(([k,v])=>{ if(set.has(normN(v))){ set.add(normN(k)); al[normN(k)]=v; } });
+  staffMemo={at:Date.now(), v:{set, al}}; return staffMemo.v;
+}
+function staffName(n){ const S=staffInfo(); if(!S) return n; const k=normN(n); return S.set.has(k)? (S.al[k]||n) : null; }
+const staffOn = ()=> !!staffInfo();
+const OPERATOR_COLS=['wmsPrepared','wmsCheckin','wmsLogs'];
+function staffCol(db,name){ const c=col(db,name); if(!OPERATOR_COLS.includes(name) || !staffInfo()) return c;
+  const out=[]; c.forEach(r=>{ const n=staffName(r.operator); if(n) out.push(n===r.operator? r : Object.assign({}, r, {operator:n})); }); return out; }
 const cfg = db => db.config || (db.config={});
 const workDays = db => { const w=cfg(db).workDays; return (Array.isArray(w)&&w.length)? w : [1,2,3,4,5]; };
 function isWorkDay(db, dateStr){ if(!dateStr) return false; if(!workDays(db).includes(dobj(dateStr).getDay())) return false; return !(cfg(db).holidays||[]).includes(dateStr); }
@@ -100,9 +121,9 @@ function importFlow(db, daily, meta){ meta=meta||{}; const c=col(db,'wmsFlow');
 /* ------------------------------------------------------ WMS figures per day */
 const GENERIC_RE = /\btemp\b|\bacc\b|pa operator|admin@|\btest\b/i;
 function wmsDayFacts(db, d){
-  const prep=col(db,'wmsPrepared').filter(r=>r.date===d);
-  const chk=col(db,'wmsCheckin').filter(r=>r.date===d);
-  const flow=col(db,'wmsFlow').find(f=>f.date===d);
+  const prep=staffCol(db,'wmsPrepared').filter(r=>r.date===d);
+  const chk=staffCol(db,'wmsCheckin').filter(r=>r.date===d);
+  const flow= staffOn()? null : col(db,'wmsFlow').find(f=>f.date===d);   // the daily flow counts every account: with the staff list, check-in/out come from the staff's own rows
   const snaps=col(db,'wmsStats').filter(s=>s.date===d).sort((a,b)=>a.at<b.at?-1:1);
   if(!prep.length && !chk.length && !flow && !snaps.length) return null;
   const byOp={}; prep.forEach(r=>byOp[r.operator]=(byOp[r.operator]||0)+num(r.preparedOrders));
@@ -113,7 +134,7 @@ function wmsDayFacts(db, d){
   const coOps=Object.entries(coByOp).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]);
   // baseline: previous working days with Prepared data
   const wd=workDays(db); const pb={};
-  col(db,'wmsPrepared').forEach(r=>{ if(r.date<d && wd.includes(dobj(r.date).getDay())) pb[r.date]=(pb[r.date]||0)+num(r.preparedOrders); });
+  staffCol(db,'wmsPrepared').forEach(r=>{ if(r.date<d && wd.includes(dobj(r.date).getDay())) pb[r.date]=(pb[r.date]||0)+num(r.preparedOrders); });
   const pbv=Object.values(pb); const prepAvg=pbv.length? Math.round(pbv.reduce((a,b)=>a+b,0)/pbv.length) : null;
   const ci = flow?num(flow.checkedIn):(chk.length?Object.values(ciByOp).reduce((a,b)=>a+b,0):null);
   const co = flow?num(flow.checkedOut):(chk.length?Object.values(coByOp).reduce((a,b)=>a+b,0):null);
@@ -376,9 +397,9 @@ function wmsWeekFacts(db, ws, we){
   const outRate=ci>0? Math.round(co/ci*100) : null;
   const worstFlow=flowDays.filter(x=>x.W.checkedIn>=100).sort((a,b)=>(a.W.outRate||0)-(b.W.outRate||0))[0]||null;
   // operators over the week
-  const byOp={}; col(db,'wmsPrepared').forEach(r=>{ if(r.date>=ws&&r.date<=we) byOp[r.operator]=(byOp[r.operator]||0)+num(r.preparedOrders); });
+  const byOp={}; staffCol(db,'wmsPrepared').forEach(r=>{ if(r.date>=ws&&r.date<=we) byOp[r.operator]=(byOp[r.operator]||0)+num(r.preparedOrders); });
   const ops=Object.entries(byOp).sort((a,b)=>b[1]-a[1]);
-  const ciByOp={}; col(db,'wmsCheckin').forEach(r=>{ if(r.date>=ws&&r.date<=we) ciByOp[r.operator]=(ciByOp[r.operator]||0)+num(r.checkedIn); });
+  const ciByOp={}; staffCol(db,'wmsCheckin').forEach(r=>{ if(r.date>=ws&&r.date<=we) ciByOp[r.operator]=(ciByOp[r.operator]||0)+num(r.checkedIn); });
   const ciOps=Object.entries(ciByOp).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]);
   const generic=ops.filter(o=>GENERIC_RE.test(o[0])); const genericPrep=generic.reduce((a,x)=>a+x[1],0);
   // backlog snapshots: first and last of the week
@@ -525,7 +546,7 @@ function standaloneReportPage(title, innerHtml){
 
 return { esc, num, uid, nowISO, localDate, localTime, fmtDateAl, slAl, fs1, lc1, trimEnd, stripHyp, stripTags, PHASES,
   isWorkDay, workingDaysCount, dayNumber, phaseFor, procName, procIdByName, nextWorkDay,
-  importStats, importPrepared, importCheckin, importFlow,
+  importStats, importPrepared, importCheckin, importFlow, setStaffProvider, staffName, staffCol, staffOn,
   wmsDayFacts, wmsAutoObservations, dayMetrics, priorBaseline, buildDailyNarrative,
   weekBounds, weekNumber, addDaysIso, wmsWeekFacts, buildWeeklyNarrative, standaloneReportPage };
 });

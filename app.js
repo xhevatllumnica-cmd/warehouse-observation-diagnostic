@@ -2721,7 +2721,7 @@ function wmsImportLogs(rawRows, meta){
 /* WMS imports live in shared.js (same code runs in the agent's 21:30 job); these wrappers persist. */
 function wmsImportStats(obj, meta){ const rec=WODS.importStats(Store.db,obj,meta); Store.persist(); return rec; }
 function wmsOperatorAgg(fromDate,toDate,shiftFilter){
-  const logs=Store.col('wmsLogs').filter(l=>{ if(fromDate&&l.date<fromDate)return false; if(toDate&&l.date>toDate)return false; if(shiftFilter&&l.shift!==shiftFilter)return false; return true; });
+  const logs=whCol('wmsLogs').filter(l=>{ if(fromDate&&l.date<fromDate)return false; if(toDate&&l.date>toDate)return false; if(shiftFilter&&l.shift!==shiftFilter)return false; return true; });
   const map={};
   logs.forEach(l=>{ const k=l.operator+'|'+l.date+'|'+l.shift;
     const g=map[k]||(map[k]={operator:l.operator||'(unknown)',date:l.date,shift:l.shift,events:0,orders:new Set(),logTypes:{},first:null,last:null});
@@ -3050,7 +3050,7 @@ function renderPerformanceHTML(d){
    total, which is what this tile always meant. Pure SVG, no library. */
 function niceCeil(v){ if(v<=0) return 10; const mag=Math.pow(10,Math.floor(Math.log10(v))); const norm=v/mag; const step=norm<=1?1:norm<=2?2:norm<=5?5:10; return step*mag; }
 function wmsPrepStackedChartHTML(){
-  const prep=Store.col('wmsPrepared'); if(!prep.length) return '';
+  const prep=whCol('wmsPrepared'); if(!prep.length) return '';
   const byDay={}; prep.forEach(r=>{ byDay[r.date]=(byDay[r.date]||0)+num(r.preparedOrders); });
   const days=Object.keys(byDay).filter(d=>byDay[d]>0).sort().slice(-14);
   if(!days.length) return '';
@@ -3088,7 +3088,7 @@ function wmsPrepStackedChartHTML(){
     </div>`;
 }
 function wmsDashboard(box){
-  const logs=Store.col('wmsLogs');
+  const logs=whCol('wmsLogs');
   const snap=Store.col('wmsStats')[0];
   const byDay={}, byOp={}, byOrderOp={}, byShift={};
   logs.forEach(l=>{ byDay[l.date]=(byDay[l.date]||0)+1; byOp[l.operator||'(unknown)']=(byOp[l.operator||'(unknown)']||0)+1; byShift[l.shift]=(byShift[l.shift]||0)+1; });
@@ -3108,7 +3108,7 @@ function wmsDashboard(box){
       ${kc(snap?snap.invoiceProductsCheckedIn:'—','Products Checked In', snap?'live snapshot '+h(new Date(snap.at).toLocaleString()):'import a snapshot')}
       ${kc(snap?snap.invoiceProductsProcessed:'—','Products Processed', snap?'':'—')}
       ${kc(snap?snap.ordersInProcessing:'—','Orders In Processing','')}
-      ${Store.col('wmsPrepared').length?'':kc(new Set(logs.map(l=>l.operator).filter(Boolean)).size||'—','Operators (in data)','from logs')}
+      ${whCol('wmsPrepared').length?'':kc(new Set(logs.map(l=>l.operator).filter(Boolean)).size||'—','Operators (in data)','from logs')}
       <div class="card kpi" id="kpiCheckinOrders" title="Produkte që stafi i depos bëri check-in sot (i njëjti përkufizim si «Check-ins» te AI Operator) / porosi të ndryshme në të cilat po këto njësi dolën (checkout) sot."><div class="val">…</div><div class="lbl">Check-in products/orders</div><div class="foot">po ngarkohet…</div></div>
     </div>`
     + wmsPrepStackedChartHTML()
@@ -3135,7 +3135,7 @@ async function loadCheckinOrdersTile(){
   }catch(e){ set('—','agjenti s\'përgjigjet'); }
 }
 function wmsPreparedDashboardHTML(){
-  const prep=Store.col('wmsPrepared'); const chk=Store.col('wmsCheckin');
+  const prep=whCol('wmsPrepared'); const chk=whCol('wmsCheckin');
   if(!prep.length && !chk.length) return '';
   // ---- helper: aggregate a metric collection into by-day (newest first) + by-operator (latest day)
   const agg=(rows,valOf)=>{
@@ -3186,7 +3186,7 @@ function wmsPreparedDashboardHTML(){
    nothing but "no data" ever since. */
 let wmsOpFilter={from:'',to:''};
 function wmsOpDefaultRange(){
-  const days=[...new Set([...Store.col('wmsPrepared'),...Store.col('wmsCheckin')].map(r=>r.date))].filter(Boolean).sort();
+  const days=[...new Set([...whCol('wmsPrepared'),...whCol('wmsCheckin')].map(r=>r.date))].filter(Boolean).sort();
   if(!days.length) return;
   wmsOpFilter.to=days[days.length-1];
   wmsOpFilter.from=days[Math.max(0,days.length-14)];
@@ -3195,9 +3195,9 @@ function wmsOpDefaultRange(){
 function wmsOperatorDailyAgg(fromDate,toDate){
   const byKey={};
   const get=(op,date)=>{ const k=op+'|'+date; return byKey[k]||(byKey[k]={operator:op,date,prepared:0,checkedIn:0,checkedOut:0}); };
-  Store.col('wmsPrepared').forEach(r=>{ if(!r.operator||!r.date) return; if(fromDate&&r.date<fromDate) return; if(toDate&&r.date>toDate) return;
+  whCol('wmsPrepared').forEach(r=>{ if(!r.operator||!r.date) return; if(fromDate&&r.date<fromDate) return; if(toDate&&r.date>toDate) return;
     get(r.operator,r.date).prepared+=num(r.preparedOrders); });
-  Store.col('wmsCheckin').forEach(r=>{ if(!r.operator||!r.date) return; if(fromDate&&r.date<fromDate) return; if(toDate&&r.date>toDate) return;
+  whCol('wmsCheckin').forEach(r=>{ if(!r.operator||!r.date) return; if(fromDate&&r.date<fromDate) return; if(toDate&&r.date>toDate) return;
     const g=get(r.operator,r.date); g.checkedIn+=num(r.checkedIn); g.checkedOut+=num(r.checkedOut); });
   return Object.values(byKey).sort((a,b)=> a.date<b.date?1:a.date>b.date?-1:(b.prepared+b.checkedIn+b.checkedOut)-(a.prepared+a.checkedIn+a.checkedOut));
 }
@@ -3228,7 +3228,7 @@ function wmsOperators(box){
     </div><div id="wopTable"></div>`;
   $('#wof').onchange=e=>{wmsOpFilter.from=e.target.value;drawWmsOps();};
   $('#wot').onchange=e=>{wmsOpFilter.to=e.target.value;drawWmsOps();};
-  const setLast=n=>{ const days=[...new Set([...Store.col('wmsPrepared'),...Store.col('wmsCheckin')].map(r=>r.date))].filter(Boolean).sort();
+  const setLast=n=>{ const days=[...new Set([...whCol('wmsPrepared'),...whCol('wmsCheckin')].map(r=>r.date))].filter(Boolean).sort();
     if(!days.length) return; wmsOpFilter.to=days[days.length-1]; wmsOpFilter.from=days[Math.max(0,days.length-n)];
     $('#wof').value=wmsOpFilter.from; $('#wot').value=wmsOpFilter.to; drawWmsOps(); };
   $('#wo7').onclick=()=>setLast(7); $('#wo30').onclick=()=>setLast(30);
@@ -3465,7 +3465,7 @@ function wmsImportPrepared(rows, meta){ const r=WODS.importPrepared(Store.db,row
 function wmsImportCheckin(rows, meta){ const r=WODS.importCheckin(Store.db,rows,meta); wmsCfg().lastSuccess=nowISO(); Store.persist(); return r; }
 function wmsImportFlow(daily, meta){ WODS.importFlow(Store.db,daily,meta); Store.persist(); }
 function wmsSameDayHTML(){
-  const flow=Store.col('wmsFlow'); if(!flow.length) return '';
+  const flow=whFlow(); if(!flow.length) return '';
   const days=flow.slice().sort((a,b)=>a.date<b.date?1:-1).slice(0,14); // newest first
   const last=days[0];
   const rate=r=>r.checkedIn>0?Math.round(r.checkedOut/r.checkedIn*100):0;
@@ -3505,7 +3505,7 @@ function wmsExcelXml(sheets){
 }
 function exportWmsExcel(){
   const snap=Store.col('wmsStats')[0]||{};
-  const prep=Store.col('wmsPrepared'), chk=Store.col('wmsCheckin'), flow=Store.col('wmsFlow');
+  const prep=whCol('wmsPrepared'), chk=whCol('wmsCheckin'), flow=whFlow();
   const dsort=(a,b)=>a.date<b.date?1:-1; // newest first
   const sheets=[];
   sheets.push({name:'Snapshot', rows:[
@@ -3681,12 +3681,24 @@ function wmsLog(box){
 /* =========================================================================
    BOOT
    =======================================================================*/
+/* The warehouse staff = the names on the work schedule (the warehouse lead, 12.10.2026): every operator list and the
+   totals built from it keep only these people (WODS.staffCol). Read from the agent at start and every 15 min; without
+   the agent (file://) nothing is filtered. */
+let WH_STAFF=null;
+async function loadWhStaff(){
+  try{ const j=await fetch('/schedule',{cache:'no-store'}).then(r=>r.json()); if(j && j.names && j.names.length) WH_STAFF={names:j.names, aliases:j.aliases||{}}; }catch(e){}
+  if(window.WODS && WODS.setStaffProvider) WODS.setStaffProvider(()=>WH_STAFF);
+}
+const whCol=name=> (window.WODS && WODS.staffCol)? WODS.staffCol(Store.db, name) : Store.col(name);
+// daily check-in / check-out: the stored flow counts every account — with the staff list it is summed from the staff's own rows
+const whFlow=()=>{ if(!(window.WODS && WODS.staffOn && WODS.staffOn())) return Store.col('wmsFlow'); const by={};
+  whCol('wmsCheckin').forEach(r=>{ const f=by[r.date]||(by[r.date]={date:r.date, checkedIn:0, checkedOut:0}); f.checkedIn+=num(r.checkedIn); f.checkedOut+=num(r.checkedOut); }); return Object.values(by); };
 async function boot(){
   Store.load();
   if(!Store.db.validations) Store.db.validations=[];
   // Shared copy first: on the agent, adopt/merge the machine-wide database BEFORE anything (incl. the
   // boot WMS sync) persists — otherwise a stale tab could overwrite newer data with its own.
-  if(Store.onAgent()){ await Store.pullFromServer({initial:true}); Store.startPolling(); }
+  if(Store.onAgent()){ await Store.pullFromServer({initial:true}); Store.startPolling(); await loadWhStaff(); setInterval(loadWhStaff, 15*60000); }
   // If opened as a local file (file://) but the agent is running, show a clear link to the
   // correct localhost app — that origin has the live WMS sync and is the canonical instance.
   if(location.protocol==='file:'){

@@ -77,7 +77,8 @@ function urDrawTable(){
   $$('[data-urdel]').forEach(b=>b.onclick=()=>{ const r=rec(b.dataset.urdel); if(r) confirmDelete('pakon '+(r.tracking||r.productCode||urDT(r)), ()=>{ Store.remove('unlinkedReturns', r.id); urDraw(); toast('U fshi'); }); });
 }
 function urForm(existing, nextStatus){
-  const staff=[...new Set([...(urStaff||[]), ...Store.col('employees').filter(e=>e.active!==false).map(e=>e.name)])].sort();
+  // only the staff on the work schedule (12.10.2026); the employees list is used only when the schedule cannot be read
+  const staff=[...new Set((urStaff&&urStaff.length)? urStaff : Store.col('employees').filter(e=>e.active!==false).map(e=>e.name))].sort();
   const vals=Object.assign({date:todayStr(), status:'Pranuar', qty:1}, existing||{}, nextStatus? {status:nextStatus} : {});
   const fields=[
     {type:'section', label:'Pranimi'},

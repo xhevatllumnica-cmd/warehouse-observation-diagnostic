@@ -648,6 +648,7 @@ async function fetchPodDay(iso){
    check on meta.savedAt) and polls it for changes made elsewhere. The 21:30
    report job below writes to the same file. */
 const WODS=require('./shared.js');
+WODS.setStaffProvider(()=>({names:scheduleStaffList(), aliases:STAFF_ALIASES}));   // reports and auto-observations: the staff on the schedule only
 const DB_FILE=path.join(APPDIR,'wods-db.json');
 function loadDb(){ try{ return JSON.parse(fs.readFileSync(DB_FILE,'utf8')); }catch(e){ return null; } }
 function saveDb(db){ db.meta=db.meta||{}; db.meta.savedAt=new Date().toISOString();
