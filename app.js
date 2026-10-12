@@ -2807,7 +2807,7 @@ function renderWMS(v){
   ({dashboard:wmsDashboard, flow2h:wmsFlow2h, checkreport:wmsCheckReport, performance:wmsPerformance, operators:wmsOperators, import:wmsImport, validation:wmsValidation, shifts:wmsShiftsView, log:wmsLog}[wmsTab]||wmsDashboard)(body);
 }
 
-/* "Flow (2h)" — the warehouse's own running totals at 08:00, 10:00 ... 20:00 for a chosen date,
+/* "Flow (2h)" — the warehouse's own running totals at 09:00, 11:00 ... 23:00 for a chosen date,
    each against the same hour yesterday, in the style of the team's WhatsApp "AI Operator" bot.
    The agent (GET /wms/flow2h?date=YYYY-MM-DD) reconstructs every figure (orders, check-ins, picks,
    checkout products, tempo) from WMS ProductLogs timestamps for any date — see buildFlow2h in
@@ -2820,7 +2820,7 @@ function wmsFlow2h(box){
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <b>📅 Data:</b> <input type="date" id="flow2hDate" value="${h(wmsFlow2hDate)}" style="width:auto;min-height:36px">
         <button class="btn sm" id="flow2hRefresh">↻ Rifresko</button>
-        <span class="hint" style="margin:0 0 0 auto">Rrjedha e depos çdo 2 orë (08:00–20:00), krahasuar me të njëjtën orë dje.</span>
+        <span class="hint" style="margin:0 0 0 auto">Rrjedha e depos çdo 2 orë (09:00–23:00), krahasuar me të njëjtën orë dje.</span>
       </div>
     </div>
     <div id="flow2hBody"><div class="empty">Po ngarkohet…</div></div>`;
@@ -2847,11 +2847,11 @@ async function loadFlow2h(){
     };
   }catch(e){ body.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}). Hapja e app-it nga http://localhost:8790 kërkohet për këtë skedë.</div>`; }
 }
-/* Google Chat delivery of the Flow (2h) report — the agent posts after every mark (08:00 … 20:00) to the
+/* Google Chat delivery of the Flow (2h) report — the agent posts after every mark (09:00 … 23:00) to the
    space whose incoming-webhook URL is saved here. The URL is a secret, so it's never shown back once saved. */
 function chatSettingsHTML(){
   return `<details class="card" style="margin-top:12px" id="chatBox"><summary style="cursor:pointer"><b>Google Chat</b> <span class="faint small" id="chatSummary">· po kontrolloj…</span></summary>
-    <div class="hint" style="margin:8px 0">Raporti i secilës orë (08:00, 10:00 … 20:00) dërgohet automatikisht si mesazh në një hapësirë (space) të Google Chat, sapo të kalojë ora.
+    <div class="hint" style="margin:8px 0">Raporti i secilës orë (09:00, 11:00 … 23:00) dërgohet automatikisht si mesazh në një hapësirë (space) të Google Chat, sapo të kalojë ora.
       <ol style="margin:6px 0 0 18px;padding:0">
         <li>Në Google Chat hap hapësirën ku do t'i marrësh (ose krijo një të re vetëm për veten: <b>+ New chat → Create a space</b>).</li>
         <li>Emri i hapësirës → <b>Apps &amp; integrations</b> → <b>Webhooks</b> → <b>Add webhook</b> → emër p.sh. "Warehouse flow" → <b>Save</b>.</li>

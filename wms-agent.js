@@ -286,7 +286,7 @@ async function getCheckins(start,end){
 
 /* --- bi-hourly flow report ("Flow (2h)" tab) ----------------------------------
    Mirrors the warehouse's own WhatsApp "AI Operator" bot: for a chosen date, the running totals at
-   08:00, 10:00, ... 20:00 local time, each against the same hour yesterday, plus the 2-hour tempo.
+   09:00, 11:00, ... 23:00 local time (FLOW_MARKS), each against the same hour yesterday, plus the 2-hour tempo.
    Everything is reconstructed from ProductLogs InsertDateTime, for any date, past or present.
    "Orders completed" = distinct OrderIds on LogTypeId 9 ("Driver") rows. Every checkout scan writes
    two log rows — "ProductScanned for checkout" (27) and "Driver" (9), same count — and AI Operator's
@@ -294,7 +294,9 @@ async function getCheckins(start,end){
    23.09 until 08:00 = 26, until 16:00 = 323, 22.09 until 16:00 = 299, 22.09 full day = 459; LogTypeId
    27 was off by one on one of them. "Picks" counts any pick-type log row: WMS's PickSessionScan table
    has never held a single scan, so this is 0 today — the same 0 AI Operator reports. */
-const FLOW_MARKS=[8,10,12,14,16,18,20];
+// marks = the hours of the tab AND of the Google Chat message (sent just after each): 09:00 … 23:00 every 2 hours
+// (the warehouse lead, 12.10.2026; until then 08:00 … 20:00 like AI Operator)
+const FLOW_MARKS=[9,11,13,15,17,19,21,23];
 const ORDER_DONE_LOGTYPE_ID=9;
 /* AI Operator's "Check-ins" counts "Checked in" rows ONLY by this warehouse's own staff (found 2026-09-24,
    exact on all 10 data points 22–25.09): rows with no operator name and rows by Gjirafa accounts outside
