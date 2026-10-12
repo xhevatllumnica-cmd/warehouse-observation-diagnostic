@@ -25,6 +25,8 @@ const SR_SECTIONS=[
   ['5. Siguria', [['incidents','Incidente'],['nearMiss','Near miss'],['risks','Rreziqe të identifikuara'],['immediate','Masa të menjëhershme'],['openIssues','Çështje ende të hapura']]],
   ['6. Veprimet dhe vendimet', [['solved','Problemet e zgjidhura'],['unsolved','Problemet e pazgjidhura'],['nextDay','Veprimet për ditën e ardhshme'],['decisions','Vendimet që kërkojnë miratim nga menaxhmenti']]],
   ['7. Vërejtje shtesë', [['wentWell','Çfarë funksionoi mirë'],['wentBad','Çfarë nuk funksionoi'],['other','Informacion tjetër relevant']]]];
+// on the schedule but not processing orders in the WMS (the warehouse lead, 12.10.2026): never counted as present / absent
+const SR_LEADS=['Xhevat Llumnica'];
 const SR_LONG=new Set(['delayDesc','delayImpact','delayCause','delayAction','incidents','nearMiss','risks','immediate','openIssues','solved','unsolved','nextDay','decisions','wentWell','wentBad','other','damaged','rework','taskChanges','absent','planned','present']);
 const SR_WIN={N1:['07:00','15:00'], N2:['13:00','21:00'], Weekend:['09:00','18:00']};   // for observations and returns: by time of day (13–15 is in both N1 and N2)
 /* the shifts of the report: N1 / N2 on weekdays; Weekend (Saturday and Sunday, usually 09:00–18:00) is ONE shift with
@@ -129,10 +131,20 @@ function srAuto(D, shift, db){
   const prepShift=n=>{ const o=byName[n]; if(!o) return shifts[n]&&shifts[n]!=='pushim'? (wk?'Weekend':srShiftOf(shifts[n])) : null;
     const c={}; Object.entries(o.byHour||{}).forEach(([hh,v])=>{ const s=shiftOfWork(n,+hh); c[s]=(c[s]||0)+v; });
     const best=Object.entries(c).sort((a,b)=>b[1]-a[1])[0]; return best? best[0] : shiftOfWork(n, firstH(o)); };
-  const present=planned.filter(inWinOf);
-  const notStarted= today? planned.filter(n=>!inWinOf(n) && srMin(shifts[n])!=null && nowMin<srMin(shifts[n])+30) : [];
-  const absent=planned.filter(n=>!inWinOf(n) && !notStarted.includes(n));
-  const outside=planned.filter(n=>!inWinOf(n) && act(byName[n])>0).map(n=>n+' (ora '+hoursOf(byName[n]).map(x=>String(x).padStart(2,'0')).join(', ')+')');
+  // the WH Lead is on the schedule but does not process orders in the WMS: listed apart, never as "no activity"
+  const isLead=n=>SR_LEADS.includes(n), leads=planned.filter(isLead), crew=planned.filter(n=>!isLead(n));
+  const present=crew.filter(inWinOf);
+  const notStarted= today? crew.filter(n=>!inWinOf(n) && srMin(shifts[n])!=null && nowMin<srMin(shifts[n])+30) : [];
+  const absent=crew.filter(n=>!inWinOf(n) && !notStarted.includes(n));
+  const outside=crew.filter(n=>!inWinOf(n) && act(byName[n])>0).map(n=>n+' (ora '+hoursOf(byName[n]).map(x=>String(x).padStart(2,'0')).join(', ')+')');
+  /* scans in this shift's hours by accounts of people NOT on its schedule, by kind: on the schedule of the other shift
+     (their account was used outside their hours — the person may not even be at work: verify who used it), on pushim,
+     or not on the schedule at all. Each with what was done in this shift and when. */
+  const PNs={orders:'porosi check-out', ci:'check-in', mp:'mapim', pod:'POD', ref:'refuzime'}, p2=x=>String(x).padStart(2,'0');
+  const did=n=>{ const o=byName[n]||{}; const what=Object.keys(PNs).map(k=>[k,part(o,k)]).filter(([,v])=>v>0).map(([k,v])=>v+' '+PNs[k]);
+    const hs=[...new Set(Object.values(HK).flatMap(hk=>Object.entries(o[hk]||{}).filter(([hh,c])=>c>0 && shiftOfWork(n,+hh)===shift).map(([hh])=>+hh)))].sort((a,b)=>a-b);
+    return n+' ('+what.join(', ')+(hs.length? ', ora '+p2(hs[0])+(hs.length>1? '–'+p2(hs[hs.length-1]) : '') : '')+')'; };
+  const otherSh=unsched.filter(n=>shifts[n] && shifts[n]!=='pushim'), onLeave=unsched.filter(n=>shifts[n]==='pushim'), notListed=unsched.filter(n=>!shifts[n]);
   // 1. plan and result
   const target=D.ST&&D.ST.config&&D.ST.config.targetOrdersPerDay;
   const prepared=col('wmsPrepared').filter(r=>r.date===date && prepShift(r.operator)===shift).reduce((a,r)=>a+num(r.preparedOrders),0), prepAny=col('wmsPrepared').some(r=>r.date===date);
@@ -160,12 +172,16 @@ function srAuto(D, shift, db){
   out.src.backlogStart=out.src.backlogEnd= today? 'Tabela ditore (cut-off-et), gjendja në momentin e plotësimit' : 'për ditët e kaluara sistemi nuk e ruan — plotëso me dorë (ose ruhet nga agjenti: N1 15:03, N2 21:03, Weekend 18:03)';
   // 2. staff
   const sh=n=>shifts[n]&&shifts[n]!=='pushim'? ' ('+shifts[n]+')' : ' (jashtë orarit)';
-  out.txt.planned= planned.length? `${planned.length}: ${planned.map(n=>n+' '+shifts[n]).join(', ')}` : (T&&T.scheduleLoaded===false? '' : '0'); out.src.planned='Orari i punës';
-  out.txt.present= T? `${present.length}: ${present.join(', ')}${unsched.length? '\nPunuan pa qenë në orarin e këtij ndërrimi (pushim ose jashtë listës): '+unsched.join(', ')+' — puna e tyre hyn te shifrat' : ''}` : '';
+  out.txt.planned= planned.length? `${planned.length}: ${planned.map(n=>n+' '+shifts[n]+(isLead(n)? ' (WH Lead)' : '')).join(', ')}` : (T&&T.scheduleLoaded===false? '' : '0'); out.src.planned='Orari i punës';
+  out.txt.present= T? [`${present.length}: ${present.join(', ')}`,
+    leads.length? `WH Lead në orar: ${leads.join(', ')} (nuk proceson porosi në WMS — nuk llogaritet te të pranishmit / mungesat)` : '',
+    onLeave.length? `Punuan në ditën e pushimit: ${onLeave.map(did).join('; ')}` : '',
+    notListed.length? `Punuan pa qenë në orar: ${notListed.map(did).join('; ')}` : ''].filter(Boolean).join('\n') : '';
   out.src.present='në orarin e ndërrimit dhe me skanime në WMS / Delivery Platform brenda orarit të tyre (±2 orë)';
   out.txt.absent= T? [absent.length? `Pa aktivitet në WMS/POD gjatë orarit: ${absent.join(', ')} (mungesë, vonesë ose punë pa skanim — verifiko)` : 'Asnjë',
     notStarted.length? `Orari ende pa filluar: ${notStarted.join(', ')}` : '',
-    outside.length? `Skanime vetëm jashtë orarit të tyre: ${outside.join('; ')} — verifiko (llogari e përdorur nga dikush tjetër?)` : ''].filter(Boolean).join('\n') : '';
+    outside.length? `Skanime vetëm jashtë orarit të tyre: ${outside.join('; ')} — verifiko (llogari e përdorur nga dikush tjetër?)` : '',
+    otherSh.length? `Skanime në orët e ${shift} me llogarinë e personave të një ndërrimi tjetër: ${otherSh.map(n=>did(n)+' — në orar '+shifts[n]).join('; ')}. Verifiko kush e ka përdorur llogarinë (puna hyn te shifrat e ${shift}).` : ''].filter(Boolean).join('\n') : '';
   out.src.absent='në orar, por pa skanim gjatë orarit të tyre';
   const multi=present.filter(n=>{ const o=byName[n]||{}; return ['orders','ci','mp','pod','ref'].filter(k=>(o[k]||0)>0).length>=2; });
   const PN={orders:'check-out',ci:'check-in',mp:'mapim',pod:'POD',ref:'refuzime'};
