@@ -9,6 +9,7 @@ dokumentohet gjendja aktuale, pastaj jepen rekomandime.
 | Dosja / skedari | Çfarë bën |
 |---|---|
 | `index.html`, `app.js`, `styles.css` | Aplikacioni kryesor offline (vëzhgime ditore, matje procesesh me kohë pritjeje, rrjedha e porosive/inbound, matrica e aftësive, regjistri i bottleneck-eve, KPI baseline, raporte ditore/javore/30-ditore). Të dhënat ruhen në `localStorage`. |
+| Seksioni **Kampanja** (në `app.js`) | Plani i kampanjës me volum të lartë: parashikimi dhe stafi ditë për ditë, pasqyra live (raporti orar + WMS), alarmet me 3 nivele, raporti ditor për menaxherin, checklist-at, briefing-u dhe prompt-i për AI. Numrat e planit ngarkohen nga `campaign.local.json` (lokal, jo në repo). |
 | `wms-agent.js`, `app.html`, `*.bat`, `*.vbs` | Agjent lokal (Node) që lexon të dhëna nga WMS me cookie-n e sesionit tënd — shih [WMS-INTEGRATION.md](WMS-INTEGRATION.md). |
 | `analysis-tools/` | Gjeneron raportin "Aneks B — Analiza e të Dhënave" nga backup-i JSON. |
 | `warehouse-schedule/` | Aplikacion Next.js + Prisma për orarin e ekipit (import nga Excel). |

@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "warehouse-schedule", "run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "app-static",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["-e", "const h=require('http'),f=require('fs'),p=require('path');const T={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css','.json':'application/json'};h.createServer((q,r)=>{let u=decodeURIComponent(q.url.split('?')[0]);if(u==='/')u='/app.html';const fp=p.join(process.cwd(),u);f.readFile(fp,(e,d)=>{if(e){r.writeHead(404);return r.end('nf');}r.writeHead(200,{'Content-Type':T[p.extname(fp)]||'application/octet-stream','Cache-Control':'no-store'});r.end(d);});}).listen(8796,'127.0.0.1');"],
+      "port": 8796
     }
   ]
 }
