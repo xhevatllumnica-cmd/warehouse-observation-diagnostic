@@ -1172,14 +1172,23 @@ function bnConfig(){ const db=loadDb(); return (db&&db.config&&db.config.bottlen
 // thresholds for the detectors; the problem age limit comes from the query parameter ma (one setting for both)
 /* staffKeys: the staff on the work schedule as the Bottleneck blocks know them (initials + last 3 digits of the UserId —
    the blocks carry no names), taken from the WMS Pulse accounts that the build already kept for the schedule (12.10.2026) */
-let bnStaffMemo={mt:0, keys:null};
+/* staffMerge (the lead, 13.10.2026): accounts of one person → the key of that person's main account (the one with the most
+   days), so the Register counts people, not accounts: the schedule's aliases (Arian Rraca → Arian Racaj) and two accounts
+   with the same full name (Albert Demiri: albert.d@ + albert.demiri@). Only for the staff's keys. */
+let bnStaffMemo={mt:0, keys:null, merge:null};
 function bnStaffKeys(){
   try{ const mt=fs.statSync(PULSE_DATA).mtimeMs; if(mt!==bnStaffMemo.mt){ const P=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8'));
       // the build's own staff keys (opsMeta also keeps accounts with days before 01.09.2026, which are not staff)
-      const ok=P.staffFilter && P.capacity && P.capacity.opsMeta; bnStaffMemo={mt, keys: P.staffFilter && P.staffFilter.keys? P.staffFilter.keys : ok? [...new Set(P.capacity.opsMeta.map(m=>m.i+' #'+m.id))].sort() : null}; } }catch(e){}
+      const ok=P.staffFilter && P.capacity && P.capacity.opsMeta, keys= P.staffFilter && P.staffFilter.keys? P.staffFilter.keys : ok? [...new Set(P.capacity.opsMeta.map(m=>m.i+' #'+m.id))].sort() : null;
+      let merge=null;
+      if(keys && ok){ const K=new Set(keys), days={}; (P.capacity.opsDay||[]).forEach(r=>days[r.u]=(days[r.u]||0)+1);
+        const groups={}; P.capacity.opsMeta.forEach(m=>{ const k=m.i+' #'+m.id; if(!K.has(k) || !String(m.n||'').trim()) return;
+          const person=normName(STAFF_ALIASES[normName(m.n)]||m.n); (groups[person]=groups[person]||[]).push({k, d:days[m.u]||0}); });
+        Object.values(groups).filter(g=>new Set(g.map(x=>x.k)).size>1).forEach(g=>{ const main=g.slice().sort((a,b)=>b.d-a.d)[0].k; merge=merge||{}; g.forEach(x=>{ if(x.k!==main) merge[x.k]=main; }); }); }
+      bnStaffMemo={mt, keys, merge}; } }catch(e){}
   return bnStaffMemo.keys;
 }
-function bnThresholds(cfg){ const k=bnStaffKeys(); return Object.assign({}, cfg.thresholds||{}, {maxAgeDays:bnAdapter.paramValues(cfg.params||{}).ma}, k? {staffKeys:k, staffFrom:ROSTER_FROM} : {}); }
+function bnThresholds(cfg){ const k=bnStaffKeys(); return Object.assign({}, cfg.thresholds||{}, {maxAgeDays:bnAdapter.paramValues(cfg.params||{}).ma}, k? {staffKeys:k, staffFrom:ROSTER_FROM, staffMerge:bnStaffMemo.merge||{}} : {}); }
 function bnTick(){
   try{ const cfg=bnConfig(); bnAdapter.writeRunFile(cfg.params||{});
     const r=bnAdapter.collect(360); bnState.lastCheck=new Date().toISOString();

@@ -78,11 +78,15 @@ function detect(snap, cfgIn){
   // cfg.staffFrom (01.09.2026, the lead 13.10.2026): a day before it keeps every account, as it was
   const SF= SK && cfg.staffFrom? String(cfg.staffFrom) : '', early=d=> !!(SF && d && d<SF);
   const own=c=> !SK || early(c.d) || SK.has(c.i+' #'+c.id);
-  // D3 cells for the staff: orders in / picked as they are; check-out orders, check-in / map units and accounts per hour rebuilt from cellU
+  // cfg.staffMerge (the lead, 13.10.2026): accounts of one person → the person's main account key, so people are counted, not
+  // accounts (Arian Rraca = Arian Racaj; Albert Demiri's two accounts)
+  const PM=cfg.staffMerge||{}, pk=c=>{ const k=c.i+' #'+c.id; return PM[k]||k; };
+  // D3 cells for the staff: orders in / picked as they are; check-out orders, check-in / map units and people per hour rebuilt from cellU
   const d3Cells=b=>{ const cells=J(b.row.cell); if(!SK) return cells; if(!b.row.cellU){ note('D3','Blloku D3 është nga para ndarjes sipas llogarisë: check-out / check-in / map përfshijnë të gjitha llogaritë deri në ekzekutimin e radhës.','info'); return cells; }
-    const by={}; cells.forEach(c=>{ by[c.d+'|'+c.h]= early(c.d)? c : Object.assign({}, c, {co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0}); });
+    const by={}, ppl={}; cells.forEach(c=>{ by[c.d+'|'+c.h]= early(c.d)? c : Object.assign({}, c, {co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0}); });
     J(b.row.cellU).filter(u=>!early(u.d) && own(u)).forEach(u=>{ const k=u.d+'|'+u.h, c=by[k]||(by[k]={d:u.d, h:u.h, cr:0, pk:0, co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0});
-      c.co+=u.co||0; c.ci+=u.ci||0; c.mp+=u.mp||0; if(u.co>0) c.coOps++; if(u.ci>0) c.ciOps++; if(u.mp>0) c.mpOps++; });
+      c.co+=u.co||0; c.ci+=u.ci||0; c.mp+=u.mp||0; const s=ppl[k]||(ppl[k]={co:new Set(), ci:new Set(), mp:new Set()}), p=pk(u);
+      if(u.co>0) s.co.add(p); if(u.ci>0) s.ci.add(p); if(u.mp>0) s.mp.add(p); c.coOps=s.co.size; c.ciOps=s.ci.size; c.mpOps=s.mp.size; });
     return Object.values(by).sort((a,b)=>a.d<b.d?-1:a.d>b.d?1:a.h-b.h); };
   const run=(k,fn)=>{ if(!B[k]) { note(k,'Blloku '+k+' nuk është ekzekutuar ende.','missing'); return; } try{ fn(B[k]); }catch(e){ note(k,'Gabim në llogaritje: '+e.message,'error'); } };
 
@@ -265,7 +269,12 @@ function detect(snap, cfgIn){
   /* D6 productivity — process obstacles first ------------------------------ */
   run('D6', b=>{
     const cells=J(b.row.cell).filter(c=>c.d<today && own(c));
-    const people={}; cells.forEach(c=>{ const k=c.i+' #'+c.id; (people[k]=people[k]||{i:c.i,id:c.id,tmp:c.tmp,act:c.act,days:[]}).days.push(c); });
+    // per person (two accounts of one person → one row): a day on both accounts is one person-day — weighted ops added,
+    // active hours the larger, gap minutes the smaller of the two
+    const people={}; cells.forEach(c=>{ const k=pk(c), p=people[k]||(people[k]={i:k.split(' #')[0], id:k.split(' #')[1], tmp:c.tmp, act:c.act, days:[], byD:{}});
+      const ex=p.byD[c.d]; if(ex){ ex.w=(+ex.w||0)+(+c.w||0); ex.hrs=Math.max(+ex.hrs||0, +c.hrs||0); ex.gapMin=Math.min(+ex.gapMin||0, +c.gapMin||0); }
+      else { const cc=Object.assign({}, c); p.byD[c.d]=cc; p.days.push(cc); } });
+    const pdays=Object.values(people).flatMap(p=>p.days);   // person-days, for the team-level gaps below
     const list=Object.values(people).filter(p=>!p.tmp);
     const rows=list.map(p=>{ const cur=p.days.filter(d=>inW(d.d,W.cur)), base=p.days.filter(d=>inW(d.d,W.base)), all30=p.days.filter(d=>inW(d.d,{from:addDays(today,-30),to:W.cur.to}));
       const wc=avg(cur.map(d=>d.w)), wb=avg(base.map(d=>d.w));
@@ -276,11 +285,11 @@ function detect(snap, cfgIn){
     rows.forEach(r=>{ r.band= r.d30<3? 'n i ulët' : r.w30>teamAvg+2*sd? 'Spike' : r.w30>teamAvg*cfg.bandHi? 'Mbi' : r.w30<teamAvg*cfg.bandLo? 'Nën' : 'Mesatar'; });
     out.detail.D6={rows:rows.sort((a,b)=>b.w30-a.w30), teamAvg:r1(teamAvg), sd:r1(sd), shared:Object.values(people).filter(p=>p.tmp).map(p=>({i:p.i,id:p.id,days:p.days.length}))};
     // gaps (team level): minutes of inactivity > gm per person-day after the break
-    const curCells=cells.filter(c=>inW(c.d,W.cur)&&!c.tmp), baseCells=cells.filter(c=>inW(c.d,W.base)&&!c.tmp);
+    const curCells=pdays.filter(c=>inW(c.d,W.cur)&&!c.tmp), baseCells=pdays.filter(c=>inW(c.d,W.base)&&!c.tmp);
     const gapCur=avg(curCells.map(c=>Math.max(0,c.gapMin-cfg.breakMin))), gapBase=avg(baseCells.map(c=>Math.max(0,c.gapMin-cfg.breakMin)));
-    const dayKeys=[...new Set(cells.map(c=>c.d))].sort();
+    const dayKeys=[...new Set(pdays.map(c=>c.d))].sort();
     metric('D6.gap',{detector:'D6', label:'Boshllëqe brenda turnit (pas pushimit) për person-ditë', unit:'min', better:'lower', target:cfg.gapMax,
-      series:dayKeys.map(d=>({d, v:Math.round(avg(cells.filter(c=>c.d===d&&!c.tmp).map(c=>Math.max(0,c.gapMin-cfg.breakMin))))}))});
+      series:dayKeys.map(d=>({d, v:Math.round(avg(pdays.filter(c=>c.d===d&&!c.tmp).map(c=>Math.max(0,c.gapMin-cfg.breakMin))))}))});
     if(gapCur>cfg.gapMax){
       const lostH=sum(curCells.map(c=>Math.max(0,c.gapMin-cfg.breakMin)))/60/Math.max(1,new Set(curCells.map(c=>c.d)).size);
       cand({ key:'D6.gaps', detector:'D6', metricKey:'D6.gap', blocks:['D6'], title:'Boshllëqe të gjata pa skanime brenda turnit', phase:'Të gjitha', category:'Proces',
@@ -510,8 +519,9 @@ function detect(snap, cfgIn){
     let st=J(b.row.staff).filter(x=>x.d<today), fc=J(b.row.firstCo).filter(x=>x.d<today); const fx=J(b.row.fixes);
     // the staff on the schedule only: the day's sums and the median first check-out rebuilt from their own rows
     // (days before cfg.staffFrom keep their original all-accounts rows, as they were)
-    if(SK && b.row.staffU){ const by={}; J(b.row.staffU).filter(x=>x.d<today && !early(x.d) && own(x)).forEach(x=>{ const o=by[x.d]||(by[x.d]={d:x.d, coOrd:0, coH:0, ci:0, ciH:0, mp:0, mpH:0, ppl:0});
-        ['coOrd','coH','ci','ciH','mp','mpH'].forEach(k=>o[k]+=x[k]||0); o.ppl++; }); st=st.filter(x=>early(x.d)).concat(Object.values(by)).sort((a,b)=>a.d<b.d?-1:1); }
+    if(SK && b.row.staffU){ const by={}, who={}; J(b.row.staffU).filter(x=>x.d<today && !early(x.d) && own(x)).forEach(x=>{ const o=by[x.d]||(by[x.d]={d:x.d, coOrd:0, coH:0, ci:0, ciH:0, mp:0, mpH:0, ppl:0});
+        ['coOrd','coH','ci','ciH','mp','mpH'].forEach(k=>o[k]+=x[k]||0); (who[x.d]=who[x.d]||new Set()).add(pk(x)); o.ppl=who[x.d].size; });   // ppl = people, not accounts
+      st=st.filter(x=>early(x.d)).concat(Object.values(by)).sort((a,b)=>a.d<b.d?-1:1); }
     else if(SK) note('D14','Blloku D14 është nga para ndarjes sipas llogarisë: KPI-të përfshijnë të gjitha llogaritë deri në ekzekutimin e radhës.','info');
     if(SK && b.row.firstCoU){ const by={}; J(b.row.firstCoU).filter(x=>x.d<today && !early(x.d) && own(x)).forEach(x=>(by[x.d]=by[x.d]||[]).push(+x.f));
       fc=fc.filter(x=>early(x.d)).concat(Object.keys(by).sort().map(d=>({d, firstCoMed:q(by[d],0.5), firstCoMin:Math.min(...by[d]), n:by[d].length}))).sort((a,b)=>a.d<b.d?-1:1); }
