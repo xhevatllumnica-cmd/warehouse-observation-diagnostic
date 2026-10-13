@@ -207,6 +207,7 @@ const PLOG_PAGE=2000;   // a single length=6000 request returns HTTP 500, so pag
    captured on the day itself. So a past day is only safe to cache once it has had time to "settle" —
    caching from day one (as before) silently froze an incomplete count forever. */
 const CACHE_SETTLE_DAYS=3;
+let productSearchRef=null;   // product-search.js, set below once its dependencies exist
 const checkinCache={}; // iso date -> {ops, inCount, outCount} — only for days older than CACHE_SETTLE_DAYS
 const dayLogsCache={};  // mdy -> {rows, reliable} — one WMS fetch per date per agent run, several endpoints share it
 function isoToday(){ const t=new Date(); return t.getFullYear()+'-'+p2(t.getMonth()+1)+'-'+p2(t.getDate()); }
@@ -249,6 +250,8 @@ async function fetchDayProductLogs(mdy, opts){
     }
   }
   const rows=[...byId.values()];
+  // product names for "Kërko produkt" (product-search.js): every day log read feeds the name index
+  try{ if(productSearchRef){ const [mm,dd,yy]=mdy.split('/'); productSearchRef.indexRows(yy+'-'+mm+'-'+dd, rows); } }catch(e){}
   const out={rows, reliable: rows.length>=total, total, requests:reqs};
   if(!out.reliable) console.log('[wms-agent] '+mdy+': only '+rows.length+' of '+total+' ProductLogs rows recovered after '+reqs+' requests');
   if(!opts.noCache) dayLogsCache[mdy]=out;
@@ -944,6 +947,9 @@ async function wmsStores(force){
 /* Tabela ditore (page /tabela): live per-operator numbers from today's WMS log + the hourly cut-off figures (pulse block M).
    See tabela-board.js. The live part is cached ~2 min so a board that refreshes often does not hammer the WMS. */
 const tabelaBoard=require('./tabela-board.js');
+/* "Kërko produkt" (13.10.2026): product / order search, WMS + Delivery Platform, read-only — see product-search.js */
+productSearchRef=require('./product-search.js')({ appDir:APPDIR, wmsFetch, enc, PLOG_COLS, parseWmsDate, looksLoggedOut, isoToday, isoAddDays, isoToMdy, p2,
+  fetchDayProductLogs, fetchPodScans, fetchPodDay, deliveryPostJson, dtCols, STAFF_ALIASES, normName });
 const TABELA_DEFAULT_STATIONS=['CHECKOUT 1','CHECKOUT 2','CHECKOUT 3','CHECKOUT 4','CHECKOUT 5','CHECKOUT 6','CHECKIN & CHECKOUT','CHECKIN 1','CHECKIN 2','CHECKIN 3','CHECKIN SELLERS']
   .map(n=>({name:n, co:/CHECKOUT/.test(n), ci:/CHECKIN/.test(n)}));
 let tabelaLive=null, tabelaLiveAt=0, tabelaLiveBusy=null;
@@ -1404,6 +1410,14 @@ http.createServer(async (req,resp)=>{
         return resp.end(buf); }
       return send(404,{error:'not found'});
     }
+    // "Kërko produkt" (product-search.js) — same-origin only (no CORS header), read-only
+    if(q.pathname==='/search/q' && req.method==='GET'){
+      const r=await productSearchRef.search(q.query.q||''); const code= r.error? (r.error==='auth_expired'? 401 : 400) : 200;
+      resp.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r)); }
+    if(q.pathname==='/search/dp' && req.method==='GET'){
+      if(!/^\d{1,10}$/.test(String(q.query.order||''))) return json(400,{error:'order'});
+      const r=await productSearchRef.orderDp(q.query.order, q.query.pid||'', String(q.query.from||''));
+      resp.writeHead(r.error? (r.error==='auth_expired'? 401 : 502) : 200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r)); }
     if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, Object.assign(shiftSchedule.summary(), {appUrl:scheduleAppUrl(), aliases:STAFF_ALIASES, staffFrom:ROSTER_FROM, staff:[...new Set(scheduleStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))]})); }   // aliases: two WMS accounts of one person → the schedule name
     // the shifts of each day in a range (Kapaciteti & Stafi: staff from the schedule, the next 7 days) — read-only, at most 31 days;
     // a day the schedule does not cover comes back null (never guessed)
