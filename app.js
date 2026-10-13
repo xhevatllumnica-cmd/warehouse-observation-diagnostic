@@ -3686,13 +3686,17 @@ function wmsLog(box){
    the agent (file://) nothing is filtered. */
 let WH_STAFF=null;
 async function loadWhStaff(){
-  try{ const j=await fetch('/schedule',{cache:'no-store'}).then(r=>r.json()); if(j && j.names && j.names.length) WH_STAFF={names:j.names, aliases:j.aliases||{}}; }catch(e){}
+  // staff = the agent's list (schedule ∩ name book + new names on the schedule); from = the date the filter starts (01.09.2026)
+  try{ const j=await fetch('/schedule',{cache:'no-store'}).then(r=>r.json()); const names=(j && (j.staff||j.names))||[];
+    if(names.length) WH_STAFF={names, aliases:j.aliases||{}, from:j.staffFrom||''}; }catch(e){}
   if(window.WODS && WODS.setStaffProvider) WODS.setStaffProvider(()=>WH_STAFF);
 }
 const whCol=name=> (window.WODS && WODS.staffCol)? WODS.staffCol(Store.db, name) : Store.col(name);
-// daily check-in / check-out: the stored flow counts every account — with the staff list it is summed from the staff's own rows
+// daily check-in / check-out: the stored flow counts every account — with the staff list, a day from 01.09.2026 is summed
+// from the staff's own rows; an earlier day keeps the stored flow (every account), as it was (13.10.2026)
 const whFlow=()=>{ if(!(window.WODS && WODS.staffOn && WODS.staffOn())) return Store.col('wmsFlow'); const by={};
-  whCol('wmsCheckin').forEach(r=>{ const f=by[r.date]||(by[r.date]={date:r.date, checkedIn:0, checkedOut:0}); f.checkedIn+=num(r.checkedIn); f.checkedOut+=num(r.checkedOut); }); return Object.values(by); };
+  Store.col('wmsFlow').forEach(f=>{ if(!WODS.staffOn(f.date)) by[f.date]=f; });
+  whCol('wmsCheckin').forEach(r=>{ if(!WODS.staffOn(r.date)) return; const f=by[r.date]||(by[r.date]={date:r.date, checkedIn:0, checkedOut:0}); f.checkedIn+=num(r.checkedIn); f.checkedOut+=num(r.checkedOut); }); return Object.values(by); };
 async function boot(){
   Store.load();
   if(!Store.db.validations) Store.db.validations=[];

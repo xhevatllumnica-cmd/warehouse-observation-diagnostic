@@ -320,10 +320,17 @@ function scheduleStaffList(){
   if(staffMemo.list && Date.now()-staffMemo.at<60000) return staffMemo.list;
   let list=warehouseStaffList();
   try{ const s=shiftSchedule.summary(); if(s && s.loaded && s.names && s.names.length){ const on=new Set(s.names.map(normName));
-    list=list.filter(n=>on.has(normName(STAFF_ALIASES[normName(n)]||n))); } }catch(e){}
+    list=list.filter(n=>on.has(normName(STAFF_ALIASES[normName(n)]||n)));
+    // a name on the schedule that the name book does not have yet (a new person) counts too (13.10.2026)
+    const have=new Set(list.map(n=>normName(STAFF_ALIASES[normName(n)]||n))); s.names.forEach(n=>{ if(!have.has(normName(n))) list.push(n); }); } }catch(e){}
   staffMemo={at:Date.now(), list}; return list;
 }
 function warehouseStaffSet(){ return new Set(scheduleStaffList().map(normName).filter(Boolean)); }
+/* From when the staff filter applies (the warehouse lead, 13.10.2026): data from ROSTER_FROM on counts only the staff on the
+   schedule; data before it stays exactly as it was (every account; check-ins: the name book, as before). The schedule
+   starts 31.08.2026. Order states (backlog / cut-offs, same-day, carryover, waiting time, POD per courier) are never filtered. */
+const ROSTER_FROM=String(cfg.rosterFrom||'2026-09-01');
+const rosterBookSet=()=>new Set(warehouseStaffList().map(normName).filter(Boolean));   // the old list, for days before ROSTER_FROM
 function parseWmsDate(s){ const m=/\/Date\((\d+)\)\//.exec(s||''); return m?Number(m[1]):null; }
 function isoAddDays(iso,n){ const d=new Date(iso+'T12:00:00'); d.setDate(d.getDate()+n); return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()); }
 function isoToMdy(iso){ const [y,m,d]=iso.split('-'); return m+'/'+d+'/'+y; }
@@ -334,11 +341,12 @@ function cumulativeByMark(rows, iso, staff){
   const y=Number(iso.slice(0,4)), mo=Number(iso.slice(5,7))-1, d=Number(iso.slice(8,10));
   const cuts=hours.map(h=>new Date(y,mo,d,h,0,0,0).getTime());
   const blank=()=>({checkedIn:0, checkedInAll:0, checkedOut:0, picks:0, orders:new Set()});
-  const acc=hours.map(blank), full=blank();
+  const acc=hours.map(blank), full=blank(), old=iso<ROSTER_FROM, book=old? rosterBookSet() : null;
   rows.forEach(x=>{
-    // only the warehouse staff on the schedule count (12.10.2026) — orders, checkout products and picks too, not only check-ins
-    const own=staff.has(normName(x.UpdatedByName));
-    const isInAll=x.LogType===CHECKIN_LOGTYPE, isIn=isInAll && own;
+    // only the warehouse staff on the schedule count (12.10.2026) — orders, checkout products and picks too, not only check-ins.
+    // Before ROSTER_FROM as it was: check-ins by the name book, everything else by every account (13.10.2026)
+    const own= old? true : staff.has(normName(x.UpdatedByName));
+    const isInAll=x.LogType===CHECKIN_LOGTYPE, isIn=isInAll && (old? book.has(normName(x.UpdatedByName)) : own);
     const isOut=CHECKOUT_LOGTYPES.includes(x.LogType) && own;
     const isOrder=Number(x.LogTypeId)===ORDER_DONE_LOGTYPE_ID && !!x.OrderId && own, isPick=/pick/i.test(x.LogType||'') && own;
     if(!isInAll && !isOut && !isOrder && !isPick) return;
@@ -443,8 +451,9 @@ function avgGapMs(fromRows, toRows){
 }
 function buildCheckReport(rows, db, days){
   // only the warehouse staff on the schedule (12.10.2026); a second account of the same person is shown under their name
-  const staff=warehouseStaffSet();
-  rows=rows.filter(r=>staff.has(normName(r.UpdatedByName))).map(r=>{ const a=STAFF_ALIASES[normName(r.UpdatedByName)]; return a? Object.assign({}, r, {UpdatedByName:a}) : r; });
+  // — from ROSTER_FROM only; rows before it stay as they were (13.10.2026)
+  const staff=warehouseStaffSet(), oldRow=r=>{ const t=parseWmsDate(r.InsertDateTime); return t!=null && localIso(t)<ROSTER_FROM; };
+  rows=rows.filter(r=>oldRow(r) || staff.has(normName(r.UpdatedByName))).map(r=>{ if(oldRow(r)) return r; const a=STAFF_ALIASES[normName(r.UpdatedByName)]; return a? Object.assign({}, r, {UpdatedByName:a}) : r; });
   const inRows=rows.filter(r=>r.LogType===CHECKIN_LOGTYPE);
   const outRows=rows.filter(r=>CHECKOUT_LOGTYPES.includes(r.LogType));
   const mapRows=rows.filter(r=>Number(r.LogTypeId)===MAPPING_LOGTYPE_ID);
@@ -457,7 +466,7 @@ function buildCheckReport(rows, db, days){
   const outFromCheckinOrders=new Set(outFromCheckin.map(r=>r.OrderId).filter(Boolean));
   const byOrderSize={}; outRows.forEach(r=>{ if(r.OrderId) byOrderSize[r.OrderId]=(byOrderSize[r.OrderId]||0)+1; });
   const orderSizes=Object.values(byOrderSize);
-  const preparedOrders=(db.wmsPrepared||[]).filter(r=>days.includes(r.date) && staff.has(normName(r.operator))).reduce((a,r)=>a+(Number(r.preparedOrders)||0),0);
+  const preparedOrders=(db.wmsPrepared||[]).filter(r=>days.includes(r.date) && (r.date<ROSTER_FROM || staff.has(normName(r.operator)))).reduce((a,r)=>a+(Number(r.preparedOrders)||0),0);
   const NA=note=>({available:false, note});
   const DELIVERY_NOTE='Kërkon lidhje të veçantë me deliveryplatform.gjirafamall.com (sistem tjetër, me login/bazë të vet) — jo ende e disponueshme.';
   return {
@@ -530,7 +539,7 @@ const shiftSchedule=require('./shift-schedule.js')({ appDir:APPDIR, normName, wa
 const stationPresence=require('./station-presence.js')({ appDir:APPDIR, cfgFile:CFG_FILE, cfg, normName, aliases:STAFF_ALIASES });
 stationPresence.listen(Number(cfg.stationPort||8791));
 const wmsStats=require('./wms-stats.js')({ appDir:APPDIR, fetchDayProductLogs, isoToday, isoAddDays, isoToMdy, lastNDays, parseWmsDate,
-  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, WH_LEADS, scheduleForDay:iso=>shiftSchedule.forDay(iso) });
+  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, WH_LEADS, ROSTER_FROM, scheduleForDay:iso=>shiftSchedule.forDay(iso) });
 /* Module settings (agent config, one writer). Thresholds are starting values meant to be tuned by the lead:
    ok (green) when the value reaches `green`, warning (yellow) up to `yellow`, red beyond — `higherIsBetter`
    decides the direction. */
@@ -648,7 +657,7 @@ async function fetchPodDay(iso){
    check on meta.savedAt) and polls it for changes made elsewhere. The 21:30
    report job below writes to the same file. */
 const WODS=require('./shared.js');
-WODS.setStaffProvider(()=>({names:scheduleStaffList(), aliases:STAFF_ALIASES}));   // reports and auto-observations: the staff on the schedule only
+WODS.setStaffProvider(()=>({names:scheduleStaffList(), aliases:STAFF_ALIASES, from:ROSTER_FROM}));   // reports and auto-observations: the staff on the schedule only
 const DB_FILE=path.join(APPDIR,'wods-db.json');
 function loadDb(){ try{ return JSON.parse(fs.readFileSync(DB_FILE,'utf8')); }catch(e){ return null; } }
 function saveDb(db){ db.meta=db.meta||{}; db.meta.savedAt=new Date().toISOString();
@@ -891,7 +900,7 @@ function pulseNewResults(){
 function pulseTick(){
   if(pulseBuilding) return; pulseState.lastCheck=new Date().toISOString();
   // the staff on the work schedule go to the build (it keeps only their rows); a change in that list rebuilds too
-  const staff=JSON.stringify({names:scheduleStaffList(), aliases:STAFF_ALIASES});
+  const staff=JSON.stringify({names:scheduleStaffList(), aliases:STAFF_ALIASES, from:ROSTER_FROM});
   if(!pulseNewResults() && staff===pulseState.staffSig) return;
   pulseBuilding=true;
   require('child_process').execFile(process.execPath, [path.join(APPDIR,'pulse','build.js'),'--from-transcripts','--max-age','90','--staff',staff], {cwd:APPDIR, timeout:120000, windowsHide:true}, (err, out, errOut)=>{
@@ -1014,10 +1023,11 @@ async function podDailyCounts(from, to){
     for(let d=from; d<=to && d<=isoToday(); d=isoAddDays(d,1)){
       // only the scans of the staff on the schedule (12.10.2026): the day's rows are read and counted by scanner; kept under
       // "s|<date>" — the older all-accounts totals under "<date>" stay in the file untouched but are no longer used
-      const key='s|'+d; if(d<settledBefore && store[key]!=null){ days[d]=store[key]; continue; }
+      // a day before ROSTER_FROM (01.09.2026) keeps its all-accounts total under "<date>", as it was (13.10.2026)
+      const old=d<ROSTER_FROM, key= old? d : 's|'+d; if(d<settledBefore && store[key]!=null){ days[d]=store[key]; continue; }
       const r=await fetchPodScans(d);
       if(r.error){ error=r.error; if(r.error==='auth_expired'){ deliverySessionExpired=true; break; } continue; }
-      const st=warehouseStaffSet(); days[d]=(r.rows||[]).filter(x=>x.scanner && st.has(normName(x.scanner))).length;
+      const st=warehouseStaffSet(); days[d]= old? (r.rows||[]).length : (r.rows||[]).filter(x=>x.scanner && st.has(normName(x.scanner))).length;
       if(d<settledBefore && r.complete){ store[key]=days[d]; changed=true; }
     }
     if(changed){ try{ fs.mkdirSync(path.dirname(POD_DAILY_FILE),{recursive:true}); fs.writeFileSync(POD_DAILY_FILE, JSON.stringify(store)); }catch(e){} }
@@ -1137,7 +1147,7 @@ async function tabelaPastLive(iso){
   const age=Math.round((new Date(isoToday()+'T00:00:00') - new Date(iso+'T00:00:00'))/86400000);
   const dl=await fetchDayProductLogs(isoToMdy(iso), {noCache: age<CACHE_SETTLE_DAYS});
   if(dl.error) return {error:dl.error};
-  return Object.assign(tabelaBoard.liveByOperator(dl.rows, warehouseStaffSet(), normName, parseWmsDate, STAFF_ALIASES), {reliable:dl.reliable, at:new Date().toISOString()});
+  return Object.assign(tabelaBoard.liveByOperator(dl.rows, warehouseStaffSet(), normName, parseWmsDate, STAFF_ALIASES, iso<ROSTER_FROM), {reliable:dl.reliable, at:new Date().toISOString()});
 }
 async function tabelaData(force, date){
   const past= date && date<isoToday(), today= past? date : isoToday(), yday=isoAddDays(today,-1);
@@ -1146,7 +1156,7 @@ async function tabelaData(force, date){
   let pod=null, ref=null;
   try{ pod=await fetchPodScans(today); }catch(e){ pod={error:String(e.message||e)}; }
   try{ ref=await fetchRefusalScans(today); }catch(e){ ref={error:String(e.message||e)}; }
-  const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES, ref);
+  const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES, ref, today<ROSTER_FROM);
   const podPosts=podPostsFor(today, pod, warehouseStaffSet());
   // tables: set by hand for that day, else placed automatically (usual table / first free one — tabela-board.js autoPlace)
   const placement=tabelaBoard.autoPlace(stations, live&&live.ops, rec, today, APPDIR, n=>STAFF_ALIASES[normName(n)]||n, !past);
@@ -1165,10 +1175,11 @@ function bnConfig(){ const db=loadDb(); return (db&&db.config&&db.config.bottlen
 let bnStaffMemo={mt:0, keys:null};
 function bnStaffKeys(){
   try{ const mt=fs.statSync(PULSE_DATA).mtimeMs; if(mt!==bnStaffMemo.mt){ const P=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8'));
-      const ok=P.staffFilter && P.capacity && P.capacity.opsMeta; bnStaffMemo={mt, keys: ok? [...new Set(P.capacity.opsMeta.map(m=>m.i+' #'+m.id))].sort() : null}; } }catch(e){}
+      // the build's own staff keys (opsMeta also keeps accounts with days before 01.09.2026, which are not staff)
+      const ok=P.staffFilter && P.capacity && P.capacity.opsMeta; bnStaffMemo={mt, keys: P.staffFilter && P.staffFilter.keys? P.staffFilter.keys : ok? [...new Set(P.capacity.opsMeta.map(m=>m.i+' #'+m.id))].sort() : null}; } }catch(e){}
   return bnStaffMemo.keys;
 }
-function bnThresholds(cfg){ const k=bnStaffKeys(); return Object.assign({}, cfg.thresholds||{}, {maxAgeDays:bnAdapter.paramValues(cfg.params||{}).ma}, k? {staffKeys:k} : {}); }
+function bnThresholds(cfg){ const k=bnStaffKeys(); return Object.assign({}, cfg.thresholds||{}, {maxAgeDays:bnAdapter.paramValues(cfg.params||{}).ma}, k? {staffKeys:k, staffFrom:ROSTER_FROM} : {}); }
 function bnTick(){
   try{ const cfg=bnConfig(); bnAdapter.writeRunFile(cfg.params||{});
     const r=bnAdapter.collect(360); bnState.lastCheck=new Date().toISOString();
@@ -1384,7 +1395,7 @@ http.createServer(async (req,resp)=>{
         return resp.end(buf); }
       return send(404,{error:'not found'});
     }
-    if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, Object.assign(shiftSchedule.summary(), {appUrl:scheduleAppUrl(), aliases:STAFF_ALIASES})); }   // aliases: two WMS accounts of one person → the schedule name
+    if(q.pathname==='/schedule' && req.method==='GET'){ return json(200, Object.assign(shiftSchedule.summary(), {appUrl:scheduleAppUrl(), aliases:STAFF_ALIASES, staffFrom:ROSTER_FROM, staff:[...new Set(scheduleStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))]})); }   // aliases: two WMS accounts of one person → the schedule name
     // the shifts of each day in a range (Kapaciteti & Stafi: staff from the schedule, the next 7 days) — read-only, at most 31 days;
     // a day the schedule does not cover comes back null (never guessed)
     if(q.pathname==='/schedule/days' && req.method==='GET'){

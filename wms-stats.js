@@ -91,8 +91,10 @@ module.exports=function makeWmsStats(d){
   const hourIn=(f,h)=>f.minute(h*60);
   /* only the staff on the schedule count (the warehouse lead, 12.10.2026): an order by the operator of its first check-out
      scan, a unit by its scanner — filtered here, with the current list, so a name added to the schedule counts at once */
-  const ownOrders=a=>{ const st=d.warehouseStaffSet(); return (a.coOrders||[]).filter(([,,by])=>by && st.has(d.normName(by))); };
-  const ownUnits=a=>{ const st=d.warehouseStaffSet(), u=new Array(24).fill(0); Object.entries(a.coUnitsBy||{}).forEach(([nm,hm])=>{ if(st.has(d.normName(nm))) Object.entries(hm).forEach(([h,c])=>u[+h]+=c); }); return u; };
+  // — from d.ROSTER_FROM (01.09.2026) only: an earlier day counts every account, as it did (13.10.2026)
+  const before=a=> d.ROSTER_FROM && a.date && a.date<d.ROSTER_FROM;
+  const ownOrders=a=>{ if(before(a)) return a.coOrders||[]; const st=d.warehouseStaffSet(); return (a.coOrders||[]).filter(([,,by])=>by && st.has(d.normName(by))); };
+  const ownUnits=a=>{ if(before(a)) return a.coUnits; const st=d.warehouseStaffSet(), u=new Array(24).fill(0); Object.entries(a.coUnitsBy||{}).forEach(([nm,hm])=>{ if(st.has(d.normName(nm))) Object.entries(hm).forEach(([h,c])=>u[+h]+=c); }); return u; };
 
   function summarise(aggs, days, prevAggs, f, today, single, laterAggs){
     const inRange=days.filter(f.day);

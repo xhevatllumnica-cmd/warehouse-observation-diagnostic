@@ -75,11 +75,13 @@ function detect(snap, cfgIn){
      their rows; D3 / D14 use their per-account rows (cellU / staffU / firstCoU) when the block has them — a snapshot from
      before those columns keeps its all-accounts figures (noted). */
   const SK= Array.isArray(cfg.staffKeys) && cfg.staffKeys.length? new Set(cfg.staffKeys) : null;
-  const own=c=> !SK || SK.has(c.i+' #'+c.id);
+  // cfg.staffFrom (01.09.2026, the lead 13.10.2026): a day before it keeps every account, as it was
+  const SF= SK && cfg.staffFrom? String(cfg.staffFrom) : '', early=d=> !!(SF && d && d<SF);
+  const own=c=> !SK || early(c.d) || SK.has(c.i+' #'+c.id);
   // D3 cells for the staff: orders in / picked as they are; check-out orders, check-in / map units and accounts per hour rebuilt from cellU
   const d3Cells=b=>{ const cells=J(b.row.cell); if(!SK) return cells; if(!b.row.cellU){ note('D3','Blloku D3 është nga para ndarjes sipas llogarisë: check-out / check-in / map përfshijnë të gjitha llogaritë deri në ekzekutimin e radhës.','info'); return cells; }
-    const by={}; cells.forEach(c=>{ by[c.d+'|'+c.h]=Object.assign({}, c, {co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0}); });
-    J(b.row.cellU).filter(own).forEach(u=>{ const k=u.d+'|'+u.h, c=by[k]||(by[k]={d:u.d, h:u.h, cr:0, pk:0, co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0});
+    const by={}; cells.forEach(c=>{ by[c.d+'|'+c.h]= early(c.d)? c : Object.assign({}, c, {co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0}); });
+    J(b.row.cellU).filter(u=>!early(u.d) && own(u)).forEach(u=>{ const k=u.d+'|'+u.h, c=by[k]||(by[k]={d:u.d, h:u.h, cr:0, pk:0, co:0, ci:0, mp:0, coOps:0, ciOps:0, mpOps:0});
       c.co+=u.co||0; c.ci+=u.ci||0; c.mp+=u.mp||0; if(u.co>0) c.coOps++; if(u.ci>0) c.ciOps++; if(u.mp>0) c.mpOps++; });
     return Object.values(by).sort((a,b)=>a.d<b.d?-1:a.d>b.d?1:a.h-b.h); };
   const run=(k,fn)=>{ if(!B[k]) { note(k,'Blloku '+k+' nuk është ekzekutuar ende.','missing'); return; } try{ fn(B[k]); }catch(e){ note(k,'Gabim në llogaritje: '+e.message,'error'); } };
@@ -507,11 +509,12 @@ function detect(snap, cfgIn){
   run('D14', b=>{
     let st=J(b.row.staff).filter(x=>x.d<today), fc=J(b.row.firstCo).filter(x=>x.d<today); const fx=J(b.row.fixes);
     // the staff on the schedule only: the day's sums and the median first check-out rebuilt from their own rows
-    if(SK && b.row.staffU){ const by={}; J(b.row.staffU).filter(x=>x.d<today && own(x)).forEach(x=>{ const o=by[x.d]||(by[x.d]={d:x.d, coOrd:0, coH:0, ci:0, ciH:0, mp:0, mpH:0, ppl:0});
-        ['coOrd','coH','ci','ciH','mp','mpH'].forEach(k=>o[k]+=x[k]||0); o.ppl++; }); st=Object.values(by).sort((a,b)=>a.d<b.d?-1:1); }
+    // (days before cfg.staffFrom keep their original all-accounts rows, as they were)
+    if(SK && b.row.staffU){ const by={}; J(b.row.staffU).filter(x=>x.d<today && !early(x.d) && own(x)).forEach(x=>{ const o=by[x.d]||(by[x.d]={d:x.d, coOrd:0, coH:0, ci:0, ciH:0, mp:0, mpH:0, ppl:0});
+        ['coOrd','coH','ci','ciH','mp','mpH'].forEach(k=>o[k]+=x[k]||0); o.ppl++; }); st=st.filter(x=>early(x.d)).concat(Object.values(by)).sort((a,b)=>a.d<b.d?-1:1); }
     else if(SK) note('D14','Blloku D14 është nga para ndarjes sipas llogarisë: KPI-të përfshijnë të gjitha llogaritë deri në ekzekutimin e radhës.','info');
-    if(SK && b.row.firstCoU){ const by={}; J(b.row.firstCoU).filter(x=>x.d<today && own(x)).forEach(x=>(by[x.d]=by[x.d]||[]).push(+x.f));
-      fc=Object.keys(by).sort().map(d=>({d, firstCoMed:q(by[d],0.5), firstCoMin:Math.min(...by[d]), n:by[d].length})); }
+    if(SK && b.row.firstCoU){ const by={}; J(b.row.firstCoU).filter(x=>x.d<today && !early(x.d) && own(x)).forEach(x=>(by[x.d]=by[x.d]||[]).push(+x.f));
+      fc=fc.filter(x=>early(x.d)).concat(Object.keys(by).sort().map(d=>({d, firstCoMed:q(by[d],0.5), firstCoMin:Math.min(...by[d]), n:by[d].length}))).sort((a,b)=>a.d<b.d?-1:1); }
     const FX={}; fx.forEach(x=>FX[x.d]=x.n);
     metric('K.coRate',{detector:'D14', kpi:true, label:'Check-out: porosi për orë aktive (staf)', unit:'porosi/orë', better:'higher', target:null,
       series:st.filter(x=>x.coH>0).map(x=>({d:x.d, v:r1(x.coOrd/x.coH), n:x.coH, num:x.coOrd, den:x.coH}))});

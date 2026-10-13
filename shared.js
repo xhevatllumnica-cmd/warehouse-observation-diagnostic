@@ -59,13 +59,16 @@ function staffInfo(){
   if(!p || !p.names || !p.names.length){ staffMemo={at:Date.now(), v:null}; return null; }
   const set=new Set(p.names.map(normN)), al={};
   Object.entries(p.aliases||{}).forEach(([k,v])=>{ if(set.has(normN(v))){ set.add(normN(k)); al[normN(k)]=v; } });
-  staffMemo={at:Date.now(), v:{set, al}}; return staffMemo.v;
+  staffMemo={at:Date.now(), v:{set, al, from:p.from||''}}; return staffMemo.v;
 }
-function staffName(n){ const S=staffInfo(); if(!S) return n; const k=normN(n); return S.set.has(k)? (S.al[k]||n) : null; }
-const staffOn = ()=> !!staffInfo();
+/* from (the warehouse lead, 13.10.2026): the filter applies to data from that date (01.09.2026) on — a row or a day
+   before it stays as it was (every account, under the account's own name) */
+const staffBefore=date=>{ const S=staffInfo(); return !!(S && S.from && date && date<S.from); };
+function staffName(n, date){ const S=staffInfo(); if(!S || staffBefore(date)) return n; const k=normN(n); return S.set.has(k)? (S.al[k]||n) : null; }
+const staffOn = date=> !!staffInfo() && !staffBefore(date);
 const OPERATOR_COLS=['wmsPrepared','wmsCheckin','wmsLogs'];
 function staffCol(db,name){ const c=col(db,name); if(!OPERATOR_COLS.includes(name) || !staffInfo()) return c;
-  const out=[]; c.forEach(r=>{ const n=staffName(r.operator); if(n) out.push(n===r.operator? r : Object.assign({}, r, {operator:n})); }); return out; }
+  const out=[]; c.forEach(r=>{ const n=staffName(r.operator, r.date); if(n) out.push(n===r.operator? r : Object.assign({}, r, {operator:n})); }); return out; }
 const cfg = db => db.config || (db.config={});
 const workDays = db => { const w=cfg(db).workDays; return (Array.isArray(w)&&w.length)? w : [1,2,3,4,5]; };
 function isWorkDay(db, dateStr){ if(!dateStr) return false; if(!workDays(db).includes(dobj(dateStr).getDay())) return false; return !(cfg(db).holidays||[]).includes(dateStr); }
@@ -123,7 +126,7 @@ const GENERIC_RE = /\btemp\b|\bacc\b|pa operator|admin@|\btest\b/i;
 function wmsDayFacts(db, d){
   const prep=staffCol(db,'wmsPrepared').filter(r=>r.date===d);
   const chk=staffCol(db,'wmsCheckin').filter(r=>r.date===d);
-  const flow= staffOn()? null : col(db,'wmsFlow').find(f=>f.date===d);   // the daily flow counts every account: with the staff list, check-in/out come from the staff's own rows
+  const flow= staffOn(d)? null : col(db,'wmsFlow').find(f=>f.date===d);   // the daily flow counts every account: with the staff list, check-in/out come from the staff's own rows
   const snaps=col(db,'wmsStats').filter(s=>s.date===d).sort((a,b)=>a.at<b.at?-1:1);
   if(!prep.length && !chk.length && !flow && !snaps.length) return null;
   const byOp={}; prep.forEach(r=>byOp[r.operator]=(byOp[r.operator]||0)+num(r.preparedOrders));

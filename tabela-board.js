@@ -15,13 +15,15 @@ const CUTS=[{b:13,label:'13:00'},{b:15,label:'15:00'},{b:17,label:'17:30'}];
 const MAPPED=7;
 const RETURN_DISP=new Set([20,21,22,29]);   // customer-return dispositions (WMS "Returns"): defect, outlet, return to stock, auction
 
-function liveByOperator(rows, staff, normName, parseWmsDate, aliases){
+// allAccounts: a day before the staff filter's start (01.09.2026) — its orders out count every account, as they did
+function liveByOperator(rows, staff, normName, parseWmsDate, aliases, allAccounts){
   const ops={}; let last=0; const allOrders=new Set(), types={};
   rows.forEach(x=>{
     const t=parseWmsDate(x.InsertDateTime); if(t==null) return; const id=Number(x.LogTypeId);
     const ty=types[id]||(types[id]={id, name:x.LogType||'', n:0}); ty.n++;   // log-type names as the WMS shows them (no personal data)
     const isOut=id===4||id===18, isOrd=isOut && !!x.OrderId, isIn=id===2, isMap=id===MAPPED, isRet=RETURN_DISP.has(id);
     if(!isOrd && !isIn && !isMap && !isRet && !isOut) return;
+    if(allAccounts && isOrd) allOrders.add(x.OrderId);
     const raw=String(x.UpdatedByName||'').replace(/\s+/g,' ').trim(); if(!raw || !staff.has(normName(raw))) return;
     if(isOrd) allOrders.add(x.OrderId);   // the day's orders out: only by the staff on the schedule (12.10.2026), as in Statistikat e WH
     const name=(aliases&&aliases[normName(raw)])||raw;   // e.g. two WMS accounts of one person → one name, as in § 5.4
@@ -253,7 +255,7 @@ function stationCards(stations, rec, ops, today, day, normName, aliases, presenc
 /* Delivery Platform work merged into the per-operator data, by the logged-in account's full name: POD scans (one per
    order) and collected refusals (one row per collection, n orders). A copy, so the cached live object is never changed;
    staff without WMS scans that day (a POD-only day) get an entry of their own. */
-function withPod(live, pod, staff, normName, aliases, ref){
+function withPod(live, pod, staff, normName, aliases, ref, allAccounts){   // allAccounts: a day before 01.09.2026 — totals as they were
   if(!live || live.error || !live.ops) return live;
   const ops=live.ops.map(o=>Object.assign({}, o, {pod:0, podByHour:{}, _podT:[], ref:0, refByHour:{}, _refT:[]})), by={}; ops.forEach(o=>by[o.name]=o);
   const infoOf=src=>({error: src&&src.error || null, total: src&&src.total!=null? src.total : null, complete: src? src.complete!==false : false, at: src&&src.at || null, otherAccounts:0});
@@ -267,8 +269,8 @@ function withPod(live, pod, staff, normName, aliases, ref){
   ((ref&&ref.rows)||[]).forEach(r=>{ const raw=r.receiver; if(!raw || !staff.has(normName(raw))){ rinfo.otherAccounts+=r.n; return; }
     const o=opFor(raw,r.t); for(let i=0;i<r.n;i++) o._refT.push(r.t); o.ref+=r.n; const h=new Date(r.t).getHours(); o.refByHour[h]=(o.refByHour[h]||0)+r.n; });
   // the day's totals = the staff's own work only (12.10.2026); scans by other accounts stay a bare count (no names)
-  if(info.total!=null) info.total=Math.max(0, info.total-info.otherAccounts);
-  if(rinfo.total!=null) rinfo.total=Math.max(0, rinfo.total-rinfo.otherAccounts);
+  if(info.total!=null && !allAccounts) info.total=Math.max(0, info.total-info.otherAccounts);
+  if(rinfo.total!=null && !allAccounts) rinfo.total=Math.max(0, rinfo.total-rinfo.otherAccounts);
   return Object.assign({}, live, {ops, pod:info, ref:rinfo});
 }
 

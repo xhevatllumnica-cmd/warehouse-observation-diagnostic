@@ -54,7 +54,9 @@ module.exports=function makeSchedule(d){
   function matchName(raw){
     const k=d.normName(raw), k2=k.endsWith('i')? k.slice(0,-1) : null;
     // a full name (as the Orari i Warehouse export writes it) matches the roster directly
-    if(k.includes(' ')){ const full=d.warehouseStaffList().find(r=>d.normName(r)===k); if(full) return d.STAFF_ALIASES[d.normName(full)]||full; }
+    // — and is taken as it is when the name book does not have it yet: a new person on the schedule counts (13.10.2026)
+    if(k.includes(' ')){ const full=d.warehouseStaffList().find(r=>d.normName(r)===k); if(full) return d.STAFF_ALIASES[d.normName(full)]||full;
+      return d.STAFF_ALIASES[k] || String(raw).replace(/\s+/g,' ').trim(); }
     const hits=[...new Set(d.warehouseStaffList().filter(r=>{ const f=d.normName(r).split(' ')[0]; return f===k || (k2 && f===k2); })
       .map(r=>d.STAFF_ALIASES[d.normName(r)]||r))];
     return hits.length===1? hits[0] : null;

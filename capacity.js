@@ -316,8 +316,14 @@ function capOpsPeriods(C){
 function capOpsFor(C, per){
   if(!C.opsDay) return {ops:C.ops||[], days:84};
   const meta={}; (C.opsMeta||[]).forEach(m=>meta[m.u]=m); const by={}, dates=new Set();
-  C.opsDay.forEach(r=>{ if(r.d<per.from || r.d>per.to) return; dates.add(r.d); const o=by[r.u]||(by[r.u]=Object.assign({ci:0,ciH:0,mp:0,mpH:0,co:0,coH:0,hrs:0,days:0}, meta[r.u]||{i:'?', id:String(r.u).slice(-3)}));
-    ['ci','ciH','mp','mpH','co','coH'].forEach(k=>o[k]+=+r[k]||0); o.hrs+=+r.h||0; o.days++; });
+  // two WMS accounts of one person (the schedule's aliases, e.g. Arian Rraca → Arian Racaj, the lead 13.10.2026): one row
+  // under the person's name; days = distinct dates on either account
+  const al=(capSched && capSched.sum && capSched.sum.aliases)||{}, nk=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+  const targets=new Set(Object.values(al).map(nk));   // the person's own account joins the same row
+  const keyOf=u=>{ const m=meta[u]; if(!m) return 'u:'+u; const c=al[nk(m.n)] || (targets.has(nk(m.n))? Object.values(al).find(v=>nk(v)===nk(m.n)) : null); return c? 'n:'+c : 'u:'+u; };
+  C.opsDay.forEach(r=>{ if(r.d<per.from || r.d>per.to) return; dates.add(r.d); const k=keyOf(r.u);
+    const o=by[k]||(by[k]=Object.assign({ci:0,ciH:0,mp:0,mpH:0,co:0,coH:0,hrs:0,days:0,_d:new Set()}, k.startsWith('n:')? Object.assign({}, meta[r.u], {n:k.slice(2)}) : meta[r.u]||{i:'?', id:String(r.u).slice(-3)}));
+    ['ci','ciH','mp','mpH','co','coH'].forEach(k2=>o[k2]+=+r[k2]||0); o.hrs+=+r.h||0; o._d.add(r.d); o.days=o._d.size; });
   const days=Math.max(1, Math.round((new Date(per.to+'T12:00:00')-new Date(per.from+'T12:00:00'))/864e5)+1), min=Math.max(30, Math.round(300*days/84));
   return {ops:Object.values(by).filter(o=>o.ci+o.mp+o.co>=min).sort((a,b)=>(b.ci+b.mp+b.co)-(a.ci+a.mp+a.co)), days};
 }
