@@ -50,22 +50,22 @@ SELECT /*pulse:M*/ CONVERT(varchar(19),GETDATE(),126) gen,
   ORDER BY 1,2,3 FOR JSON PATH) openr,
  (SELECT Id id, Name name, IsCheckIn ci, IsCheckOut co FROM Stations WHERE WarehouseId=1 AND IsActive=1 AND Name<>'test' ORDER BY Id FOR JSON PATH) stations
 
--- @A productivity (arian.r@ is the second account of Arian Racaj — counted under arian.racaj@, the lead 13.10.2026; same in @B)
+-- @A productivity (second accounts of one person, the lead 13.10.2026: arian.r@ → arian.racaj@ (Arian Racaj), albert.d@ → albert.demiri@ (Albert Demiri); same in @B)
 SELECT /*pulse:A*/ CONVERT(varchar(19),GETDATE(),126) gen,
  (SELECT CONVERT(varchar(19),MAX(InsertDateTime),126) FROM ProductLogs) lastLog,
  (SELECT CONVERT(varchar(19),MAX(CreatedOnUtc),126) FROM Orders) lastOrder,
- (SELECT CASE WHEN u.Username='arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' ELSE u.Username END n, MIN(LTRIM(RTRIM(ISNULL(u.FirstName,'')+' '+ISNULL(u.LastName,'')))) fn, SUM(CASE WHEN pl.LogTypeId=2 THEN 1 ELSE 0 END) ci, SUM(CASE WHEN pl.LogTypeId=7 THEN 1 ELSE 0 END) mp,
+ (SELECT CASE u.Username WHEN 'arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' WHEN 'albert.d@gjirafa.com' THEN 'albert.demiri@gjirafa.com' ELSE u.Username END n, MIN(LTRIM(RTRIM(ISNULL(u.FirstName,'')+' '+ISNULL(u.LastName,'')))) fn, SUM(CASE WHEN pl.LogTypeId=2 THEN 1 ELSE 0 END) ci, SUM(CASE WHEN pl.LogTypeId=7 THEN 1 ELSE 0 END) mp,
     SUM(CASE WHEN pl.LogTypeId IN (4,18) THEN 1 ELSE 0 END) co, COUNT(DISTINCT CAST(pl.InsertDateTime AS date)) d
   FROM ProductLogs pl JOIN Users u ON u.UserId=pl.UpdateBy
   WHERE pl.InsertDateTime >= DATEADD(day,-6,CAST(GETDATE() AS date)) AND pl.LogTypeId IN (2,7,4,18) AND u.UserWarehouseId=1 AND u.UserId>0
     AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
-  GROUP BY CASE WHEN u.Username='arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' ELSE u.Username END FOR JSON PATH) week,
+  GROUP BY CASE u.Username WHEN 'arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' WHEN 'albert.d@gjirafa.com' THEN 'albert.demiri@gjirafa.com' ELSE u.Username END FOR JSON PATH) week,
  (SELECT n, MIN(fn) fn, ROUND(SUM(w)/COUNT(*),1) opd, COUNT(*) d FROM (
-    SELECT CASE WHEN u.Username='arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' ELSE u.Username END n, MIN(LTRIM(RTRIM(ISNULL(u.FirstName,'')+' '+ISNULL(u.LastName,'')))) fn, CAST(pl.InsertDateTime AS date) dt, SUM(CASE WHEN pl.LogTypeId IN (4,18) THEN 1.0 WHEN pl.LogTypeId=2 THEN 0.8 ELSE 0.6 END) w
+    SELECT CASE u.Username WHEN 'arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' WHEN 'albert.d@gjirafa.com' THEN 'albert.demiri@gjirafa.com' ELSE u.Username END n, MIN(LTRIM(RTRIM(ISNULL(u.FirstName,'')+' '+ISNULL(u.LastName,'')))) fn, CAST(pl.InsertDateTime AS date) dt, SUM(CASE WHEN pl.LogTypeId IN (4,18) THEN 1.0 WHEN pl.LogTypeId=2 THEN 0.8 ELSE 0.6 END) w
     FROM ProductLogs pl JOIN Users u ON u.UserId=pl.UpdateBy
     WHERE pl.InsertDateTime >= DATEADD(day,-30,CAST(GETDATE() AS date)) AND pl.InsertDateTime < CAST(GETDATE() AS date) AND pl.LogTypeId IN (2,7,4,18)
       AND u.UserId>0 AND (u.Username LIKE '%@gjirafa.com' OR u.Username NOT LIKE '%@%')
-    GROUP BY CASE WHEN u.Username='arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' ELSE u.Username END, CAST(pl.InsertDateTime AS date)) x
+    GROUP BY CASE u.Username WHEN 'arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' WHEN 'albert.d@gjirafa.com' THEN 'albert.demiri@gjirafa.com' ELSE u.Username END, CAST(pl.InsertDateTime AS date)) x
   GROUP BY n ORDER BY opd DESC FOR JSON PATH) bands,
  (SELECT DATEPART(hour,pl.InsertDateTime) h, SUM(CASE WHEN pl.LogTypeId=2 THEN 1 ELSE 0 END) ci, SUM(CASE WHEN pl.LogTypeId=7 THEN 1 ELSE 0 END) mp,
     SUM(CASE WHEN pl.LogTypeId IN (4,18) THEN 1 ELSE 0 END) co
@@ -83,12 +83,12 @@ SELECT /*pulse:B*/
  (SELECT TOP 1 Id id, PeriodYear y, PeriodMonth m, Status s, TotalActions ta, TotalCost tc FROM WarehouseSalaryPeriods WHERE WarehouseId=1 AND Status=2 ORDER BY Id DESC FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) per,
  (SELECT a.Code c, COUNT(*) r, SUM(p.Quantity) q, ROUND(SUM(p.Cost),2) cost FROM WarehouseActionPayments p JOIN WarehouseActions a ON a.Id=p.WarehouseActionId
   WHERE p.SalaryPeriodId=(SELECT MAX(Id) FROM WarehouseSalaryPeriods WHERE WarehouseId=1 AND Status=2) GROUP BY a.Code, a.SortOrder ORDER BY a.SortOrder FOR JSON PATH) period,
- (SELECT ISNULL(CASE WHEN u.Username='arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' ELSE u.Username END, CONCAT('user#',p.UserId)) n, MIN(u.fn) fn, SUM(CASE WHEN a.Code='CheckIn' THEN p.Quantity ELSE 0 END) ci, SUM(CASE WHEN a.Code='Map' THEN p.Quantity ELSE 0 END) mp,
+ (SELECT ISNULL(CASE u.Username WHEN 'arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' WHEN 'albert.d@gjirafa.com' THEN 'albert.demiri@gjirafa.com' ELSE u.Username END, CONCAT('user#',p.UserId)) n, MIN(u.fn) fn, SUM(CASE WHEN a.Code='CheckIn' THEN p.Quantity ELSE 0 END) ci, SUM(CASE WHEN a.Code='Map' THEN p.Quantity ELSE 0 END) mp,
     SUM(CASE WHEN a.Code='Picking' THEN p.Quantity ELSE 0 END) pk, SUM(CASE WHEN a.Code='CheckoutShipping' THEN p.Quantity ELSE 0 END) co,
     ROUND(SUM(p.Quantity*a.AverageTimeSeconds)/3600.0,1) hrs, ROUND(SUM(p.Cost),2) cost
   FROM WarehouseActionPayments p JOIN WarehouseActions a ON a.Id=p.WarehouseActionId LEFT JOIN (SELECT UserId, MIN(Username) Username, MIN(LTRIM(RTRIM(ISNULL(FirstName,'')+' '+ISNULL(LastName,'')))) fn FROM Users GROUP BY UserId) u ON u.UserId=p.UserId
   WHERE p.SalaryPeriodId=(SELECT MAX(Id) FROM WarehouseSalaryPeriods WHERE WarehouseId=1 AND Status=2)
-  GROUP BY ISNULL(CASE WHEN u.Username='arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' ELSE u.Username END, CONCAT('user#',p.UserId)) ORDER BY cost DESC FOR JSON PATH) pay,
+  GROUP BY ISNULL(CASE u.Username WHEN 'arian.r@gjirafa.com' THEN 'arian.racaj@gjirafa.com' WHEN 'albert.d@gjirafa.com' THEN 'albert.demiri@gjirafa.com' ELSE u.Username END, CONCAT('user#',p.UserId)) ORDER BY cost DESC FOR JSON PATH) pay,
  (SELECT r.PricingVersionId v, a.Code c, v.OrderCompletionPrice ocp, v.TotalWeight tw, r.Weight w, r.Price p, CONVERT(varchar(16),r.ValidFrom,120) vf, CONVERT(varchar(16),r.ValidTo,120) vt, CAST(v.IsOpen AS int) op
   FROM WarehouseActionRates r JOIN WarehousePricingVersions v ON v.Id=r.PricingVersionId JOIN WarehouseActions a ON a.Id=r.WarehouseActionId
   ORDER BY r.PricingVersionId, a.SortOrder FOR JSON PATH, INCLUDE_NULL_VALUES) rates
