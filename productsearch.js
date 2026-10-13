@@ -36,12 +36,26 @@ async function psSearch(q){
   $$('[data-psq]').forEach(a=>a.onclick=e=>{ e.preventDefault(); const q2=a.dataset.psq; $('#psQ').value=q2; psSearch(q2); });
   $$('[data-psdp]').forEach(b=>b.onclick=()=>psLoadDp(b));
   $$('[data-psdp-auto]').forEach(b=>psLoadDp(b));   // the order's own card and the 3 latest orders of a product load at once
+  $$('[data-psimg]').forEach(psLoadImg);
+}
+async function psLoadImg(box){
+  const [uid, sku, code]=box.dataset.psimg.split('|'), link=box.parentElement.querySelector('[data-psimglink]');
+  try{ const r=await fetch('/search/img?uid='+encodeURIComponent(uid)+'&sku='+encodeURIComponent(sku)+'&code='+encodeURIComponent(code),{cache:'no-store'}); const j=await r.json();
+    if(j.image){ const img=new Image(); img.alt='Foto e produktit'; img.style.cssText='max-width:100%;max-height:100%;object-fit:contain';
+      img.onerror=()=>{ box.innerHTML='<span class="faint small">foto s\'u hap</span>'; }; img.src=j.image; box.innerHTML=''; box.appendChild(img);
+      if(link && j.url) link.innerHTML=`<a href="${h(j.url)}" target="_blank" rel="noopener">Shiko në ${h(j.shop==='gjirafa50.com'? 'Gjirafa50' : 'GjirafaMall')} ↗</a>`; }
+    else box.innerHTML=`<span class="faint small" style="text-align:center;padding:6px">${j.error==='auth_expired'? 'sesioni i WMS ka skaduar' : 'pa foto në dyqan'}</span>`;
+  }catch(e){ box.innerHTML='<span class="faint small">pa foto</span>'; }
 }
 const PS_STATUS={in:['Në depo','b-ok'], out:['Dalë','b-muted'], other:['Tjetër','b-warn']};
 function psProductCard(p, i){
-  const inU=p.units.filter(u=>u.status==='in'), rows=[...new Set(inU.map(u=>u.row).filter(Boolean))];
+  const inU=p.units.filter(u=>u.status==='in'), rows=[...new Set(inU.map(u=>u.row).filter(Boolean))], u0=(inU[0]||p.units[0]||{}).uid||'';
+  // the photo comes from the public shop (GjirafaMall / Gjirafa50) through the agent — loaded after the card is drawn
   return `<div class="card" style="margin-bottom:12px">
-    <h3 style="margin-top:0">${h(p.name||'(pa emër)')} <span class="sub">EAN ${h(p.code||'—')} · SKU ${h(p.sku||'—')}${p.vendor? ' · '+h(p.vendor) : ''}</span></h3>
+    <div style="display:flex;gap:14px;align-items:flex-start;margin-bottom:6px">
+      <div data-psimg="${h(u0)}|${h(p.sku)}|${h(p.code)}" style="width:128px;height:128px;flex:none;border:1px solid var(--line);border-radius:10px;display:flex;align-items:center;justify-content:center;background:#fff;overflow:hidden">
+        <span class="faint small">foto…</span></div>
+      <h3 style="margin:4px 0 0">${h(p.name||'(pa emër)')} <span class="sub" style="display:block;margin-top:4px">EAN ${h(p.code||'—')} · SKU ${h(p.sku||'—')}${p.vendor? ' · '+h(p.vendor) : ''}</span><span class="small" data-psimglink></span></h3></div>
     <div class="grid g-kpi" style="margin-bottom:10px">
       ${kpiCard(p.counts.in, 'Në depo tani', rows.length? 'rafti: '+rows.slice(0,4).join(', ')+(rows.length>4? ' …' : '') : 'asnjë njësi në raft')}
       ${kpiCard(p.counts.out, 'Të dala', p.orders.length+' porosi')}

@@ -1410,6 +1410,11 @@ http.createServer(async (req,resp)=>{
         return resp.end(buf); }
       return send(404,{error:'not found'});
     }
+    // the product's photo for "Kërko produkt" (product-search.js productImage): WMS ProductId → the public shop's product page
+    if(q.pathname==='/search/img' && req.method==='GET'){
+      const ok=v=>/^[A-Za-z0-9._-]{0,40}$/.test(String(v||'')); if(![q.query.uid,q.query.sku,q.query.code].every(ok)) return json(400,{error:'input'});
+      const r=await productSearchRef.productImage(String(q.query.uid||''), String(q.query.sku||''), String(q.query.code||''));
+      resp.writeHead(r.error? (r.error==='auth_expired'? 401 : 400) : 200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r)); }
     // "Kërko produkt" (product-search.js) — same-origin only (no CORS header), read-only
     if(q.pathname==='/search/q' && req.method==='GET'){
       const r=await productSearchRef.search(q.query.q||''); const code= r.error? (r.error==='auth_expired'? 401 : 400) : 200;

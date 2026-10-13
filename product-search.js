@@ -63,8 +63,11 @@ module.exports=function makeProductSearch(d){
   // rows of one product (or unit) → the product card: units with their last event, history, orders
   function productCards(rows){
     const byP={};
-    rows.forEach(x=>{ const t=d.parseWmsDate(x.InsertDateTime); if(t==null) return; const key=(x.ProductCode||'')+'|'+(x.Sku||'');
-      const p=byP[key]||(byP[key]={code:x.ProductCode||'', sku:x.Sku||'', name:String(x.ProductName||'').trim(), vendor:String(x.VendorName||'').trim(), ev:[]});
+    // one product = one SKU (some older WMS rows carry the SKU in the code field too); the EAN shown = the code that is not the SKU
+    rows.forEach(x=>{ const t=d.parseWmsDate(x.InsertDateTime); if(t==null) return; const key= x.Sku? 's|'+String(x.Sku).toLowerCase() : 'c|'+(x.ProductCode||'');
+      const p=byP[key]||(byP[key]={code:'', codes:{}, sku:x.Sku||'', name:String(x.ProductName||'').trim(), vendor:String(x.VendorName||'').trim(), ev:[]});
+      const c=String(x.ProductCode||''); if(c) p.codes[c]=(p.codes[c]||0)+1;
+      p.code=Object.entries(p.codes).sort((a,b)=>(a[0].toLowerCase()===String(p.sku).toLowerCase())-(b[0].toLowerCase()===String(p.sku).toLowerCase()) || b[1]-a[1])[0][0];
       p.ev.push({t, type:x.LogType||('#'+x.LogTypeId), row:String(x.Row||'').trim().replace(/^-+$/,'') /* "---" = no row */, order:Number(x.OrderId)||0, pid:Number(x.PlatformId)||0, by:person(x.UpdatedByName), uid:String(x.ProductItemUniqueIdentifierId||'').trim(), serial:String(x.ProductSerialNumber||'').trim()}); });
     return Object.values(byP).map(p=>{ p.ev.sort((a,b)=>b.t-a.t);
       const units={}; p.ev.forEach(e=>{ if(!e.uid) return; const u=units[e.uid]||(units[e.uid]={uid:e.uid, serial:e.serial, ev:[]}); u.ev.push(e); });
@@ -104,10 +107,14 @@ module.exports=function makeProductSearch(d){
         if(co.length) out.order.checkout={first:loc(co[0].t), last:loc(co[co.length-1].t), by:[...new Set(co.map(e=>e.by).filter(Boolean))], pid:co[0].pid, date:loc(co[0].t).slice(0,10)};
         out.order.events=ev.slice(-40).reverse().map(e=>({at:loc(e.t), type:e.type, by:e.by, uid:e.uid})); } }
     if(plain){
-      const found=[], by={};
-      for(const [label, f] of [['code',{ProductCode:q}], ['sku',{Sku:q}], ['unit',{ProductItemUniqueIdentifier:q}], ['serial',{ProductSerialNumber:q}]]){
-        const r=await plog(f); if(r.error) return r; if(r.rows.length){ by[label]=r.rows.length; found.push(...r.rows); if(label!=='serial') break; } }
-      if(found.length){ out.matchedBy=Object.keys(by); out.products=productCards(found); out.complete=true; }
+      // code, SKU and unit are all tried (one value can be a code in old rows and a SKU in new ones); the serial only if none hits.
+      // A product found by its code is then completed by its SKU, so its older rows (SKU in the code field) are in too.
+      const found=[], seen=new Set(), by={}, add=(label, rows)=>{ rows.forEach(x=>{ const k=x.Id!=null? x.Id : JSON.stringify(x); if(!seen.has(k)){ seen.add(k); found.push(x); } }); if(rows.length) by[label]=(by[label]||0)+rows.length; };
+      for(const [label, f] of [['code',{ProductCode:q}], ['sku',{Sku:q}], ['unit',{ProductItemUniqueIdentifier:q}]]){ const r=await plog(f); if(r.error) return r; add(label, r.rows); }
+      if(!found.length){ const r=await plog({ProductSerialNumber:q}); if(r.error) return r; add('serial', r.rows); }
+      if(by.code && !by.sku){ for(const s of [...new Set(found.map(x=>x.Sku).filter(Boolean))].slice(0,3)){ const r=await plog({Sku:s}); if(r.error) return r; add('sku', r.rows); } }
+      if(by.unit) out.unitOnly=String(q);
+      if(found.length){ out.matchedBy=Object.keys(by); out.products=productCards(found).filter(p=>!by.unit || p.units.some(u=>u.uid===q)); out.complete=true; }
     }
     if(!out.products.length && !out.order && /[A-Za-zëçËÇ]/.test(q)) out.names=byName(q);
     out.index={products:Object.keys(idx.p).length, days:Object.keys(idx.days).length};
@@ -130,5 +137,44 @@ module.exports=function makeProductSearch(d){
     // so a refusal is read from the delivery status above: "refuzuar" / processStatusRefused)
     return res;
   }
-  return {search, orderDp, indexRows, byName, indexInfo:()=>({products:Object.keys(idx.p).length, days:Object.keys(idx.days).sort()})};
+  /* ---- the product's photo (the lead, 14.10.2026): the WMS has no images, the public shops do.
+     unit / SKU → ProductId through the WMS "Row Products" search (POST /Order/ShowRowProducts, its own text search; the WMS
+     ProductId is the shops' product id) → https://gjirafamall.com/p/<id> (or gjirafa50.com) redirects to the product page →
+     its og:image. Accepted only when that page carries the same SKU or EAN (so never a wrong photo). Public pages, no login;
+     results (also misses, for a day) cached in data/product-images.json. ---- */
+  const IMG_FILE=path.join(d.appDir,'data','product-images.json'); let imgs={}; try{ imgs=JSON.parse(fs.readFileSync(IMG_FILE,'utf8'))||{}; }catch(e){}
+  const saveImgs=()=>{ try{ fs.mkdirSync(path.dirname(IMG_FILE),{recursive:true}); fs.writeFileSync(IMG_FILE, JSON.stringify(imgs)); }catch(e){} };
+  const RP_COLS=['ProductId','ProductCode','Sku','ProductItemUniqueIdentifier','ProductName','productStatus','OrderId','SupplyUniqueId','RowUniqueName','UpdatedBy','InsertDateTime']
+    .map(x=>({data:x,name:'',searchable:true,orderable:false,search:{value:'',regex:false}}));
+  async function productIdFor(uid, sku){
+    for(const sv of [uid, sku].filter(Boolean)){
+      const body=d.enc({draw:1,start:0,length:25,search:{value:sv,regex:false},order:[{column:0,dir:'asc'}],columns:RP_COLS,filters:{RowId:'NaN',StatusIds:''}}).join('&');
+      const r=await d.wmsFetch('/Order/ShowRowProducts',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8','X-Requested-With':'XMLHttpRequest'},body});
+      if(d.looksLoggedOut(r)) return {error:'auth_expired'};
+      let j; try{ j=JSON.parse(r.body); }catch(e){ continue; }
+      const hit=(j.data||[]).find(x=> sv===uid? String(x.ProductItemUniqueIdentifier)===uid : String(x.Sku||'').toLowerCase()===String(sku).toLowerCase());
+      if(hit && hit.ProductId) return {productId:Number(hit.ProductId)};
+    }
+    return {productId:null};
+  }
+  const UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
+  async function shopImage(pid, sku, code){
+    for(const shop of ['gjirafamall.com','gjirafa50.com']){
+      let r, html=''; try{ r=await fetch('https://'+shop+'/p/'+pid,{headers:{'User-Agent':UA,'Accept':'text/html'},signal:AbortSignal.timeout(12000)}); html=await r.text(); }catch(e){ continue; }
+      if(!r.ok) continue;
+      const low=html.toLowerCase(), ok=(sku && low.includes(String(sku).toLowerCase())) || (code && html.includes(String(code)));
+      const img=(html.match(/property="og:image"\s+content="([^"]+)"/)||[])[1]||'';
+      if(ok && /^https:\/\/[a-z0-9.-]+\/images\//i.test(img)) return {image:img, url:r.url, shop};
+    }
+    return null;
+  }
+  async function productImage(uid, sku, code){
+    const key=String(sku||code||uid||'').toLowerCase(); if(!key) return {error:'input'};
+    const c=imgs[key]; if(c && (c.image || Date.now()-Date.parse(c.at)<86400000)) return Object.assign({cached:true}, c);
+    const p=await productIdFor(uid, sku); if(p.error) return p;
+    const res={productId:p.productId, image:null, url:null, shop:null, at:new Date().toISOString()};
+    if(p.productId){ const s=await shopImage(p.productId, sku, code); if(s) Object.assign(res, s); }
+    imgs[key]=res; saveImgs(); return res;
+  }
+  return {search, orderDp, productImage, indexRows, byName, indexInfo:()=>({products:Object.keys(idx.p).length, days:Object.keys(idx.days).sort()})};
 };
