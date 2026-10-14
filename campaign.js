@@ -79,7 +79,7 @@ function campBacklogStart(date){
 /* evaluate one hourly entry: expected vs actual, backlog, required vs real pace, alarm level */
 function campEval(e,date){
   const c=campCfg(), day=campDay(date), list=campEntries(date), i=list.findIndex(x=>x.id===e.id), prev=i>0?list[i-1]:null;
-  const t=campMin(e.time), expected=campExpectedBy(day,t);
+  const t=campMin(e.time), expected=campExpWin(day,date,t);
   const dev=expected?((num(e.ordersIn)-expected)/expected*100):null;
   const bStart=campBacklogStart(date);
   const backlogCalc=(bStart!=null&&e.ordersIn!=null&&e.completed!=null)?bStart+num(e.ordersIn)-num(e.completed):null;
@@ -126,6 +126,54 @@ function campWms(date){
   const snaps=Store.col('wmsStats').filter(s=>s.at&&fmtLocalDate(new Date(s.at))===date).sort((a,b)=>a.at<b.at?-1:1);
   return {prepared, checkedIn:chk.reduce((a,r)=>a+num(r.checkedIn),0), checkedOut:chk.reduce((a,r)=>a+num(r.checkedOut),0),
     snap:snaps[snaps.length-1]||null, snaps, operators:new Set(Store.col('wmsPrepared').filter(r=>r.date===date&&num(r.preparedOrders)>0).map(r=>r.operator)).size};
+}
+/* WMS hour by hour (pulse/data → campaign.hours, block C campH, refreshed hourly 07–22): orders created / checked out, units out / in,
+   warehouse 01, local time. The campaign counts from the launch (start date + launchTime, e.g. 14.10.2026 16:00, the lead 14.10.2026):
+   the launch day from that hour, the following days whole (00–24). Expected orders of a window = forecast curve from its start. */
+let campReal=null, campRealBusy=false;
+function campRealLoad(){
+  if(campRealBusy) return; campRealBusy=true;
+  fetch('/pulse/data',{cache:'no-store'}).then(r=>r.json()).then(j=>{ campReal=(j&&j.campaign)||{hours:[]}; })
+    .catch(()=>{ campReal={hours:[], error:true}; })
+    .finally(()=>{ campRealBusy=false; if(location.hash==='#campaign') renderCampaign($('#view')); });
+}
+function campWinStart(date){ const c=campCfg(); return date===c.start? (campMin(c.launchTime)||0) : 0; }   // minutes from 00:00
+function campExpWin(day,date,min){ const a=campExpectedBy(day,campWinStart(date)), b=campExpectedBy(day,min);
+  return a==null||b==null? null : Math.max(0,b-a); }
+function campRealDay(date){
+  const c=campCfg(); if(!campReal||!c.start||date<c.start) return null;
+  const H=Math.floor(campWinStart(date)/60), rows=(campReal.hours||[]).filter(r=>r.d===date&&r.h>=H).sort((a,b)=>a.h-b.h);
+  const s=k=>rows.reduce((a,r)=>a+num(r[k]),0);
+  return {rows, from:H, cr:s('cr'), co:s('co'), cu:s('cu'), ci:s('ci'), has:rows.length>0};
+}
+function campRealCard(selDate){
+  const c=campCfg(); if(!c.start) return '';
+  if(!campReal){ campRealLoad(); return `<div class="card" style="margin-bottom:14px"><h3>Kampanja ditë pas dite (WMS)</h3><div class="hint">Duke ngarkuar…</div></div>`; }
+  const today=campToday(), days=campDays().filter(d=>d.date>=c.start&&d.date<=today);
+  if(!days.length) return '';
+  let cumIn=0, cumOut=0;
+  const rows=days.map(d=>{ const R=campRealDay(d.date)||{cr:0,co:0,cu:0,ci:0,has:false}, from=campWinStart(d.date);
+    const exp=campExpWin(d, d.date, d.date===today? new Date().getHours()*60+new Date().getMinutes() : 1440), expDay=campExpWin(d, d.date, 1440);
+    cumIn+=R.cr; cumOut+=R.co;
+    return {d, R, from, exp, expDay, cumIn, cumOut}; });
+  const T=k=>rows.reduce((a,r)=>a+num(r.R[k]),0);
+  const pct=(a,b)=>b? Math.round(a/b*100)+'%' : '—';
+  const sel=campRealDay(selDate), selDay=campDay(selDate);
+  let cIn=0, cOut=0;
+  const hourly=sel&&sel.has? sel.rows.map(r=>{ cIn+=num(r.cr); cOut+=num(r.co);
+    const e=selDay? campExpWin(selDay, selDate, (r.h+1)*60) : null;
+    return `<tr><td>${String(r.h).padStart(2,'0')}:00–${String(r.h+1).padStart(2,'0')}:00</td><td>${campFmt(r.cr)}</td><td>${campFmt(cIn)} ${e?`<span class="faint">/ ${campFmt(e)}</span>`:''}</td><td>${campFmt(r.co)}</td><td>${campFmt(cOut)}</td><td>${campFmt(r.cu)}</td><td>${campFmt(r.ci)}</td><td>${campFmt(cIn-cOut)}</td></tr>`; }).join('') : '';
+  return `<div class="card" style="margin-bottom:14px"><h3>Kampanja ditë pas dite <span class="sub">WMS · nga ${h(fmtDateAl(c.start))} ora ${h(c.launchTime||'00:00')} · depo 01</span></h3>
+    <div class="tablewrap"><table><thead><tr><th>Dita</th><th>Dritarja</th><th>Porosi të krijuara</th><th>Parashikimi</th><th>Porosi të dala<br><span class="sub">check-out i parë</span></th><th>Njësi check-out</th><th>Njësi check-in</th><th>Hyrë − dalë<br><span class="sub">kumulative nga nisja</span></th></tr></thead>
+    <tbody>${rows.map(({d,R,from,exp,expDay,cumIn,cumOut})=>`<tr ${d.date===selDate?'style="outline:1px solid var(--accent)"':''}>
+      <td><b>${h(campDayName(d.date))}</b> <span class="small muted">${h(fmtDateAl(d.date))}</span></td>
+      <td>${h(campHHMM(from))}–24:00${d.date===today?' <span class="badge b-new">sot</span>':''}</td>
+      <td><b>${campFmt(R.cr)}</b> ${exp?`<span class="small muted">(${pct(R.cr,exp)} e pritjes${d.date===today?' deri tani':''})</span>`:''}</td>
+      <td>${campFmt(expDay)}</td><td>${campFmt(R.co)}</td><td>${campFmt(R.cu)}</td><td>${campFmt(R.ci)}</td><td>${campFmt(cumIn-cumOut)}</td></tr>`).join('')}
+      <tr style="border-top:2px solid var(--line)"><td colspan="2"><b>Gjithsej nga nisja</b></td><td><b>${campFmt(T('cr'))}</b></td><td>${campFmt(rows.reduce((a,r)=>a+num(r.expDay),0))}</td><td><b>${campFmt(T('co'))}</b></td><td><b>${campFmt(T('cu'))}</b></td><td><b>${campFmt(T('ci'))}</b></td><td><b>${campFmt(T('cr')-T('co'))}</b></td></tr></tbody></table></div>
+    ${hourly?`<h3 style="font-size:12.5px;margin:14px 0 4px">${h(campDayName(selDate))} ${h(fmtDateAl(selDate))} — orë pas ore nga ${h(campHHMM(campWinStart(selDate)))}</h3>
+    <div class="tablewrap"><table><thead><tr><th>Ora</th><th>Krijuara</th><th>Kumulative <span class="sub">/ e pritur</span></th><th>Dala</th><th>Dala kumulative</th><th>Njësi check-out</th><th>Njësi check-in</th><th>Hyrë − dalë (dita)</th></tr></thead><tbody>${hourly}</tbody></table></div>`:''}
+    <div class="hint" style="margin-top:8px">Burimi: WMS (Orders.CreatedOnUtc në orën lokale; check-out-i i parë i porosisë dhe njësitë ProductLogs 4/18; check-in ProductCheckIns), depo 01, rifreskim çdo orë 07–22${campReal.at?' · i fundit '+h(fmtTime(campReal.at)):''}. Dita e nisjes numërohet nga ora ${h(c.launchTime||'00:00')}, ditët pasuese 00:00–24:00. "Hyrë − dalë" është tregues i ngarkesës, jo backlog-u i saktë (porositë e krijuara para nisjes nuk përfshihen). Parashikimi = kurba e planit nga fillimi i dritares.</div></div>`;
 }
 function campPhase(date){
   const c=campCfg(); if(!c.start) return 'Pa plan';
@@ -226,7 +274,7 @@ function campLive(box){
   const c=campCfg(), date=campSelDate(), day=campDay(date), calc=campCalc(date), ents=campEntries(date), last=ents[ents.length-1];
   const ev=last?campEval(last,date):null, w=campWms(date), rec=campDailyRec(date);
   const nowMin=new Date().getHours()*60+new Date().getMinutes();
-  const expNow=date===campToday()?campExpectedBy(day,nowMin):null;
+  const expNow=date===campToday()?campExpWin(day,date,nowMin):(date<campToday()?campExpWin(day,date,1440):null), rw=campRealDay(date);
   const kc=(val,lbl,foot,cls)=>`<div class="card kpi"><div class="val ${cls||''}">${val}</div><div class="lbl">${lbl}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
   const devCls=ev&&ev.dev!=null?(ev.dev>=num(c.triggerPct,7)?'warn':(ev.dev<=-20?'warn':'ok')):'';
   const verify=c.context.verify||[];
@@ -235,8 +283,10 @@ function campLive(box){
       ${ev?campLevelBadge(ev.level)+` <span class="small muted">${h(ev.why)}</span>`:'<span class="small muted">Ende s\'ka raport orar për këtë ditë</span>'}
       <span style="margin-left:auto" class="btnrow"><button class="btn sm primary" id="campAddH">＋ Raport orar</button>${wmsOnAgent()?'<button class="btn sm" id="campSync">⟳ Sync WMS</button>':''}</span></div>
     ${verify.length?`<div class="note warn"><b>Për t'u verifikuar:</b> ${verify.map(h).join(' · ')}</div>`:''}
+    ${campRealCard(date)}
     <div class="grid g-kpi" style="margin-bottom:14px">
-      ${kc(last?campFmt(last.ordersIn):'—','Porosi të hyra'+(last?' deri '+h(last.time):''), ev&&ev.expected!=null?'pritej '+campFmt(ev.expected)+(ev.dev!=null?' ('+(ev.dev>=0?'+':'')+Math.round(ev.dev)+'%)':''):(expNow!=null?'pritet tani ~'+campFmt(expNow):''), devCls)}
+      ${last? kc(campFmt(last.ordersIn),'Porosi të hyra deri '+h(last.time), ev&&ev.expected!=null?'pritej '+campFmt(ev.expected)+(ev.dev!=null?' ('+(ev.dev>=0?'+':'')+Math.round(ev.dev)+'%)':''):'', devCls)
+        : kc(rw&&rw.has?campFmt(rw.cr):'—','Porosi të hyra nga '+h(campHHMM(campWinStart(date)))+' (WMS)', expNow!=null?'pritej'+(date===campToday()?' deri tani':'')+' ~'+campFmt(expNow):'')}
       ${kc(campFmt(day&&day.forecast),'Parashikimi i ditës', calc&&calc.wh!=null?campFmt(calc.wh)+' për depon ('+c.whSharePct+'%)':'')}
       ${kc(last&&last.completed!=null?campFmt(last.completed):'—','Të përfunduara', 'paketuar + etiketuar + në zonën e kurierit')}
       ${kc(ev&&ev.backlog!=null?campFmt(ev.backlog):'—','Backlog tani', ev&&ev.conflict?'⚠ ndryshon nga llogaritja ('+campFmt(ev.backlogCalc)+')':(campBacklogStart(date)!=null?'në fillim: '+campFmt(campBacklogStart(date)):''), ev&&ev.conflict?'warn':'')}
@@ -246,8 +296,8 @@ function campLive(box){
       ${kc(rec&&rec.backlogEnd!=null&&rec.backlogEnd!==''?campFmt(rec.backlogEnd):'—','Backlog në fund të ditës', 'objektivi ≤ '+campFmt(c.kpi.backlogEnd))}
     </div>
     <div class="grid g-2">
-      <div class="card"><h3>Porositë e hyra: reale kundrejt parashikimit <span class="sub">kumulative sipas orës</span></h3>${campChartSVG(day,ents)}
-        <div class="hint">— vija blu: parashikimi · - - portokalli: pragu i skenarit të lartë (+${c.triggerPct}%) · pikat jeshile: raportet orare.${day&&day.curve==='launch'?' Kurba e ditës së nisjes është zhvendosur te ora '+h(c.launchTime)+' (SUPOZIM).':''}</div></div>
+      <div class="card"><h3>Porositë e hyra: reale kundrejt parashikimit <span class="sub">kumulative sipas orës</span></h3>${campChartSVG(day,ents,date)}
+        <div class="hint">— vija blu: parashikimi · - - portokalli: pragu i skenarit të lartë (+${c.triggerPct}%) · vija e errët: porositë e krijuara në WMS · pikat jeshile: raportet orare.${campWinStart(date)?' Dita e nisjes numërohet nga ora '+h(campHHMM(campWinStart(date)))+' (parashikimi dhe WMS nga ajo orë).':''}${day&&day.curve==='launch'?' Kurba e ditës së nisjes është zhvendosur te ora '+h(c.launchTime)+' (SUPOZIM).':''}</div></div>
       <div class="card"><h3>Live nga WMS <span class="sub">${w.snap?'snapshot '+h(fmtTime(w.snap.at)):'pa snapshot sot'}</span></h3>
         <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px">
           ${kc(campFmt(w.prepared),'Porosi të përgatitura', w.operators?w.operators+' operatorë':'')}
@@ -268,11 +318,13 @@ function campLive(box){
   $('#campAddH').onclick=()=>campHourlyForm(null,date);
   const sb=$('#campSync'); if(sb) sb.onclick=()=>{ sb.disabled=true; sb.textContent='⟳ Duke sinkronizuar…'; wmsAgentSync(2,1).then(r=>{ toast(r.ok?'WMS u sinkronizua':'Sync dështoi: '+r.msg); renderCampaign($('#view')); }); };
 }
-function campChartSVG(day,ents){
+function campChartSVG(day,ents,date){
   if(!day) return '<div class="empty">—</div>';
   const W=640,H=210,pl=44,pr=10,pt=10,pb=24, c=campCfg();
-  const exp=Array.from({length:25},(_,hh)=>campExpectedBy(day,hh*60)||0);
-  const max=Math.max(1,...exp.map(v=>v*(1+num(c.triggerPct,7)/100)),...ents.map(e=>num(e.ordersIn)));
+  // expected and WMS from the window start (launch day: from the launch time), cumulative
+  const w0=campWinStart(date), exp=Array.from({length:25},(_,hh)=>hh*60<w0? 0 : (campExpWin(day,date,hh*60)||0));
+  const R=campRealDay(date); let cum=0; const wms=R&&R.has? [[w0,0]].concat(R.rows.map(r=>{ cum+=num(r.cr); return [Math.min(1440,(r.h+1)*60), cum]; })) : [];
+  const max=Math.max(1,...exp.map(v=>v*(1+num(c.triggerPct,7)/100)),...ents.map(e=>num(e.ordersIn)),...wms.map(p=>p[1]));
   const X=m=>pl+(m/1440)*(W-pl-pr), Y=v=>H-pb-(v/max)*(H-pt-pb);
   const line=(arr,f)=>arr.map((v,i)=>`${X(i*60).toFixed(1)},${Y(f(v)).toFixed(1)}`).join(' ');
   const grid=[0,0.25,0.5,0.75,1].map(f=>`<line x1="${pl}" x2="${W-pr}" y1="${Y(max*f)}" y2="${Y(max*f)}" style="stroke:var(--line)"/><text x="${pl-6}" y="${Y(max*f)+4}" text-anchor="end" style="fill:var(--faint);font-size:10px">${campFmt(max*f)}</text>`).join('');
@@ -284,6 +336,8 @@ function campChartSVG(day,ents){
     <line x1="${X(cut)}" x2="${X(cut)}" y1="${pt}" y2="${H-pb}" style="stroke:var(--faint);stroke-dasharray:2 3"/><text x="${X(cut)+3}" y="${pt+10}" style="fill:var(--faint);font-size:10px">cut-off ${h(c.cutoff)}</text>
     <polyline points="${line(exp,v=>v*(1+num(c.triggerPct,7)/100))}" style="fill:none;stroke:var(--imp);stroke-width:1.5;stroke-dasharray:5 4"/>
     <polyline points="${line(exp,v=>v)}" style="fill:none;stroke:var(--accent);stroke-width:2"/>
+    ${w0? `<line x1="${X(w0)}" x2="${X(w0)}" y1="${pt}" y2="${H-pb}" style="stroke:var(--accent);stroke-dasharray:2 3"/><text x="${X(w0)-3}" y="${pt+10}" text-anchor="end" style="fill:var(--accent);font-size:10px">nisja ${h(campHHMM(w0))}</text>` : ''}
+    ${wms.length?`<polyline points="${wms.map(p=>X(p[0]).toFixed(1)+','+Y(p[1]).toFixed(1)).join(' ')}" style="fill:none;stroke:var(--text);stroke-width:2"/>${wms.slice(1).map(p=>`<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="2.5" style="fill:var(--text)"><title>WMS deri ${campHHMM(p[0])}: ${campFmt(p[1])}</title></circle>`).join('')}`:''}
     ${act?`<polyline points="${act}" style="fill:none;stroke:var(--ok);stroke-width:2"/>`:''}${pts}</svg>`;
 }
 
@@ -291,7 +345,7 @@ function campChartSVG(day,ents){
 function campPlan(box){
   const c=campCfg(), days=campDays();
   const rows=days.map(d=>{ const k=campCalc(d.date), rec=campDailyRec(d.date), ents=campEntries(d.date), last=ents[ents.length-1];
-    const inReal=rec&&rec.ordersIn!=null&&rec.ordersIn!==''?num(rec.ordersIn):(last?num(last.ordersIn):null);
+    const rw=campRealDay(d.date), inReal=rec&&rec.ordersIn!=null&&rec.ordersIn!==''?num(rec.ordersIn):(last?num(last.ordersIn):(rw&&rw.has?rw.cr:null));
     return {d,k,rec,inReal}; });
   const sum=f=>rows.reduce((a,r)=>a+num(f(r)),0);
   const ctx=(t,arr,tag)=>arr&&arr.length?`<div class="card"><h3>${t}</h3><div class="small" style="display:grid;gap:5px">${arr.map(x=>`<div><span class="etag ${tag||'et-fact'}">${tag==='et-hyp'?'supozim':tag==='et-rec'?'mësim':'fakt'}</span>${h(x)}</div>`).join('')}</div></div>`:'';
@@ -352,7 +406,7 @@ function campHourly(box){
   const date=campSelDate(), ents=campEntries(date), c=campCfg();
   box.innerHTML=`<div class="filters" style="align-items:center">${campDayPicker('campHDay')}
       <button class="btn sm primary" id="campAddH">＋ Raport orar</button>
-      <span class="hint">Kumulativet janë për ditën (nga 00:00). Backlog-u bosh llogaritet: backlog në fillim + të hyra − të përfunduara.</span></div>
+      <span class="hint">Kumulativet janë për ditën (nga 00:00${c.start&&campMin(c.launchTime)?'; dita e nisjes '+h(fmtDateAl(c.start))+' nga ora '+h(c.launchTime):''}). Backlog-u bosh llogaritet: backlog në fillim + të hyra − të përfunduara.</span></div>
     <div class="tablewrap"><table><thead><tr><th>Ora</th><th>Të hyra</th><th>Pritej</th><th>Dev.</th><th>Pikuar</th><th>Përfunduar</th><th>Dërguar</th><th>Backlog</th><th>Ritmi real</th><th>I kërkuar</th><th>%</th><th>Gabime</th><th>Staf</th><th>Alarmi</th><th></th></tr></thead>
     <tbody>${ents.length?ents.map(e=>{ const x=campEval(e,date); return `<tr>
       <td><b>${h(e.time)}</b>${e.source?` <span class="badge b-muted">${h(e.source)}</span>`:''}</td>

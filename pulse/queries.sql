@@ -115,7 +115,27 @@ SELECT /*pulse:C*/
  (SELECT o.WarehouseId w, o.PlatformId p, o.WmsStatusId s, COUNT(*) n, SUM(CASE WHEN o.CreatedOnUtc < DATEADD(hour,-24,GETUTCDATE()) THEN 1 ELSE 0 END) h24,
     SUM(CASE WHEN o.CreatedOnUtc < DATEADD(hour,-72,GETUTCDATE()) THEN 1 ELSE 0 END) h72
   FROM Orders o WHERE o.CreatedOnUtc >= DATEADD(day,-30,GETUTCDATE()) GROUP BY o.WarehouseId, o.PlatformId, o.WmsStatusId ORDER BY o.WarehouseId, o.PlatformId, COUNT(*) DESC FOR JSON PATH) status,
- (SELECT WmsStatusId s, MIN(ShippingAttribute) a FROM OrderStatusMapping WHERE ShippingAttribute IS NOT NULL GROUP BY WmsStatusId FOR JSON PATH) statusNames
+ (SELECT WmsStatusId s, MIN(ShippingAttribute) a FROM OrderStatusMapping WHERE ShippingAttribute IS NOT NULL GROUP BY WmsStatusId FOR JSON PATH) statusNames,
+ -- campH (app tab "Kampanja", day by day from the launch, the lead 14.10.2026): per local day × hour, the last 10 days, warehouse 01:
+ -- cr orders created (CreatedOnUtc → local), co orders checked out (first check-out 4/18), cu units checked out, ci units checked in
+ -- (ProductCheckIns). build.js keeps older days, so a campaign stays complete after it leaves the 10-day window.
+ (SELECT d, h, SUM(cr) cr, SUM(co) co, SUM(cu) cu, SUM(ci) ci FROM (
+   SELECT CONVERT(varchar(10),t.l,23) d, DATEPART(hour,t.l) h, 1 cr, 0 co, 0 cu, 0 ci
+     FROM Orders o CROSS APPLY (SELECT CAST((o.CreatedOnUtc AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) l) t
+     WHERE o.WarehouseId=1 AND o.CreatedOnUtc >= DATEADD(day,-10,GETUTCDATE())
+   UNION ALL
+   SELECT CONVERT(varchar(10),f.fco,23), DATEPART(hour,f.fco), 0, 1, 0, 0
+     FROM (SELECT pl.OrderId, pl.PlatformId, MIN(pl.InsertDateTime) fco FROM ProductLogs pl WITH (NOLOCK)
+           JOIN Orders o ON o.OrderId=pl.OrderId AND o.PlatformId=pl.PlatformId AND o.WarehouseId=1
+           WHERE pl.LogTypeId IN (4,18) AND pl.InsertDateTime >= DATEADD(day,-10,CAST(GETDATE() AS date)) GROUP BY pl.OrderId, pl.PlatformId) f
+   UNION ALL
+   SELECT CONVERT(varchar(10),pl.InsertDateTime,23), DATEPART(hour,pl.InsertDateTime), 0, 0, 1, 0
+     FROM ProductLogs pl WITH (NOLOCK) JOIN Orders o ON o.OrderId=pl.OrderId AND o.PlatformId=pl.PlatformId AND o.WarehouseId=1
+     WHERE pl.LogTypeId IN (4,18) AND pl.InsertDateTime >= DATEADD(day,-10,CAST(GETDATE() AS date))
+   UNION ALL
+   SELECT CONVERT(varchar(10),c.InsertDateTime,23), DATEPART(hour,c.InsertDateTime), 0, 0, 0, 1
+     FROM ProductCheckIns c WHERE c.WarehouseId=1 AND c.InsertDateTime >= DATEADD(day,-10,CAST(GETDATE() AS date))
+ ) x GROUP BY d, h FOR JSON PATH) campH
 
 -- @D stock & locations (warehouse 01 unless noted)
 SELECT /*pulse:D*/

@@ -113,6 +113,16 @@ const inv=J(E.inv).map(r=>[r.m, r.n, r.s3, r.s1, r.qbo]);
 // picking (app tab "Picking", 14.10.2026): kept as the query's compact objects, local dates/hours; the app applies the staff rule
 // (from 01.09.2026 the staff on the schedule only) and the shifts. null until block E has been run with these columns.
 const picking= 'pickS' in E? {at:E._at||null, hours:J(E.pickH), days:J(E.pickS), stations:J(E.pickSt)} : null;
+// campaign hours (block C campH, app tab "Kampanja", 14.10.2026): orders created / checked out, units out / in per local day × hour.
+// The query sees the last 10 days; older days (and the first, partly cut day of the window) are kept from the previous data.json,
+// 90 days at most, so a campaign stays complete after it leaves the window.
+let campH=null;
+if('campH' in C){ const cur=J(C.campH), days=[...new Set(cur.map(r=>r.d))].sort(), first=days[0]||'';
+  let prev=[]; try{ prev=((JSON.parse(fs.readFileSync(path.join(DIR,'data.json'),'utf8')).campaign||{}).hours)||[]; }catch(e){}
+  const prevDays=new Set(prev.map(r=>r.d)), keep=d=> d<first || (d===first && prevDays.has(d));
+  const from=new Date(Date.now()-90*86400000).toISOString().slice(0,10);
+  const hours=prev.filter(r=>keep(r.d)).concat(cur.filter(r=>!keep(r.d))).filter(r=>r.d>=from).sort((a,b)=>a.d===b.d? a.h-b.h : a.d<b.d?-1:1);
+  campH={at:C._at||null, hours}; }
 
 // inbound batches (block F, optional): kept as the query's compact objects — rendered by the app's Inbound Flow page
 const inb=rows.F? J(rows.F.inb) : null, inbDaily=rows.F? J(rows.F.inbDaily) : null;
@@ -167,7 +177,7 @@ const blocks={}; GROUPS.concat(OPTIONAL).forEach(g=>{ const r=rows[g], fl=failed
   if(!r && !fl) return;
   blocks[g]={at, gen: r&&r.gen || null, failedAt: fl&&(!at || fl.ts>Date.parse(at))? new Date(fl.ts).toISOString() : null, error: fl&&(!at || fl.ts>Date.parse(at))? fl.error : null}; });
 const boardStale= !board || !String(board.gen||'').startsWith(today);
-const data={ version:1, staffFilter: STAFF? {names:STAFF.n, from:STAFF.from||null, keys:STAFF.keys||null, unfiltered:[...new Set(unfiltered)]} : null, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, picking, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
+const data={ version:1, staffFilter: STAFF? {names:STAFF.n, from:STAFF.from||null, keys:STAFF.keys||null, unfiltered:[...new Set(unfiltered)]} : null, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, picking, campaign: campH, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
   D:{week, bands, hour, pay, period, rates, daily, o2c, upo, status, state, dwell, sect, insp, diff, sup, car, pick, st, inv},
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };
