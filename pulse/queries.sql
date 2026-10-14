@@ -139,7 +139,7 @@ SELECT /*pulse:D*/
  (SELECT TOP 20 ProductCode c, MAX(Sku) sku, COUNT(*) n, MAX(ABS(WarehouseStock-QuickbooksStock)) mx, SUM(WarehouseStock-QuickbooksStock) sm
   FROM StockDifferences WHERE Resolved=0 GROUP BY ProductCode ORDER BY mx DESC FOR JSON PATH) diff
 
--- @E inbound & logistics
+-- @E inbound & logistics + picking (pickH / pickS / pickSt, the lead 14.10.2026)
 SELECT /*pulse:E*/
  (SELECT DATEPART(iso_week, ws) wk, CONVERT(varchar(5), ws, 104) st, COUNT(*) n, SUM(CASE WHEN IsFastLane=1 THEN 1 ELSE 0 END) fl, SUM(u) units FROM (
     SELECT s.IsFastLane, DATEADD(day, -((DATEPART(weekday, s.InsertDateTime)+@@DATEFIRST-2)%7), CAST(s.InsertDateTime AS date)) ws,
@@ -160,7 +160,37 @@ SELECT /*pulse:E*/
  (SELECT st.Name nm, CAST(st.IsCheckIn AS int) ci, CAST(st.IsCheckOut AS int) co, CAST(st.UseWmsPrintAgent AS int) pa, (SELECT COUNT(*) FROM PickSession p WHERE p.StationId=st.Id) ps
   FROM Stations st WHERE st.WarehouseId=1 AND st.Id<>13 ORDER BY st.Name FOR JSON PATH) st,
  (SELECT CONVERT(varchar(7), InsertDateTime, 126) m, COUNT(*) n, SUM(CASE WHEN StatusId=3 THEN 1 ELSE 0 END) s3, SUM(CASE WHEN StatusId=1 THEN 1 ELSE 0 END) s1, SUM(CASE WHEN SentToQbo=1 THEN 1 ELSE 0 END) qbo
-  FROM Invoices WHERE InsertDateTime >= DATEADD(month,-5,DATEFROMPARTS(YEAR(GETDATE()),MONTH(GETDATE()),1)) GROUP BY CONVERT(varchar(7), InsertDateTime, 126) ORDER BY 1 FOR JSON PATH) inv
+  FROM Invoices WHERE InsertDateTime >= DATEADD(month,-5,DATEFROMPARTS(YEAR(GETDATE()),MONTH(GETDATE()),1)) GROUP BY CONVERT(varchar(7), InsertDateTime, 126) ORDER BY 1 FOR JSON PATH) inv,
+ -- Picking (app tab "Picking", the lead 14.10.2026), the last 36 days. The pick tables keep UTC (checked 14.10.2026: last scan
+ -- 16:15 at 18:15 local), so every time is turned into local time (Central European, summer/winter per row).
+ -- pickH: picks (one PickSessionScan = one unit picked) per local day × hour × the session's user.
+ (SELECT CONVERT(varchar(10),x.t,23) d, DATEPART(hour,x.t) h, ps.UserId u, MIN(LTRIM(RTRIM(ISNULL(us.FirstName,'')+' '+ISNULL(us.LastName,'')))) fn, COUNT(*) n
+  FROM (SELECT s.PickSessionId, CAST((s.InsertDateTime AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) t
+        FROM PickSessionScan s WHERE s.InsertDateTime >= DATEADD(day,-36,GETUTCDATE())) x
+  JOIN PickSession ps ON ps.Id=x.PickSessionId
+  LEFT JOIN (SELECT UserId, MIN(FirstName) FirstName, MIN(LastName) LastName FROM Users GROUP BY UserId) us ON us.UserId=ps.UserId
+  GROUP BY CONVERT(varchar(10),x.t,23), DATEPART(hour,x.t), ps.UserId FOR JSON PATH) pickH,
+ -- pickS: sessions per local day (of the session's start) × user: by status (1 / 2 / 3 — meaning not confirmed), orders, units
+ -- required / scanned, seconds open→close of status-2 sessions, first and last start.
+ (SELECT CONVERT(varchar(10),x.t,23) d, x.UserId u, MIN(LTRIM(RTRIM(ISNULL(us.FirstName,'')+' '+ISNULL(us.LastName,'')))) fn, COUNT(*) s,
+    SUM(CASE WHEN x.Status=1 THEN 1 ELSE 0 END) s1, SUM(CASE WHEN x.Status=2 THEN 1 ELSE 0 END) s2, SUM(CASE WHEN x.Status=3 THEN 1 ELSE 0 END) s3,
+    SUM(ISNULL(o.n,0)) o, SUM(ISNULL(i.rq,0)) rq, SUM(ISNULL(i.sc,0)) sc,
+    SUM(CASE WHEN x.Status=2 AND x.UpdateDateTime IS NOT NULL THEN DATEDIFF(second, x.InsertDateTime, x.UpdateDateTime) ELSE 0 END) sec2,
+    MIN(CONVERT(varchar(5),x.t,108)) f, MAX(CONVERT(varchar(5),x.t,108)) l
+  FROM (SELECT ps.*, CAST((ps.InsertDateTime AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) t
+        FROM PickSession ps WHERE ps.InsertDateTime >= DATEADD(day,-36,GETUTCDATE())) x
+  LEFT JOIN (SELECT UserId, MIN(FirstName) FirstName, MIN(LastName) LastName FROM Users GROUP BY UserId) us ON us.UserId=x.UserId
+  LEFT JOIN (SELECT PickSessionId, COUNT(*) n FROM PickSessionOrder GROUP BY PickSessionId) o ON o.PickSessionId=x.Id
+  LEFT JOIN (SELECT PickSessionId, SUM(RequiredQuantity) rq, SUM(ScannedQuantity) sc FROM PickSessionItem GROUP BY PickSessionId) i ON i.PickSessionId=x.Id
+  GROUP BY CONVERT(varchar(10),x.t,23), x.UserId FOR JSON PATH) pickS,
+ -- pickSt: sessions, orders and units scanned per local day × station.
+ (SELECT CONVERT(varchar(10),x.t,23) d, ISNULL(st.Name,'') st, COUNT(*) s, SUM(ISNULL(o.n,0)) o, SUM(ISNULL(i.sc,0)) sc
+  FROM (SELECT ps.Id, ps.StationId, CAST((ps.InsertDateTime AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) t
+        FROM PickSession ps WHERE ps.InsertDateTime >= DATEADD(day,-36,GETUTCDATE())) x
+  LEFT JOIN Stations st ON st.Id=x.StationId
+  LEFT JOIN (SELECT PickSessionId, COUNT(*) n FROM PickSessionOrder GROUP BY PickSessionId) o ON o.PickSessionId=x.Id
+  LEFT JOIN (SELECT PickSessionId, SUM(ScannedQuantity) sc FROM PickSessionItem GROUP BY PickSessionId) i ON i.PickSessionId=x.Id
+  GROUP BY CONVERT(varchar(10),x.t,23), st.Name FOR JSON PATH) pickSt
 
 -- @F inbound batches (Product / Inbound Flow): every supply of warehouse 01 from yesterday and today, plus older ones
 --    (≤14 days) that still have units waiting to be mapped. Stages: arrival = invoice registered (or the truck's actual

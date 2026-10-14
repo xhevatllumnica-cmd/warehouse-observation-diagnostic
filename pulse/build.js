@@ -110,6 +110,9 @@ const car=J(E.car).map(r=>[r.nm, r.stops, r.ontime, r.delay, r.pal, r.price]);
 const pick=J(E.pick).map(r=>[r.n, r.s, r.m, r.o, r.sc, r.rq]);
 const st=J(E.st).map(r=>[r.nm, r.ci, r.co, r.pa, r.ps]);
 const inv=J(E.inv).map(r=>[r.m, r.n, r.s3, r.s1, r.qbo]);
+// picking (app tab "Picking", 14.10.2026): kept as the query's compact objects, local dates/hours; the app applies the staff rule
+// (from 01.09.2026 the staff on the schedule only) and the shifts. null until block E has been run with these columns.
+const picking= 'pickS' in E? {at:E._at||null, hours:J(E.pickH), days:J(E.pickS), stations:J(E.pickSt)} : null;
 
 // inbound batches (block F, optional): kept as the query's compact objects — rendered by the app's Inbound Flow page
 const inb=rows.F? J(rows.F.inb) : null, inbDaily=rows.F? J(rows.F.inbDaily) : null;
@@ -164,7 +167,7 @@ const blocks={}; GROUPS.concat(OPTIONAL).forEach(g=>{ const r=rows[g], fl=failed
   if(!r && !fl) return;
   blocks[g]={at, gen: r&&r.gen || null, failedAt: fl&&(!at || fl.ts>Date.parse(at))? new Date(fl.ts).toISOString() : null, error: fl&&(!at || fl.ts>Date.parse(at))? fl.error : null}; });
 const boardStale= !board || !String(board.gen||'').startsWith(today);
-const data={ version:1, staffFilter: STAFF? {names:STAFF.n, from:STAFF.from||null, keys:STAFF.keys||null, unfiltered:[...new Set(unfiltered)]} : null, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
+const data={ version:1, staffFilter: STAFF? {names:STAFF.n, from:STAFF.from||null, keys:STAFF.keys||null, unfiltered:[...new Set(unfiltered)]} : null, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, picking, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
   D:{week, bands, hour, pay, period, rates, daily, o2c, upo, status, state, dwell, sect, insp, diff, sup, car, pick, st, inv},
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };

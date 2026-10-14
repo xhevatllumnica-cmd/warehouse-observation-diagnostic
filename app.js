@@ -460,6 +460,7 @@ const ROUTES = [
   {id:'raportet', title:'Raportet', ic:'📑', render:renderRaportet},
   {sec:'Flows'},
   {id:'kerko', title:'Kërko produkt', ic:'🔎', render:renderProductSearch},
+  {id:'picking', title:'Picking', ic:'🧺', render:renderPicking},
   {id:'orders', title:'Order Flow', ic:'➜', render:renderOrders},
   {id:'inbound', title:'Product / Inbound Flow', ic:'⇩', render:renderInbound},
   {id:'pod', title:'POD — Proof of Delivery', ic:'🚚', render:renderPod},
