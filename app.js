@@ -2912,9 +2912,9 @@ function renderFlow2hHTML(data){
       <div style="margin-top:6px;line-height:1.9">
         <div>Orders completed today: <b>${m.orders}</b>${pct(m.ordersPct)} <span class="faint">— yesterday at this hour ${yv(m.ordersPrev)}</span></div>
         <div>Check-ins: <b>${m.checkedIn}</b> <span class="faint">— yesterday ${yv(m.checkedInPrev)}</span></div>
-        <div>Picks: <b>${m.picks}</b> products <span class="faint">— yesterday ${yv(m.picksPrev)}</span></div>
+        <div>Picks: <b>${yv(m.picks)}</b>${pct(m.picksPct)} units${m.picksAsOf?` <span class="badge b-warn" title="WMS Pulse u lexua për herë të fundit në ${h(m.picksAsOf)}; ora para kësaj shenje plotësohet pas rifreskimit të radhës">WMS deri ${h(m.picksAsOf)}</span>`:''} <span class="faint">— yesterday ${yv(m.picksPrev)}</span></div>
         <div>Checkout products: <b>${m.checkedOut}</b>${pct(m.checkedOutPct)} <span class="faint">— yesterday: ${yv(m.checkedOutPrev)}</span></div>
-        <div style="margin-top:4px">Current tempo: <b>${m.tempoOrders}</b> orders/hour · <b>${m.tempoProducts}</b> products/hour <span class="faint">(last 2 hours)</span></div>
+        <div style="margin-top:4px">Current tempo: <b>${m.tempoOrders}</b> orders/hour · <b>${m.tempoProducts}</b> products/hour${m.tempoPicks!=null?` · <b>${m.tempoPicks}</b> picks/hour`:''} <span class="faint">(last 2 hours)</span></div>
       </div>
     </div>`).join('');
   const pf=data.prevFullDay;

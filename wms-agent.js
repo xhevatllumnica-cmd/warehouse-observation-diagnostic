@@ -295,8 +295,7 @@ async function getCheckins(start,end){
    two log rows — "ProductScanned for checkout" (27) and "Driver" (9), same count — and AI Operator's
    figure matched LogTypeId 9 exactly on every point checked against the WMS database (2026-09-24):
    23.09 until 08:00 = 26, until 16:00 = 323, 22.09 until 16:00 = 299, 22.09 full day = 459; LogTypeId
-   27 was off by one on one of them. "Picks" counts any pick-type log row: WMS's PickSessionScan table
-   has never held a single scan, so this is 0 today — the same 0 AI Operator reports. */
+   27 was off by one on one of them. "Picks" come from PickSessionScan via WMS Pulse (see picksUntil, 14.10.2026). */
 // marks = the hours of the tab AND of the Google Chat message (sent just after each): 09:00 … 23:00 every 2 hours
 // (the warehouse lead, 12.10.2026; until then 08:00 … 20:00 like AI Operator)
 const FLOW_MARKS=[9,11,13,15,17,19,21,23];
@@ -382,6 +381,16 @@ async function flowDayMarks(iso, staff){
   const c=cumulativeByMark(dl.rows, iso, staff);
   return {marks:c.marks, base:c.base, full:c.full, reliable:dl.reliable};
 }
+/* Picks (the lead, 14.10.2026): ProductLogs has no pick rows — the pick scans live in PickSessionScan (in use since 13.10.2026),
+   which only the database can read. They come from WMS Pulse (block E pickH: units scanned per local day × hour × user,
+   refreshed hourly 07–22 at about :10). Picks "until 09:00" = the hours before 09; same staff rule as the other figures.
+   When the last Pulse read is older than the mark, the hour before the mark is not complete yet: the mark says until when. */
+function pulsePickHours(){ try{ const p=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).picking; return p&&Array.isArray(p.hours)? p : null; }catch(e){ return null; } }
+function picksUntil(P, iso, hour, staff){
+  if(!P) return null; const old=iso<ROSTER_FROM;
+  const own=fn=> old || staff.has(normName(fn)) || staff.has(normName(STAFF_ALIASES[normName(fn)]||''));
+  return P.hours.filter(r=>r.d===iso && +r.h<hour && own(r.fn)).reduce((a,r)=>a+(+r.n||0),0);
+}
 async function buildFlow2h(db, iso){
   const today=isoToday(); const prevIso=isoAddDays(iso,-1);
   const staff=warehouseStaffSet();
@@ -389,12 +398,17 @@ async function buildFlow2h(db, iso){
   if(cur.error) return {error:cur.error};
   const nowH = iso===today ? new Date().getHours()+new Date().getMinutes()/60 : null;
   const pct=(now,then)=> (then!=null && then>0) ? Math.round((now-then)/then*100) : null;
+  const P=pulsePickHours(), pAt=P&&P.at? new Date(P.at) : null;
+  const pk=(d,h)=>picksUntil(P, d, h, staff);
   const marks = FLOW_MARKS.map((h,i)=>{
     const c=cur.marks[i], p=prev.error?null:prev.marks[i], before=i?cur.marks[i-1]:cur.base;
+    const picks=pk(iso,h), picksBefore=pk(iso,h-2), markT=new Date(iso+'T'+p2(h)+':00:00');
     return { hour:p2(h)+':00',
       orders:c.orders, ordersPrev:p?p.orders:null, ordersPct:p?pct(c.orders,p.orders):null,
       checkedIn:c.checkedIn, checkedInAll:c.checkedInAll, checkedInPrev:p?p.checkedIn:null,
-      picks:c.picks, picksPrev:p?p.picks:null,
+      picks, picksPrev:pk(prevIso,h), picksPct:P?pct(picks,pk(prevIso,h)):null,
+      picksAsOf: pAt && pAt<markT ? p2(pAt.getHours())+':'+p2(pAt.getMinutes()) : null,
+      tempoPicks: picks!=null&&picksBefore!=null? Math.floor((picks-picksBefore)/2) : null,
       checkedOut:c.checkedOut, checkedOutPrev:p?p.checkedOut:null, checkedOutPct:p?pct(c.checkedOut,p.checkedOut):null,
       // floored, like AI Operator (18:00 on 23.09: 309 products / 2h = 154.5 → it reports 154)
       tempoOrders:Math.floor((c.orders-before.orders)/2), tempoProducts:Math.floor((c.checkedOut-before.checkedOut)/2),
@@ -402,7 +416,7 @@ async function buildFlow2h(db, iso){
   });
   const prevFullDay = prev.error ? null : prev.full;
   return { date:iso, prevDate:prevIso, marks, prevFullDay, staff:warehouseStaffList(), reliable: cur.reliable && (prev.error?true:prev.reliable),
-    note:'Të gjitha shifrat rindërtohen nga log-u i eventeve të WMS-it deri në orën e saktë, me të njëjtat përkufizime si AI Operator (të verifikuara). Të gjitha shifrat (porositë, check-in, checkout, picks) numërojnë vetëm stafin e depos që është në Orarin e punës — pa llogaritë temp, pa rreshtat pa operator dhe pa llogaritë e Gjirafës jashtë depos. Orders completed = porosi të ndryshme me skanim checkout. Picks: WMS nuk regjistron skanime picking — prandaj 0, njësoj si te AI Operator.' };
+    note:'Të gjitha shifrat rindërtohen nga log-u i eventeve të WMS-it deri në orën e saktë, me të njëjtat përkufizime si AI Operator (të verifikuara). Të gjitha shifrat (porositë, check-in, checkout, picks) numërojnë vetëm stafin e depos që është në Orarin e punës — pa llogaritë temp, pa rreshtat pa operator dhe pa llogaritë e Gjirafës jashtë depos. Orders completed = porosi të ndryshme me skanim checkout. Picks = njësi të skanuara në sesionet e picking-ut (PickSessionScan, që nga 13.10.2026), nga WMS Pulse që rifreskohet çdo orë 07–22 rreth :10 — prandaj ora e fundit para një shenje plotësohet pas rifreskimit të radhës.', picksAt:P&&P.at||null };
 }
 
 /* --- "Check-in / Checkout Report" tab -----------------------------------------
@@ -837,9 +851,9 @@ function flowChatText(data, m){
   return '*Warehouse — flow until '+m.hour+'* ('+data.date.split('-').reverse().join('.')+')\n\n'
     +'Orders completed today: *'+m.orders+'*'+pct(m.ordersPct)+' — yesterday at this hour '+yv(m.ordersPrev)+'\n'
     +'Check-ins: *'+m.checkedIn+'* — yesterday '+yv(m.checkedInPrev)+'\n'
-    +'Picks: *'+m.picks+'* products — yesterday '+yv(m.picksPrev)+'\n'
+    +'Picks: *'+yv(m.picks)+'*'+pct(m.picksPct)+' units'+(m.picksAsOf?' (WMS until '+m.picksAsOf+')':'')+' — yesterday '+yv(m.picksPrev)+'\n'
     +'Checkout products: *'+m.checkedOut+'*'+pct(m.checkedOutPct)+' — yesterday: '+yv(m.checkedOutPrev)+'\n\n'
-    +'Current tempo: *'+m.tempoOrders+'* orders/hour · *'+m.tempoProducts+'* products/hour (last 2 hours)'
+    +'Current tempo: *'+m.tempoOrders+'* orders/hour · *'+m.tempoProducts+'* products/hour'+(m.tempoPicks!=null?' · *'+m.tempoPicks+'* picks/hour':'')+' (last 2 hours)'
     +(pf?'\n\nYesterday full day: '+pf.checkedIn+' check-ins · '+pf.checkedOut+' checkout (products) · '+pf.orders+' orders':'')
     +(data.reliable===false?'\n\n⚠ Të dhëna jo të plota për njërën nga ditët (faqëzimi i WMS-it).':'');
 }
