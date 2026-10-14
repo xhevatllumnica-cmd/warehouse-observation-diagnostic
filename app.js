@@ -341,7 +341,7 @@ const Store = {
 };
 const seedCollections = ['config','employees','departments','processes','observations','measurements',
   'orders','products','staffSkills','staffObs','problems','kpiRecords','hqInteractions','quickWins','briefings','validations',
-  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions','planActions','planChecks','planKpis','unlinkedReturns','shiftReports'];
+  'wmsLogs','wmsStats','wmsShifts','wmsSyncLog','wmsOrders','wmsPrepared','wmsCheckin','wmsFlow','dailyReports','weeklyReports','audit','bnDecisions','planActions','planChecks','planKpis','unlinkedReturns','shiftReports','campHourly','campDaily'];
 
 function audit(entity,recId,action,before,after){
   const changes=[];
@@ -449,6 +449,9 @@ function processesByCat(cat){ return activeProcesses().filter(p=>p.category===ca
    ROUTER + NAV
    =======================================================================*/
 const ROUTES = [
+  // Kampanja (campaign.js, 13.10.2026 — reconnected 14.10.2026 after the 13.10 22:06 revert dropped its link)
+  {sec:'Kampanja'},
+  {id:'campaign', title:'Kampanja', ic:'🚀', render:renderCampaign},
   {sec:'Observe'},
   {id:'dashboard', title:'Dashboard', ic:'▤', render:renderDashboard},
   {id:'metrikat', title:'Metrikat e mia', ic:'🧭', render:renderMyMetrics},
@@ -2556,6 +2559,7 @@ function mergeBackupData(backup){
     {migrations:Object.assign({}, (cur.config&&cur.config.migrations)||{}, backup.config.migrations||{})}); }
   // WMS agent settings: keep current; adopt backup's only if none set
   if(!cur.wms && backup.wms) cur.wms=backup.wms;
+  if(!cur.campaign && backup.campaign) cur.campaign=backup.campaign;
   seedCollections.forEach(c=>{ if(!cur[c]) cur[c]=[]; });
   Store.persist();
   return added;
@@ -2648,7 +2652,7 @@ function wmsScheduleAuto(){
   if(wmsAutoTimer){ clearInterval(wmsAutoTimer); wmsAutoTimer=null; }
   if(wmsCfg().autoSync && wmsOnAgent()){
     const mins=Math.max(5,wmsCfg().interval||30);
-    wmsAutoTimer=setInterval(()=>{ wmsAgentSync(7,1).then(()=>{ if((location.hash||'')==='#wms') renderWMS($('#view')); }); }, mins*60000);
+    wmsAutoTimer=setInterval(()=>{ wmsAgentSync(7,1).then(()=>{ { if((location.hash||'')==='#wms') renderWMS($('#view')); else if((location.hash||'')==='#campaign') renderCampaign($('#view')); } }); }, mins*60000);
   }
 }
 function wmsTimeToMin(hhmm){ const p=(hhmm||'0:0').split(':'); return (+p[0])*60+(+(p[1]||0)); }
@@ -3721,7 +3725,7 @@ async function boot(){
   go();
   // WMS auto-sync: whenever the app is served by the local agent, sync now + on schedule.
   // Boot sync always runs on the agent (so it "just works"); the toggle only gates the recurring timer.
-  try{ if(wmsOnAgent() && wmsCfg().autoSync!==false){ wmsAgentSync(7).then(()=>{ if((location.hash||'')==='#wms') renderWMS($('#view')); }); wmsScheduleAuto(); } }catch(e){}
+  try{ if(wmsOnAgent() && wmsCfg().autoSync!==false){ wmsAgentSync(7).then(()=>{ { if((location.hash||'')==='#wms') renderWMS($('#view')); else if((location.hash||'')==='#campaign') renderCampaign($('#view')); } }); wmsScheduleAuto(); } }catch(e){}
 }
 /* =========================================================================
    RAPORTET — archive of the agent's daily (21:30) and weekly (Friday 21:35)

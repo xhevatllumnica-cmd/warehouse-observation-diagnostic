@@ -91,3 +91,6 @@ pulse/queries.bn.sql
 
 # WMS Station extension: generated config (contains the station key)
 station-extension/config.js
+
+# Plani lokal i kampanjës (numra nga WMS) — vetëm në këtë kompjuter
+campaign.local.json
