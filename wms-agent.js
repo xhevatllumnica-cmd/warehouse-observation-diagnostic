@@ -964,10 +964,11 @@ async function tabelaLiveData(force){
     } finally { tabelaLiveBusy=null; } })();
   return tabelaLiveBusy;
 }
-/* local overrides of the WMS station list (set by the warehouse lead, 03–04.10.2026): CHECKOUT 5 and CHECKIN 3 are not in use;
+/* local overrides of the WMS station list (set by the warehouse lead): CHECKIN & CHECKOUT is passive (14.10.2026; CHECKOUT 5 and
+   CHECKIN 3, hidden since 03.10, opened again for the campaign on 14.10.2026);
    CHECKOUT 6 is used as the refusals/returns table — it counts the refused orders collected (Delivery Platform Scanned
    Refusals) and, as a second figure, processed customer-return units (WMS dispositions 20/21/22/29) */
-const TABELA_STATION_CFG={'CHECKOUT 5':{hidden:true}, 'CHECKIN 3':{hidden:true}, 'CHECKOUT 6':{label:'Tavolina për refuzime/kthime', kind:'ret'}};
+const TABELA_STATION_CFG={'CHECKIN & CHECKOUT':{hidden:true}, 'CHECKOUT 6':{label:'Tavolina për refuzime/kthime', kind:'ret'}};
 function tabelaStations(){
   let list=TABELA_DEFAULT_STATIONS;
   try{ const b=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).board; if(b&&b.stations&&b.stations.length) list=b.stations.map(s=>({name:s.name, co:!!s.co, ci:!!s.ci})); }catch(e){}
