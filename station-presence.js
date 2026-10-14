@@ -14,9 +14,12 @@ const DEFAULT_MAP=[
   {ip:'10.10.1.239', table:'Tavolina 2', station:'CHECKOUT 2'},
   {ip:'10.10.1.193', table:'Tavolina 3', station:'CHECKOUT 3'},
   {ip:'10.10.1.211', table:'Tavolina 4', station:'CHECKOUT 4'},
-  {ip:'',            table:'Tavolina 5', station:'CHECKIN & CHECKOUT', note:'jo funksionale tani · funksion i dyfishtë check-in/check-out'},
+  {ip:'',            table:'Tavolina 5', station:'CHECKIN & CHECKOUT', note:'pasive (14.10.2026) · funksion i dyfishtë check-in/check-out'},
   {ip:'10.10.1.209', table:'Tavolina 6', station:'CHECKIN 1'},
-  {ip:'10.10.1.241', table:'Tavolina 7', station:'CHECKIN 2'}];
+  {ip:'10.10.1.241', table:'Tavolina 7', station:'CHECKIN 2'},
+  // opened for the campaign (the lead, 14.10.2026)
+  {ip:'10.10.1.106', table:'Tavolina Check-out 5', station:'CHECKOUT 5', note:'hapur për kampanjën (14.10.2026)'},
+  {ip:'10.10.1.48',  table:'Tavolina Check-in 3',  station:'CHECKIN 3',  note:'hapur për kampanjën (14.10.2026)'}];
 const LIVE_MS=3*60000;          // a table counts as "logged in now" if it reported within 3 minutes
 const GAP_MS=3*60000;           // reports further apart than this start a new interval
 const KEEP_DAYS=14;
