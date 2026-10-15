@@ -1163,6 +1163,57 @@ async function podChatTick(){
   } finally { podChatBusy=false; }
 }
 setInterval(podChatTick, 60*1000);
+/* Kampanja → Pasqyra live cards (the warehouse lead, 15.10.2026), GET /camp/live?date=YYYY-MM-DD&from=HH:MM:
+     pod      = orders scanned for POD (Delivery Platform, Accept Delivery) by the staff on the schedule, from `from` (the launch
+                hour on the launch day, else 00:00) — "Të përfunduara"
+     pending  = orders past check-out still waiting for the final POD ("Duke pritur për dërgim" in the POD deliveries of the
+                last 7 days, the same count as the POD page / Postat) — now; ready = WMS Dashboard "Orders Ready To Complete"
+                (GetDashboardStats ordersReadyToUnmap) — now. "Backlog tani" = pending + ready
+     tempo    = Flow (2h) "Current tempo": distinct orders with a checkout scan (LogTypeId 9) and checkout products, staff only,
+                over the last 2 hours (today) / per hour from `from` to the day's last checkout (a past day)
+     backlogEnd = pending at the day's last snapshot (taken every 30 min, data/camp-backlog.json) — "Backlog në fund të ditës" */
+const CAMP_BACKLOG_FILE=path.join(APPDIR,'data','camp-backlog.json');
+function campBacklogRead(){ try{ return JSON.parse(fs.readFileSync(CAMP_BACKLOG_FILE,'utf8'))||{}; }catch(e){ return {}; } }
+function campBacklogSave(iso, pending){
+  const s=campBacklogRead(); s[iso]={pending, at:new Date().toISOString()};
+  Object.keys(s).sort().slice(0,-90).forEach(k=>delete s[k]);
+  try{ fs.mkdirSync(path.dirname(CAMP_BACKLOG_FILE),{recursive:true}); fs.writeFileSync(CAMP_BACKLOG_FILE, JSON.stringify(s,null,2)); }catch(e){}
+}
+let campBacklogBusy=false;
+async function campBacklogTick(){
+  if(campBacklogBusy || new Date().getHours()<7) return; campBacklogBusy=true;
+  try{ const v=await podPending(false); if(v && !v.error) campBacklogSave(isoToday(), v.total); }catch(e){} finally{ campBacklogBusy=false; }
+}
+setInterval(campBacklogTick, 30*60*1000); setTimeout(campBacklogTick, 90*1000);
+const campLiveCache={};
+async function campLive(iso, from){
+  const key=iso+'|'+from, c=campLiveCache[key], today=isoToday();
+  if(c && Date.now()-c.t<(iso>=today? 60000 : 30*60000)) return c.v;
+  const staff=warehouseStaffSet(), own=n=> !!n && (staff.has(normName(n)) || staff.has(normName(STAFF_ALIASES[normName(n)]||''))), fromMs=new Date(iso+'T'+from+':00').getTime();
+  const out={date:iso, from, at:new Date().toISOString()};
+  const s=await fetchPodScans(iso);
+  if(s.error) out.podError=s.error;
+  else out.pod=new Set((s.rows||[]).filter(r=>r.t>=fromMs && own(r.scanner)).map(r=>r.oid+'|'+r.pid)).size;
+  const dl=await fetchDayProductLogs(isoToMdy(iso), {noCache: iso>=today});
+  if(dl.error) out.tempoError=dl.error;
+  else{
+    const ev=dl.rows.map(x=>({t:parseWmsDate(x.InsertDateTime), x})).filter(e=>e.t!=null && e.t>=fromMs && own(e.x.UpdatedByName));
+    const isOrd=e=>Number(e.x.LogTypeId)===ORDER_DONE_LOGTYPE_ID && !!e.x.OrderId, isProd=e=>CHECKOUT_LOGTYPES.includes(e.x.LogType);
+    let a, b;
+    if(iso>=today){ b=Date.now(); a=Math.max(fromMs, b-2*3600000); }
+    else{ const last=ev.filter(e=>isOrd(e)||isProd(e)).reduce((m,e)=>Math.max(m,e.t),0); a=fromMs; b=last||fromMs; }
+    const hrs=Math.max((b-a)/3600000, 0), inW=ev.filter(e=>e.t>=a && e.t<=b);
+    const orders=new Set(inW.filter(isOrd).map(e=>e.x.OrderId)).size, products=inW.filter(isProd).length;
+    out.tempo={orders, products, hours:Math.round(hrs*10)/10, ordersPerHour: hrs>0? Math.floor(orders/hrs) : null, productsPerHour: hrs>0? Math.floor(products/hrs) : null,
+      window: iso>=today? 'last2h' : 'day', a:new Date(a).toISOString(), b:new Date(b).toISOString()};
+  }
+  if(iso>=today){
+    const v=await podPending(false); if(v && !v.error){ out.pending=v.total; out.pendingAt=v.at; campBacklogSave(today, v.total); } else out.pendingError=(v&&v.error)||'error';
+    const st=await getStats(); if(st.data) out.ready=Number(st.data.ordersReadyToUnmap); else out.readyError=st.error;
+  }
+  const snap=campBacklogRead()[iso]; if(snap) out.backlogEnd=snap;
+  campLiveCache[key]={t:Date.now(), v:out}; return out;
+}
 /* a past day (?date=YYYY-MM-DD): the same board rebuilt from that day's WMS log — no cut-off figures (those are "now") */
 async function tabelaPastLive(iso){
   const age=Math.round((new Date(isoToday()+'T00:00:00') - new Date(iso+'T00:00:00'))/86400000);
@@ -1392,6 +1443,11 @@ http.createServer(async (req,resp)=>{
         tabelaBoard.saveAssign(APPDIR, body, tabelaStations(), isoToday()); return send(200, {ok:true}); }
       const dq=String(q.query.date||''); if(dq && !/^\d{4}-\d{2}-\d{2}$/.test(dq)) return send(400,{error:'date: YYYY-MM-DD'});
       return send(200, await tabelaData(!!q.query.refresh, dq||null));
+    }
+    if(q.pathname==='/camp/live'){   // Kampanja live cards (counts only) — same-origin only, no CORS header
+      const d=String(q.query.date||isoToday()), f=String(q.query.from||'00:00');
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(d) || d>isoToday() || !/^\d{2}:\d{2}$/.test(f)) return json(400,{error:'date: YYYY-MM-DD (jo në të ardhmen), from: HH:MM'});
+      const r=await campLive(d, f); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r));
     }
     if(q.pathname==='/cap/pod'){   // POD orders per day (counts only) — same-origin only, no CORS header
       const f=String(q.query.from||''), t=String(q.query.to||''), ok=s=>/^\d{4}-\d{2}-\d{2}$/.test(s);

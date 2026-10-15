@@ -137,6 +137,18 @@ function campRealLoad(){
     .catch(()=>{ campReal={hours:[], error:true}; })
     .finally(()=>{ campRealBusy=false; if(location.hash==='#campaign') renderCampaign($('#view')); });
 }
+/* live cards (the lead, 15.10.2026) from the agent's /camp/live: POD done from the window start, orders past check-out
+   still waiting for POD + WMS "Orders Ready To Complete" (now), the Flow (2h) tempo and the day's last backlog snapshot */
+const campLiveData={}, campLiveBusy={};
+function campLiveLoad(date){
+  const key=date+'|'+campHHMM(campWinStart(date)), c=campLiveData[key];
+  if(campLiveBusy[key] || (c && Date.now()-c.t<60000)) return c? c.v : null;
+  campLiveBusy[key]=true;
+  fetch('/camp/live?date='+date+'&from='+campHHMM(campWinStart(date)),{cache:'no-store'}).then(r=>r.json()).then(v=>{ campLiveData[key]={t:Date.now(), v}; })
+    .catch(e=>{ campLiveData[key]={t:Date.now(), v:{error:String(e.message||e)}}; })
+    .finally(()=>{ campLiveBusy[key]=false; if(location.hash==='#campaign' && campTab==='live') renderCampaign($('#view')); });
+  return c? c.v : null;
+}
 function campWinStart(date){ const c=campCfg(); return date===c.start? (campMin(c.launchTime)||0) : 0; }   // minutes from 00:00
 function campExpWin(day,date,min){ const a=campExpectedBy(day,campWinStart(date)), b=campExpectedBy(day,min);
   return a==null||b==null? null : Math.max(0,b-a); }
@@ -275,6 +287,7 @@ function campLive(box){
   const ev=last?campEval(last,date):null, w=campWms(date), rec=campDailyRec(date);
   const nowMin=new Date().getHours()*60+new Date().getMinutes();
   const expNow=date===campToday()?campExpWin(day,date,nowMin):(date<campToday()?campExpWin(day,date,1440):null), rw=campRealDay(date);
+  const isToday=date===campToday(), L=date<=campToday()&&wmsOnAgent()? campLiveLoad(date) : null, L0= L? '—' : '<span class="small muted">po lexohet…</span>';
   const kc=(val,lbl,foot,cls)=>`<div class="card kpi"><div class="val ${cls||''}">${val}</div><div class="lbl">${lbl}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
   const devCls=ev&&ev.dev!=null?(ev.dev>=num(c.triggerPct,7)?'warn':(ev.dev<=-20?'warn':'ok')):'';
   const verify=c.context.verify||[];
@@ -288,12 +301,16 @@ function campLive(box){
       ${last? kc(campFmt(last.ordersIn),'Porosi të hyra deri '+h(last.time), ev&&ev.expected!=null?'pritej '+campFmt(ev.expected)+(ev.dev!=null?' ('+(ev.dev>=0?'+':'')+Math.round(ev.dev)+'%)':''):'', devCls)
         : kc(rw&&rw.has?campFmt(rw.cr):'—','Porosi të hyra nga '+h(campHHMM(campWinStart(date)))+' (WMS)', expNow!=null?'pritej'+(date===campToday()?' deri tani':'')+' ~'+campFmt(expNow):'')}
       ${kc(campFmt(day&&day.forecast),'Parashikimi i ditës', calc&&calc.wh!=null?campFmt(calc.wh)+' për depon ('+c.whSharePct+'%)':'')}
-      ${kc(last&&last.completed!=null?campFmt(last.completed):'—','Të përfunduara', 'paketuar + etiketuar + në zonën e kurierit')}
-      ${kc(ev&&ev.backlog!=null?campFmt(ev.backlog):'—','Backlog tani', ev&&ev.conflict?'⚠ ndryshon nga llogaritja ('+campFmt(ev.backlogCalc)+')':(campBacklogStart(date)!=null?'në fillim: '+campFmt(campBacklogStart(date)):''), ev&&ev.conflict?'warn':'')}
-      ${kc(ev&&ev.real!=null?Math.round(ev.real)+'/h':'—','Ritmi real', ev&&ev.required!=null?'i kërkuar '+Math.round(ev.required)+'/h '+(ev.afterCut?'(deri në mbyllje)':'(deri '+h(c.paceDeadline||c.cutoff)+')'):'', ev&&ev.ratio!=null?(ev.ratio<num(c.alarmL3)?'crit':ev.ratio<num(c.alarmL2)?'warn':'ok'):'')}
+      ${kc(L&&L.pod!=null?campFmt(L.pod):L0,'Të përfunduara (POD)', L&&L.pod!=null?'porosi me skanim POD nga '+h(campHHMM(campWinStart(date)))+' · Delivery Platform, stafi në orar':(L&&L.podError?'POD: '+h(L.podError):''))}
+      ${kc(L&&L.pending!=null?campFmt(num(L.pending)+num(L.ready)):(isToday?L0:'—'),'Backlog tani', L&&L.pending!=null?'pa POD pas check-out: <b>'+campFmt(L.pending)+'</b> · Ready to Complete: <b>'+(L.ready!=null?campFmt(L.ready):'—')+'</b> · '+h(fmtTime(L.pendingAt||L.at)):(isToday?(L&&L.pendingError?'POD: '+h(L.pendingError):''):'vetëm për sot (real time)'), L&&L.pending!=null&&num(c.kpi.backlogEnd)&&num(L.pending)+num(L.ready)>num(c.kpi.backlogEnd)?'warn':'')}
+      ${kc(L&&L.tempo&&L.tempo.ordersPerHour!=null?L.tempo.ordersPerHour+' porosi/orë':L0,'Ritmi real', L&&L.tempo&&L.tempo.ordersPerHour!=null?'<b>'+L.tempo.productsPerHour+'</b> produkte/orë · '+(L.tempo.window==='last2h'?'2 orët e fundit (si Flow 2h)':'mesatarja nga '+h(campHHMM(campWinStart(date)))+' deri te check-out-i i fundit'):(L&&L.tempoError?'WMS: '+h(L.tempoError):''))}
       ${kc(ev&&ev.staffNeeded!=null?ev.staffNeeded:'—','Persona outbound të nevojshëm tani', 'me '+c.ordersPerHour+' porosi/orë/person'+(last&&last.staff!=null?' · prezent: '+last.staff:''))}
       ${kc(calc?calc.total||'—':'—','Stafi i planifikuar', day?`outbound ${num(day.outbound)} (${num(day.s1)} / ${num(day.s2)}) · inbound ${num(day.inbound)}`:'')}
-      ${kc(rec&&rec.backlogEnd!=null&&rec.backlogEnd!==''?campFmt(rec.backlogEnd):'—','Backlog në fund të ditës', 'objektivi ≤ '+campFmt(c.kpi.backlogEnd))}
+      ${(()=>{ const s=L&&L.backlogEnd, manual=rec&&rec.backlogEnd!=null&&rec.backlogEnd!=='';
+        const val= s? num(s.pending) : manual? num(rec.backlogEnd) : null, goal=num(c.kpi.backlogEnd);
+        const foot= s? 'pa POD pas check-out · '+(isToday?'deri tani ('+h(fmtTime(s.at))+')':'gjendja e fundit '+h(fmtTime(s.at)))+' · objektivi ≤ '+campFmt(goal)
+          : manual? 'nga raporti ditor · objektivi ≤ '+campFmt(goal) : 'regjistrohet çdo 30 min që nga 15.10.2026 · objektivi ≤ '+campFmt(goal);
+        return kc(val!=null?campFmt(val):(L||!isToday?'—':L0),'Backlog në fund të ditës', foot, val!=null&&goal? (val>goal?'warn':'ok') : ''); })()}
     </div>
     <div class="grid g-2">
       <div class="card"><h3>Porositë e hyra: reale kundrejt parashikimit <span class="sub">kumulative sipas orës</span></h3>${campChartSVG(day,ents,date)}
