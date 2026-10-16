@@ -125,14 +125,6 @@ function draw(){
   } else if(D.past) cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Shfaqen vetëm për sot (gjendja aktuale në databazë). Për ditë të kaluara: tavolinat dhe operatorët më poshtë.</div></div>`;
   else cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Vijnë nga databaza e WMS çdo orë (07–22). Ende pa rifreskim sot${C.gen? ' — i fundit '+dmy(C.gen.slice(0,10))+' '+C.gen.slice(11,16) : ''}.</div></div>`;
   cards+=`<div class="card"><div class="lbl">Porosi të dala ${D.past? 'atë ditë' : 'sot'}</div><div class="big">${L.ordersOut!=null? L.ordersOut : '—'}</div><div class="foot">ekipi: ${coH? fmt(Math.round(coOrd/coH*10)/10) : '—'} porosi/orë aktive</div></div>`;
-  // Picks (the lead, 16.10.2026): units scanned in WMS pick sessions — from the database via WMS Pulse, refreshed hourly 07–22
-  const PK=D.picks, fnP=firstNames();
-  cards+= !PK? `<div class="card"><div class="lbl">Picks ${D.past? 'atë ditë' : 'sot'}</div><div class="big">—</div><div class="foot">Ende pa të dhëna picking nga WMS Pulse.</div></div>`
-    : `<div class="card"><div class="lbl">Picks ${D.past? 'atë ditë' : 'sot'}</div><div class="big">${PK.picks}</div>
-      ${PK.rq? `<div class="bar"><i style="width:${Math.min(100,Math.round(PK.sc/PK.rq*100))}%"></i></div>` : ''}
-      <div class="foot">${PK.pickers} pickers · ${PK.orders} porosi në ${PK.sessions} sesione${PK.rq? ' · skanuar/kërkuar <b>'+Math.round(PK.sc/PK.rq*100)+'%</b>' : ''}
-      <br>ekipi: ${PK.activeHours? fmt(Math.round(PK.picks/PK.activeHours)) : '—'} picks/orë aktive${PK.top.length? ' · '+PK.top.map(t=>esc(fnP(t.name))+' '+t.n).join(' · ') : ''}
-      ${D.past? '' : '<br><span class="faint">WMS (databaza) deri '+hm(PK.at)+' · rifreskim çdo orë</span>'}</div></div>`;
   $('#cards').innerHTML=cards;
   $('#secTitle').textContent='Tavolinat — '+(D.past? dmy(D.date)+'.'+D.date.slice(0,4) : 'sot');
   drawStations();
@@ -196,6 +188,19 @@ function drawStations(){
     const offs=(c.off||[]).length? '<div class="foot faint">pushim sot: '+c.off.map(n=>esc(fn(n))).join(', ')+'</div>' : '';
     return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Operatorët vendosen automatikisht — kliko vetëm për korrigjim"'}>
       <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+esc(c.table)+(c.ip? ' · PC '+esc(c.ip) : ' · pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}${how}</div>`; }).join('');
+  /* Picking (the lead, 16.10.2026): a work-area card right after POD. The WMS web app has no picking page, so the pick scans
+     (PickSessionScan) come from the WMS database through WMS Pulse, refreshed every hour 07–22 (about :10) */
+  const PK=D.picks, H=new Date().getHours();
+  const pkCard= `<div class="card stcard ${PK&&PK.picks? 'busy' : ''}" data-auto="1" title="Plotësohet vetë nga sesionet e picking-ut në WMS (databaza, çdo orë)">
+      <div class="lbl">Picking</div>
+      <div class="big">${PK? PK.picks : '—'}</div><div class="foot">njësi të skanuara ${D.past? 'atë ditë' : 'sot'} në sesionet e picking-ut (WMS)</div>
+      ${!PK? '<div class="foot faint">Ende pa të dhëna picking nga WMS.</div>' : `
+      ${PK.rq? `<div class="foot">skanuar / kërkuar: <b>${Math.round(PK.sc/PK.rq*100)}%</b> · ${PK.orders} porosi në ${PK.sessions} sesione</div>` : ''}
+      ${D.past? '' : `<div class="foot">kjo orë <b>${(PK.byHour||{})[H]||0}</b> · ora e kaluar <b>${(PK.byHour||{})[H-1]||0}</b> · ekipi ${PK.activeHours? fmt(Math.round(PK.picks/PK.activeHours)) : '—'} picks/orë aktive</div>`}
+      ${(PK.ops||[]).map((p,i)=> i? `<div class="prev">${esc(fn(p.name))}: ${p.n}</div>` : `<div class="who">${esc(fn(p.name))}: <b>${p.n}</b></div>`).join('')}
+      ${D.past? '' : '<div class="foot faint">WMS deri '+hm(PK.at)+' · rifreskim çdo orë (07–22)</div>'}`}</div>`;
+  const podEl=document.querySelector('.stcard[data-st="POD"]');
+  if(podEl) podEl.insertAdjacentHTML('afterend', pkCard); else $('#stcards').insertAdjacentHTML('beforeend', pkCard);
   document.querySelectorAll('.stcard:not([data-auto])').forEach(el=>el.onclick=()=>openStation(el.dataset.st));
   if(D.scheduleLoaded===false) $('#stcards').insertAdjacentHTML('beforeend','<div class="note">Orari i punës për sot nuk u gjet — operatorët numërohen për gjithë ditën.</div>');
 }

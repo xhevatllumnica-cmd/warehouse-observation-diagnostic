@@ -402,7 +402,8 @@ function picksDay(iso){
   const sum=(arr,k)=>arr.reduce((a,r)=>a+(+r[k]||0),0), activeH=Object.keys(byHour).length;
   return {at:P.at||null, picks:sum(H,'n'), pickers:Object.keys(byOp).length, activeHours:activeH, byHour,
     sessions:sum(S,'s'), orders:sum(S,'o'), rq:sum(S,'rq'), sc:sum(S,'sc'),
-    top:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).slice(0,3).map(([name,n])=>({name,n}))};
+    top:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).slice(0,3).map(([name,n])=>({name,n})),
+    ops:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).map(([name,n])=>({name,n}))};
 }
 async function buildFlow2h(db, iso){
   const today=isoToday(); const prevIso=isoAddDays(iso,-1);
