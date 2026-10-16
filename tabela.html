@@ -125,6 +125,14 @@ function draw(){
   } else if(D.past) cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Shfaqen vetëm për sot (gjendja aktuale në databazë). Për ditë të kaluara: tavolinat dhe operatorët më poshtë.</div></div>`;
   else cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Vijnë nga databaza e WMS çdo orë (07–22). Ende pa rifreskim sot${C.gen? ' — i fundit '+dmy(C.gen.slice(0,10))+' '+C.gen.slice(11,16) : ''}.</div></div>`;
   cards+=`<div class="card"><div class="lbl">Porosi të dala ${D.past? 'atë ditë' : 'sot'}</div><div class="big">${L.ordersOut!=null? L.ordersOut : '—'}</div><div class="foot">ekipi: ${coH? fmt(Math.round(coOrd/coH*10)/10) : '—'} porosi/orë aktive</div></div>`;
+  // Picks (the lead, 16.10.2026): units scanned in WMS pick sessions — from the database via WMS Pulse, refreshed hourly 07–22
+  const PK=D.picks, fnP=firstNames();
+  cards+= !PK? `<div class="card"><div class="lbl">Picks ${D.past? 'atë ditë' : 'sot'}</div><div class="big">—</div><div class="foot">Ende pa të dhëna picking nga WMS Pulse.</div></div>`
+    : `<div class="card"><div class="lbl">Picks ${D.past? 'atë ditë' : 'sot'}</div><div class="big">${PK.picks}</div>
+      ${PK.rq? `<div class="bar"><i style="width:${Math.min(100,Math.round(PK.sc/PK.rq*100))}%"></i></div>` : ''}
+      <div class="foot">${PK.pickers} pickers · ${PK.orders} porosi në ${PK.sessions} sesione${PK.rq? ' · skanuar/kërkuar <b>'+Math.round(PK.sc/PK.rq*100)+'%</b>' : ''}
+      <br>ekipi: ${PK.activeHours? fmt(Math.round(PK.picks/PK.activeHours)) : '—'} picks/orë aktive${PK.top.length? ' · '+PK.top.map(t=>esc(fnP(t.name))+' '+t.n).join(' · ') : ''}
+      ${D.past? '' : '<br><span class="faint">WMS (databaza) deri '+hm(PK.at)+' · rifreskim çdo orë</span>'}</div></div>`;
   $('#cards').innerHTML=cards;
   $('#secTitle').textContent='Tavolinat — '+(D.past? dmy(D.date)+'.'+D.date.slice(0,4) : 'sot');
   drawStations();

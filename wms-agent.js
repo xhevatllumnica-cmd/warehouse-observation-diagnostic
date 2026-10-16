@@ -391,6 +391,19 @@ function picksUntil(P, iso, hour, staff){
   const own=fn=> old || staff.has(normName(fn)) || staff.has(normName(STAFF_ALIASES[normName(fn)]||''));
   return P.hours.filter(r=>r.d===iso && +r.h<hour && own(r.fn)).reduce((a,r)=>a+(+r.n||0),0);
 }
+/* Picks of one day for the board's Picks card (the lead, 16.10.2026): units scanned in pick sessions (Pulse pickH) and the
+   sessions / orders / scanned vs required (pickS) of the staff on the schedule; per hour for the sparkline; the top pickers. */
+function picksDay(iso){
+  const P=pulsePickHours(); if(!P) return null;
+  const staff=warehouseStaffSet(), old=iso<ROSTER_FROM, canon=fn=>STAFF_ALIASES[normName(fn)]||fn;
+  const own=fn=> old || staff.has(normName(fn)) || staff.has(normName(STAFF_ALIASES[normName(fn)]||''));
+  const H=P.hours.filter(r=>r.d===iso && own(r.fn)), S=(P.days||[]).filter(r=>r.d===iso && own(r.fn));
+  const byHour={}, byOp={}; H.forEach(r=>{ byHour[r.h]=(byHour[r.h]||0)+(+r.n||0); const k=canon(r.fn||('#'+r.u)); byOp[k]=(byOp[k]||0)+(+r.n||0); });
+  const sum=(arr,k)=>arr.reduce((a,r)=>a+(+r[k]||0),0), activeH=Object.keys(byHour).length;
+  return {at:P.at||null, picks:sum(H,'n'), pickers:Object.keys(byOp).length, activeHours:activeH, byHour,
+    sessions:sum(S,'s'), orders:sum(S,'o'), rq:sum(S,'rq'), sc:sum(S,'sc'),
+    top:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).slice(0,3).map(([name,n])=>({name,n}))};
+}
 async function buildFlow2h(db, iso){
   const today=isoToday(); const prevIso=isoAddDays(iso,-1);
   const staff=warehouseStaffSet();
@@ -1235,7 +1248,7 @@ async function tabelaData(force, date){
   const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:placement.tables}, live&&live.ops, today, day, normName, STAFF_ALIASES, stationPresence.forDay(today), placement.how);
   const shifts={}; Object.entries(day||{}).forEach(([n,sh])=>{ shifts[n]= sh.off? 'pushim' : sh.start+'–'+sh.end; });
   const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
-  return {date:today, past:!!past, podPosts, stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë orarit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+  return {date:today, past:!!past, podPosts, picks:picksDay(today), stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë orarit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
     roster:[...new Set(scheduleStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
