@@ -32,6 +32,7 @@ h1{ font-size:clamp(18px,1.6vw,26px); margin:0; font-weight:750; letter-spacing:
 .stcard:hover{ border-color:var(--accent); }
 .stcard{ border-left-width:4px; }
 .stcard .big{ font-size:clamp(20px,2vw,32px); }
+.stcard .big .unit{ font-size:.42em; font-weight:600; color:var(--muted); }
 .stcard .who{ font-size:clamp(12px,.95vw,17px); font-weight:700; margin-top:3px; }
 .stcard .who b{ color:var(--brand); }
 .stcard .free{ color:var(--faint); font-weight:600; }
@@ -155,9 +156,10 @@ function draw(){
 }
 /* station cards: the table's total today (largest), the operator on shift now with their number, and below, smaller,
    the operators whose shift at this table already ended (N1 after N2 starts) or starts later */
-const stLabel=n=>{ const c=(D.stations||[]).find(s=>s.name===n)||{}; return c.label || String(n).replace(/CHECKOUT/g,'Check-out').replace(/CHECKIN/g,'Check-in').replace(/SELLERS/g,'Sellers'); };
+const stLabel=n=>{ const c=(D.stations||[]).find(s=>s.name===n)||{}; const l=c.label? String(c.label).replace(/^Tavolin[ae]\s+(për\s+)?/i,'') : String(n).replace(/CHECKOUT/g,'Check-out').replace(/CHECKIN/g,'Check-in').replace(/SELLERS/g,'Sellers');
+  return l.charAt(0).toUpperCase()+l.slice(1); };   // no "Tavolina" on the board (16.10.2026)
 // Mapimi and POD are work areas, not tables: their cards carry the plain name
-const stTitle=n=>{ const l=stLabel(n), c=(D.stations||[]).find(s=>s.name===n)||{}; return c.kind==='map'||c.kind==='pod'||c.auto||/^Tavolin/i.test(l)? l : 'Tavolina '+l; };
+const stTitle=n=>stLabel(n);
 const stOrder=c=> (c.auto? 5 : c.kind==='map'? 3 : c.kind==='pod'? 4 : c.co&&!c.ci? 0 : c.co&&c.ci? 1 : 2)*100 + (parseInt(String(c.name).replace(/\D+/g,''))||50);
 const allNames=()=>[...new Set([...(D.roster||[]), ...((D.live&&D.live.ops)||[]).map(o=>o.name)])];
 function firstNames(){ const cnt={}; allNames().forEach(n=>{ const f=n.split(' ')[0]; cnt[f]=(cnt[f]||0)+1; });
@@ -179,10 +181,10 @@ function drawStations(){
       : '<div class="foot faint">emri = llogaria e kyçur në Delivery Platform'+(P.otherAccounts? ' · '+P.otherAccounts+(K==='ret'? ' porosi' : ' skanime')+' me llogari jashtë listës së stafit' : '')+'</div>'
       + (K==='ret'? '<div class="foot">kthime të procesuara në WMS: <b>'+(c.ret||0)+'</b> produkte</div>' : '');
     // POD: the scanned orders by courier post, right under the number (BEKI, Express, Fiks — the others in one faint line)
-    const PO=D.podPosts, posts= K!=='pod'||!PO? '' : PO.loading? '<div class="foot faint">sipas postës: po lexohen dërgesat…</div>'
+    const PO=null /* no courier posts on the POD card (16.10.2026) */, posts= K!=='pod'||!PO? '' : PO.loading? '<div class="foot faint">sipas postës: po lexohen dërgesat…</div>'
       : '<div style="margin:4px 0 2px">'+PO.posts.map(p=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px dashed var(--line)"><span>${esc(p.name)}</span><b style="font-variant-numeric:tabular-nums">${p.n}</b></div>`).join('')
         +(PO.other||PO.unknown? `<div class="foot faint">${PO.other? 'posta të tjera '+PO.other : ''}${PO.other&&PO.unknown? ' · ' : ''}${PO.unknown? 'pa dërgesë ende '+PO.unknown : ''}</div>` : '')+'</div>';
-    const extra= posts+podNote+(co? '<div class="foot">porosi të përfunduara: '+c.orders+'</div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
+    const extra= posts+podNote+(co? '<div class="foot"><b>porosi të përfunduara: '+c.orders+'</b></div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
     const logged=p=> p.viaPresence? 'kyçur '+hm(p.loggedFrom)+'–'+(p.live? 'tani' : hm(p.loggedTo)) : p.workFrom? 'punë '+hm(p.workFrom)+'–'+(p.state==='now'? 'tani' : hm(p.workTo)) : null;   // no shift times on the board (16.10.2026)
     const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : ''}`
       : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>'
@@ -192,13 +194,13 @@ function drawStations(){
     const pl=(c.people||[]).map(p=>p.placed), how= c.viaPresence||c.auto||!(c.people||[]).length? '' : (K==='map'||K==='pod'||ret) && !pl.includes('manual')? '<div class="foot faint" title="Plotësohet vetë nga puna e bërë sot në këtë proces">⚙ vendosur automatikisht</div>' : pl.includes('manual')&&pl.includes('auto')? '<div class="foot faint">⚙ automatik + caktuar në tabelë</div>' : pl.includes('auto')? '<div class="foot faint" title="Tavolina e zakonshme e operatorit ose e para e lirë — kliko për ta korrigjuar">⚙ vendosur automatikisht</div>' : pl.includes('manual')? '<div class="foot faint">✎ caktuar në tabelë për këtë ditë</div>' : '';
     const offs='';   // no "on leave" from the schedule (16.10.2026)
     return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Operatorët vendosen automatikisht — kliko vetëm për korrigjim"'}>
-      <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+esc(c.table)+(c.ip? ' · PC '+esc(c.ip) : ' · pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}${how}</div>`; }).join('');
+      <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+(c.ip? 'PC '+esc(c.ip) : 'pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big} <span class="unit">${K==='pod'||ret? 'porosi' : 'produkte'}</span></div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}${how}</div>`; }).join('');
   /* Picking (the lead, 16.10.2026): a work-area card right after POD. The WMS web app has no picking page, so the pick scans
      (PickSessionScan) come from the WMS database through WMS Pulse, refreshed every hour 07–22 (about :10) */
   const PK=D.picks, H=new Date().getHours();
   const pkCard= `<div class="card stcard ${PK&&PK.picks? 'busy' : ''}" data-auto="1" title="Plotësohet vetë nga sesionet e picking-ut në WMS (databaza, çdo orë)">
       <div class="lbl">Picking</div>
-      <div class="big">${PK? PK.picks : '—'}</div><div class="foot">njësi të skanuara ${D.past? 'atë ditë' : 'sot'} në sesionet e picking-ut (WMS)</div>
+      <div class="big">${PK? PK.picks : '—'} <span class="unit">produkte</span></div><div class="foot">njësi të skanuara ${D.past? 'atë ditë' : 'sot'} në sesionet e picking-ut (WMS)</div>
       ${!PK? '<div class="foot faint">Ende pa të dhëna picking nga WMS.</div>' : `
       ${PK.rq? `<div class="foot">skanuar / kërkuar: <b>${Math.round(PK.sc/PK.rq*100)}%</b> · ${PK.orders} porosi në ${PK.sessions} sesione</div>` : ''}
       ${D.past? '' : `<div class="foot">kjo orë <b>${(PK.byHour||{})[H]||0}</b> · ora e kaluar <b>${(PK.byHour||{})[H-1]||0}</b> · ekipi ${PK.activeHours? fmt(Math.round(PK.picks/PK.activeHours)) : '—'} picks/orë aktive</div>`}
