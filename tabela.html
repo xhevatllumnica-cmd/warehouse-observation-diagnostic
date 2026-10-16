@@ -10,37 +10,42 @@
 :root[data-theme="dark"]{ --bg:#0b1220; --panel:#131c2e; --line:#24314a; --text:#e8eef9; --muted:#8fa1bf; --faint:#5d6f8d; --accent:#4c8dff; --brand:#f0a020; --ok:#2fbf71; --warn:#f0a020; --crit:#e5484d; }
 *{ box-sizing:border-box; }
 body{ margin:0; background:var(--bg); color:var(--text); font:15px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
-.wrap{ padding:16px clamp(12px,2vw,28px) 24px; max-width:1800px; margin:0 auto; }
-header{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:14px; }
-h1{ font-size:clamp(20px,2.2vw,32px); margin:0; font-weight:750; letter-spacing:.2px; }
+/* compact (16.10.2026): every card fits one monitor in full screen */
+.wrap{ padding:8px clamp(8px,1vw,16px) 12px; max-width:2400px; margin:0 auto; }
+header{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:6px; }
+h1{ font-size:clamp(18px,1.6vw,26px); margin:0; font-weight:750; letter-spacing:.2px; }
 .sub{ color:var(--muted); font-size:clamp(12px,1vw,15px); }
-.clock{ margin-left:auto; font-size:clamp(24px,3vw,44px); font-weight:700; font-variant-numeric:tabular-nums; }
+.clock{ margin-left:auto; font-size:clamp(22px,2.2vw,36px); font-weight:700; font-variant-numeric:tabular-nums; }
 .btn{ background:transparent; color:var(--muted); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font:inherit; font-size:13px; cursor:pointer; }
 .btn:hover{ color:var(--text); border-color:var(--accent); }
 .btn.primary{ background:var(--brand); border-color:var(--brand); color:#fff; }
-.grid{ display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin-bottom:14px; }
-.card{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0; }
-.card .lbl{ color:var(--muted); font-size:clamp(12px,1vw,15px); font-weight:600; text-transform:uppercase; letter-spacing:.4px; }
-.card .big{ font-size:clamp(34px,4.2vw,64px); font-weight:800; line-height:1.05; margin:4px 0; font-variant-numeric:tabular-nums; }
-.card .foot{ color:var(--muted); font-size:clamp(12px,1vw,16px); }
+.grid{ display:grid; gap:8px; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); margin-bottom:8px; }
+.card{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:7px 10px; min-width:0; }
+.card .lbl{ color:var(--muted); font-size:clamp(10px,.72vw,13px); font-weight:600; text-transform:uppercase; letter-spacing:.3px; }
+.card .big{ font-size:clamp(22px,2.3vw,38px); font-weight:800; line-height:1.05; margin:2px 0; font-variant-numeric:tabular-nums; }
+.card .foot{ color:var(--muted); font-size:clamp(10px,.72vw,13px); line-height:1.3; }
 .card.warn{ border-color:var(--warn); } .card.warn .big{ color:var(--warn); }
 .card.ok .big{ color:var(--ok); }
-.stgrid{ display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); margin-bottom:14px; }
+.stgrid{ display:grid; gap:8px; grid-template-columns:repeat(auto-fill,minmax(165px,1fr)); margin-bottom:8px; }
 .stcard{ cursor:pointer; border-left:5px solid var(--line); }
 .stcard.busy{ border-left-color:var(--brand); }
 .stcard:hover{ border-color:var(--accent); }
-.stcard .big{ font-size:clamp(30px,3.4vw,52px); }
-.stcard .who{ font-size:clamp(16px,1.5vw,24px); font-weight:700; margin-top:6px; }
+.stcard{ border-left-width:4px; }
+.stcard .big{ font-size:clamp(20px,2vw,32px); }
+.stcard .who{ font-size:clamp(12px,.95vw,17px); font-weight:700; margin-top:3px; }
 .stcard .who b{ color:var(--brand); }
 .stcard .free{ color:var(--faint); font-weight:600; }
-.stcard .prev{ font-size:clamp(13px,1.1vw,17px); color:var(--muted); margin-top:3px; }
+.stcard .prev{ font-size:clamp(10px,.75vw,13px); color:var(--muted); margin-top:1px; }
+/* the other people of a card on one wrapped line instead of one line each */
+.stcard .others{ display:flex; flex-wrap:wrap; column-gap:8px; row-gap:0; margin-top:2px; }
+.stcard .others .prev{ margin:0; white-space:nowrap; }
 .stcard .prev.faint{ color:var(--faint); }
-.sec{ font-size:clamp(13px,1.1vw,16px); font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin:4px 0 8px; }
-.bar{ height:10px; background:var(--line); border-radius:6px; overflow:hidden; margin:8px 0 4px; }
+.sec{ font-size:clamp(11px,.85vw,14px); font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin:2px 0 4px; }
+.bar{ height:6px; background:var(--line); border-radius:4px; overflow:hidden; margin:4px 0 2px; }
 .bar > i{ display:block; height:100%; background:var(--ok); }
 table{ width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
-th{ text-align:left; color:var(--muted); font-size:clamp(11px,.9vw,14px); font-weight:600; text-transform:uppercase; letter-spacing:.4px; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
-td{ padding:9px 10px; border-bottom:1px solid var(--line); font-size:clamp(15px,1.45vw,24px); white-space:nowrap; }
+th{ text-align:left; color:var(--muted); font-size:clamp(10px,.75vw,13px); font-weight:600; text-transform:uppercase; letter-spacing:.4px; padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+td{ padding:4px 8px; border-bottom:1px solid var(--line); font-size:clamp(12px,1vw,18px); white-space:nowrap; }
 td.num, th.num{ text-align:right; }
 td .st{ font-weight:700; } td .faint, .faint{ color:var(--faint); }
 tr.idle td{ color:var(--faint); }
@@ -182,7 +187,7 @@ function drawStations(){
     const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : ''}`
       : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>'
         ;
-    const prev=done.map(p=>`<div class="prev">${esc(fn(p.op))}: ${num(p)}${logged(p)? ' <span class="faint">('+logged(p)+')</span>' : ''}</div>`).join('');
+    const prev=done.length? '<div class="others">'+done.map(p=>`<div class="prev" title="${esc(p.op)}${logged(p)? ' · '+esc(logged(p)) : ''}">${esc(fn(p.op))}: ${num(p)}</div>`).join('')+'</div>' : '';
     const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))}</div>`).join('');
     const pl=(c.people||[]).map(p=>p.placed), how= c.viaPresence||c.auto||!(c.people||[]).length? '' : (K==='map'||K==='pod'||ret) && !pl.includes('manual')? '<div class="foot faint" title="Plotësohet vetë nga puna e bërë sot në këtë proces">⚙ vendosur automatikisht</div>' : pl.includes('manual')&&pl.includes('auto')? '<div class="foot faint">⚙ automatik + caktuar në tabelë</div>' : pl.includes('auto')? '<div class="foot faint" title="Tavolina e zakonshme e operatorit ose e para e lirë — kliko për ta korrigjuar">⚙ vendosur automatikisht</div>' : pl.includes('manual')? '<div class="foot faint">✎ caktuar në tabelë për këtë ditë</div>' : '';
     const offs='';   // no "on leave" from the schedule (16.10.2026)
@@ -197,7 +202,7 @@ function drawStations(){
       ${!PK? '<div class="foot faint">Ende pa të dhëna picking nga WMS.</div>' : `
       ${PK.rq? `<div class="foot">skanuar / kërkuar: <b>${Math.round(PK.sc/PK.rq*100)}%</b> · ${PK.orders} porosi në ${PK.sessions} sesione</div>` : ''}
       ${D.past? '' : `<div class="foot">kjo orë <b>${(PK.byHour||{})[H]||0}</b> · ora e kaluar <b>${(PK.byHour||{})[H-1]||0}</b> · ekipi ${PK.activeHours? fmt(Math.round(PK.picks/PK.activeHours)) : '—'} picks/orë aktive</div>`}
-      ${(PK.ops||[]).map((p,i)=> i? `<div class="prev">${esc(fn(p.name))}: ${p.n}</div>` : `<div class="who">${esc(fn(p.name))}: <b>${p.n}</b></div>`).join('')}
+      ${(PK.ops||[]).length? `<div class="who">${esc(fn(PK.ops[0].name))}: <b>${PK.ops[0].n}</b></div><div class="others">${PK.ops.slice(1).map(p=>`<div class="prev">${esc(fn(p.name))}: ${p.n}</div>`).join('')}</div>` : ''}
       ${D.past? '' : '<div class="foot faint">WMS deri '+hm(PK.at)+' · rifreskim çdo orë (07–22)</div>'}`}</div>`;
   const podEl=document.querySelector('.stcard[data-st="POD"]');
   if(podEl) podEl.insertAdjacentHTML('afterend', pkCard); else $('#stcards').insertAdjacentHTML('beforeend', pkCard);
