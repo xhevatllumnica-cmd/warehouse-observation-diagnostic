@@ -197,7 +197,7 @@ function shiftOf(day, name, normName, today){
    Every scan is credited once: tables with reports first, then assigned tables, process cards, the pools. The shift from
    Orari i punës only orders a card (N1 on top until N1 ends, then N2); on a table with reports the account logged in now
    is on top. Operators with no work on a card are not shown. */
-const PRES_SLACK=2*60000;   // reports come about once a minute: a scan within 2 min of an interval belongs to it
+const PRES_SLACK=2*60000, ACTIVE_MS=45*60000;   // without a schedule: "working now" = a scan on the card in the last 45 min   // reports come about once a minute: a scan within 2 min of an interval belongs to it
 function stationCards(stations, rec, ops, today, day, normName, aliases, presence, how){
   const canon=n=>(aliases&&aliases[normName(n)])||n;
   const now=Date.now(), dayStart=Date.parse(today+'T00:00:00'), dayEnd=dayStart+86400000, by={}; (ops||[]).forEach(o=>by[o.name]=o);
@@ -222,10 +222,14 @@ function stationCards(stations, rec, ops, today, day, normName, aliases, presenc
       const c={}; Object.keys(ARR).forEach(m=>c[m]=0); metricsOf(st).forEach(m=>{ c[m]=take(name,m,wins,st.name); });
       const myIv=iv.filter(x=>x.op===name), liveNow=myIv.some(x=>x.live), from=myIv.length? Math.min(...myIv.map(x=>x.a)) : null, to=myIv.length? Math.max(...myIv.map(x=>x.b)) : null;
       let sh=shiftOf(day, name, normName, today), offDay=false; if(sh&&sh.off){ sh=null; offDay=true; }
-      const state= viaPresence? (liveNow? 'now' : 'done') : offDay? 'done' : !sh? 'day' : now<sh.a? 'later' : now>=sh.b? 'done' : 'now';
-      const start= viaPresence? from : sh? sh.a : dayStart, end= viaPresence? to : offDay? dayStart : sh? sh.b : dayEnd;
+      // without a schedule (the board since 16.10.2026): the person's own scans on this card decide — working now = a scan here
+      // in the last 45 minutes (today), else done; start / end = the first / last scan here
+      const T=scansAt[st.name+'|'+name]||[], tA=T.length? Math.min(...T) : null, tB=T.length? Math.max(...T) : null;
+      const byWork=!day && !viaPresence;
+      const state= viaPresence? (liveNow? 'now' : 'done') : byWork? (tB!=null && now<dayEnd && now-tB<=ACTIVE_MS? 'now' : 'done') : offDay? 'done' : !sh? 'day' : now<sh.a? 'later' : now>=sh.b? 'done' : 'now';
+      const start= viaPresence? from : byWork? (tA!=null? tA : dayStart) : sh? sh.a : dayStart, end= viaPresence? to : byWork? (tB!=null? tB : dayStart) : offDay? dayStart : sh? sh.b : dayEnd;
       const placed= viaPresence? 'pc' : (how&&how[st.name]&&how[st.name][name]) || (assigned.includes(name)? 'manual' : null);
-      return Object.assign({op:name, shift: sh? sh.start+'–'+sh.end : null, start, end, state, auto:!viaPresence && !assigned.includes(name), placed, viaPresence,
+      return Object.assign({op:name, shift: sh? sh.start+'–'+sh.end : null, workFrom: byWork&&tA!=null? new Date(tA).toISOString() : null, workTo: byWork&&tB!=null? new Date(tB).toISOString() : null, start, end, state, auto:!viaPresence && !assigned.includes(name), placed, viaPresence,
         loggedFrom: from? new Date(from).toISOString() : null, loggedTo: to? new Date(to).toISOString() : null, live:liveNow}, c);
     }).filter(p=>metricsOf(st).some(m=>p[m]>0) || (viaPresence && p.live));   // no work here → not shown (the account logged in now is)
     people.sort((x,y)=>{ const m=metricsOf(st)[0]; return x.start-y.start || (m? (y[m]||0)-(x[m]||0) : 0); });

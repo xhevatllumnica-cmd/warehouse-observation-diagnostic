@@ -178,14 +178,14 @@ function drawStations(){
       : '<div style="margin:4px 0 2px">'+PO.posts.map(p=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px dashed var(--line)"><span>${esc(p.name)}</span><b style="font-variant-numeric:tabular-nums">${p.n}</b></div>`).join('')
         +(PO.other||PO.unknown? `<div class="foot faint">${PO.other? 'posta të tjera '+PO.other : ''}${PO.other&&PO.unknown? ' · ' : ''}${PO.unknown? 'pa dërgesë ende '+PO.unknown : ''}</div>` : '')+'</div>';
     const extra= posts+podNote+(co? '<div class="foot">porosi të përfunduara: '+c.orders+'</div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
-    const logged=p=> p.viaPresence? 'kyçur '+hm(p.loggedFrom)+'–'+(p.live? 'tani' : hm(p.loggedTo)) : null;
-    const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : cur.shift? '<div class="foot">ndërrimi '+cur.shift+'</div>' : ''}`
+    const logged=p=> p.viaPresence? 'kyçur '+hm(p.loggedFrom)+'–'+(p.live? 'tani' : hm(p.loggedTo)) : p.workFrom? 'punë '+hm(p.workFrom)+'–'+(p.state==='now'? 'tani' : hm(p.workTo)) : null;   // no shift times on the board (16.10.2026)
+    const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : ''}`
       : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>'
         ;
-    const prev=done.map(p=>`<div class="prev">${esc(fn(p.op))}: ${num(p)}${logged(p)? ' <span class="faint">('+logged(p)+')</span>' : p.shift? ' <span class="faint">('+p.shift+')</span>' : ''}</div>`).join('');
-    const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))} · nga ${p.shift.slice(0,5)}</div>`).join('');
+    const prev=done.map(p=>`<div class="prev">${esc(fn(p.op))}: ${num(p)}${logged(p)? ' <span class="faint">('+logged(p)+')</span>' : ''}</div>`).join('');
+    const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))}</div>`).join('');
     const pl=(c.people||[]).map(p=>p.placed), how= c.viaPresence||c.auto||!(c.people||[]).length? '' : (K==='map'||K==='pod'||ret) && !pl.includes('manual')? '<div class="foot faint" title="Plotësohet vetë nga puna e bërë sot në këtë proces">⚙ vendosur automatikisht</div>' : pl.includes('manual')&&pl.includes('auto')? '<div class="foot faint">⚙ automatik + caktuar në tabelë</div>' : pl.includes('auto')? '<div class="foot faint" title="Tavolina e zakonshme e operatorit ose e para e lirë — kliko për ta korrigjuar">⚙ vendosur automatikisht</div>' : pl.includes('manual')? '<div class="foot faint">✎ caktuar në tabelë për këtë ditë</div>' : '';
-    const offs=(c.off||[]).length? '<div class="foot faint">pushim sot: '+c.off.map(n=>esc(fn(n))).join(', ')+'</div>' : '';
+    const offs='';   // no "on leave" from the schedule (16.10.2026)
     return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Operatorët vendosen automatikisht — kliko vetëm për korrigjim"'}>
       <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+esc(c.table)+(c.ip? ' · PC '+esc(c.ip) : ' · pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big}</div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}${how}</div>`; }).join('');
   /* Picking (the lead, 16.10.2026): a work-area card right after POD. The WMS web app has no picking page, so the pick scans
@@ -202,10 +202,9 @@ function drawStations(){
   const podEl=document.querySelector('.stcard[data-st="POD"]');
   if(podEl) podEl.insertAdjacentHTML('afterend', pkCard); else $('#stcards').insertAdjacentHTML('beforeend', pkCard);
   document.querySelectorAll('.stcard:not([data-auto])').forEach(el=>el.onclick=()=>openStation(el.dataset.st));
-  if(D.scheduleLoaded===false) $('#stcards').insertAdjacentHTML('beforeend','<div class="note">Orari i punës për sot nuk u gjet — operatorët numërohen për gjithë ditën.</div>');
 }
 let d1Ops=[], d1Start=[];
-function shiftTxt(n){ const sh=(D.shifts||{})[n]; return sh? (sh==='pushim'? 'pushim' : sh) : 'pa orar'; }
+function shiftTxt(n){ const a=(D.shifts||{})[n]; return a? 'aktiv '+a : 'pa aktivitet'; }   // D.shifts = first–last scan with the own account (16.10.2026), not the schedule
 function d1Draw(){
   const fn=firstNames();
   $('#d1List').innerHTML= d1Ops.length? d1Ops.map((n,i)=>`<div class="row"><span style="width:auto;flex:1">${esc(n)} <span class="faint" style="font-weight:400">· ${D.past? "atë ditë" : "sot"} ${esc(shiftTxt(n))}</span></span><button class="btn" data-rm="${i}">✕</button></div>`).join('')

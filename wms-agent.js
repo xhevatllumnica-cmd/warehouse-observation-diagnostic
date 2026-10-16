@@ -1246,10 +1246,14 @@ async function tabelaData(force, date){
   const podPosts=podPostsFor(today, pod, warehouseStaffSet());
   // tables: set by hand for that day, else placed automatically (usual table / first free one — tabela-board.js autoPlace)
   const placement=tabelaBoard.autoPlace(stations, live&&live.ops, rec, today, APPDIR, n=>STAFF_ALIASES[normName(n)]||n, !past);
-  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:placement.tables}, live&&live.ops, today, day, normName, STAFF_ALIASES, stationPresence.forDay(today), placement.how);
-  const shifts={}; Object.entries(day||{}).forEach(([n,sh])=>{ shifts[n]= sh.off? 'pushim' : sh.start+'–'+sh.end; });
+  // the shift schedule is NOT used on the board (the warehouse lead, 16.10.2026): who works, and when, comes only from the work
+  // done with the person's own WMS account (first / last scan) — no shift times, no "on leave", no N1/N2 ordering
+  const day=shiftSchedule.forDay(today), cards=tabelaBoard.stationCards(stations, {tables:placement.tables}, live&&live.ops, today, null, normName, STAFF_ALIASES, stationPresence.forDay(today), placement.how);
+  const hmL=iso=>{ const d=new Date(iso); return p2(d.getHours())+':'+p2(d.getMinutes()); };
+  const active={}; ((live&&live.ops)||[]).forEach(o=>{ if(o.first&&o.last) active[o.name]=hmL(o.first)+'–'+hmL(o.last); });
+  const shifts=active;
   const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
-  return {date:today, past:!!past, podPosts, picks:picksDay(today), stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë orarit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+  return {date:today, past:!!past, podPosts, picks:picksDay(today), stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë stafit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
     roster:[...new Set(scheduleStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
