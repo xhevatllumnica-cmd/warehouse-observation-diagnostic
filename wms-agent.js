@@ -1177,6 +1177,29 @@ async function podChatTick(){
   } finally { podChatBusy=false; }
 }
 setInterval(podChatTick, 60*1000);
+/* Showroom (the lead, 16.10.2026): Delivery Platform "Showroom → Merre Vet Report" (POST /Showroom/MerreVetReport, the read the
+   platform's own page makes) = every order handed over at the showroom (pickup point 1 "GjirafaBox Prishtinë", the page's default;
+   activity all: deliveries + prepayments; returns counted apart). Counted by its "Data" column (local time). Only the order number,
+   platform, time and kind leave here — no client name, staff, amounts or comments. Cache: today 3 min, older days 6 h. */
+const mvCache={};
+async function fetchMerreVet(iso){
+  const c=mvCache[iso], ttl= iso>=isoToday()? 180000 : 6*3600000; if(c && Date.now()-c.t<ttl) return c.v;
+  const rows=[], seen=new Set(); let total=null;
+  for(let start=0, guard=0; guard<40; guard++){
+    const r=await deliveryPostJson('/Showroom/MerreVetReport',{draw:1, start, length:500, search:{value:'',regex:false}, order:[{column:3,dir:'desc'}], columns:dtCols(9),
+      filters:{startDate:iso, endDate:iso, showroomActivityTypeId:'-1', PickupPointIds:['1'], userIds:[], paymentIds:[]}});
+    if(r.error){ if(r.error==='auth_expired') deliverySessionExpired=true; return {error:r.error}; }
+    const d=r.data||[]; total=Number(r.recordsFiltered)||0;
+    d.forEach(x=>{ if(!x.date || String(x.paymentMethod||'').toUpperCase()==='TOTAL') return;   // the report's own TOTAL row
+      const t=Date.parse(String(x.date).replace(/\.\d+$/,'')); const k=x.order+'|'+x.platformId+'|'+x.date; if(isNaN(t)||seen.has(k)) return; seen.add(k);
+      rows.push({t, oid:String(x.order), pid:x.platformId, del:x.isDelivery!==false, pre:/^parapagim/i.test(String(x.paymentMethod||''))}); });
+    start+=d.length; if(!d.length || start>=total) break;
+  }
+  const orders=new Set(rows.map(r=>r.oid+'|'+r.pid)), ts=rows.map(r=>r.t);
+  const v={date:iso, orders:orders.size, rows:rows.length, deliveries:new Set(rows.filter(r=>!r.pre).map(r=>r.oid+'|'+r.pid)).size, prepayments:rows.filter(r=>r.pre).length,
+    first: ts.length? new Date(Math.min(...ts)).toISOString() : null, last: ts.length? new Date(Math.max(...ts)).toISOString() : null, at:new Date().toISOString()};
+  mvCache[iso]={t:Date.now(), v}; return v;
+}
 /* Kampanja → Pasqyra live cards (the warehouse lead, 15.10.2026), GET /camp/live?date=YYYY-MM-DD&from=HH:MM:
      pod      = orders scanned for POD (Delivery Platform, Accept Delivery) by the staff on the schedule, from `from` (the launch
                 hour on the launch day, else 00:00) — "Të përfunduara"
@@ -1255,7 +1278,8 @@ async function tabelaData(force, date){
   const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
   // Pickup store (the lead, 16.10.2026): "Showroom" orders that left the depot that day (Pulse block M shw, hourly); null = not read yet
   const shwRow=board&&Array.isArray(board.shw)? (board.shw.find(r=>r.d===today)||{d:today, n:0, s23:0}) : null;
-  return {date:today, past:!!past, podPosts, picks:picksDay(today), pickupStore: shwRow? Object.assign({}, shwRow, {at:board.at||null}) : null, stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë stafit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+  let showroom=null; try{ showroom=await fetchMerreVet(today); }catch(e){ showroom={error:e.message}; }
+  return {date:today, past:!!past, podPosts, picks:picksDay(today), showroom, pickupStore: shwRow? Object.assign({}, shwRow, {at:board.at||null}) : null, stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë stafit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
     roster:[...new Set(scheduleStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
