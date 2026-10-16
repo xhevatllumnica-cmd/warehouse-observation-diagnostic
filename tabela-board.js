@@ -67,7 +67,7 @@ function cutoffs(board, today, yday){
    the couriers in the Delivery Platform, Accept Delivery — see withPod). */
 const EXTRA_STATIONS=[{name:'MAPIMI', label:'Mapimi', kind:'map'}, {name:'POD', label:'POD', kind:'pod'},
   // automatic pools: check-out / check-in work of anyone not assigned to a numbered table — no work is left off the board
-  {name:'POOL_CO', label:'Check-out · pa tavolinë', kind:'poolco', co:true, auto:true}, {name:'POOL_CI', label:'Check-in · pa tavolinë', kind:'poolci', ci:true, auto:true}];
+  {name:'POOL_CO', label:'Check-out · të tjerë', kind:'poolco', co:true, auto:true}, {name:'POOL_CI', label:'Check-in · të tjerë', kind:'poolci', ci:true, auto:true}];
 /* Station assignment: tables = {station: [operator, …]} — the operators who work at that table (e.g. the N1 and the N2
    operator), kept until changed. Each operator's whole day counts (see stationCards); the shift from "Orari i punës" only orders the
    card, and an assigned operator who is off and did nothing that day is not shown. An operator may work at two

@@ -187,7 +187,7 @@ function drawStations(){
     const extra= posts+podNote+(co? '<div class="foot"><b>porosi të përfunduara: '+c.orders+'</b></div>' : '')+(c.co&&c.ci&&c.units? '<div class="foot">check-in: '+c.units+' njësi</div>' : '');
     const logged=p=> p.viaPresence? 'kyçur '+hm(p.loggedFrom)+'–'+(p.live? 'tani' : hm(p.loggedTo)) : p.workFrom? 'punë '+hm(p.workFrom)+'–'+(p.state==='now'? 'tani' : hm(p.workTo)) : null;   // no shift times on the board (16.10.2026)
     const top= cur? `<div class="who">${cur.live? '<span title="llogaria e kyçur tani në këtë PC" style="color:var(--ok)">●</span> ' : ''}${esc(fn(cur.op))}: <b>${num(cur)}</b></div>${logged(cur)? '<div class="foot">'+logged(cur)+'</div>' : ''}`
-      : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush pa tavolinë —' : '— e lirë —')+'</span></div>'
+      : (c.people||[]).length? '' : '<div class="who"><span class="free">'+(c.auto? '— askush —' : '— e lirë —')+'</span></div>'
         ;
     const prev=done.length? '<div class="others">'+done.map(p=>`<div class="prev" title="${esc(p.op)}${logged(p)? ' · '+esc(logged(p)) : ''}">${esc(fn(p.op))}: ${num(p)}</div>`).join('')+'</div>' : '';
     const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))}</div>`).join('');
