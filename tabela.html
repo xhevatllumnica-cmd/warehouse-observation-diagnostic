@@ -62,6 +62,9 @@ dialog .row{ display:flex; gap:10px; align-items:center; margin:6px 0; }
 dialog .row span{ width:170px; font-weight:600; }
 dialog select{ flex:1; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:7px; font:inherit; }
 .h2{ font-size:clamp(14px,1.2vw,18px); font-weight:700; margin:0 0 8px; }
+/* full screen (button or F11): only the cards, not the table "Porosi për orë sipas tavolinës" (the lead, 16.10.2026) */
+:root:fullscreen #tblCard, body.fs #tblCard{ display:none; }
+@media (display-mode: fullscreen){ #tblCard{ display:none; } }
 @media (max-width:640px){ .clock{ margin-left:0; } td{ font-size:15px; } }
 </style>
 </head>
@@ -82,7 +85,7 @@ dialog select{ flex:1; background:var(--bg); color:var(--text); border:1px solid
   <div class="sec" id="secTitle">Tavolinat — sot</div>
   <div id="stInfo" class="note" style="margin:-4px 0 8px"></div>
   <div class="stgrid" id="stcards"></div>
-  <div class="card"><div class="h2">Porosi për orë sipas tavolinës</div><div class="tablewrap"><table id="tbl"></table></div>
+  <div class="card" id="tblCard"><div class="h2">Porosi për orë sipas tavolinës</div><div class="tablewrap"><table id="tbl"></table></div>
     <div class="note" id="note"></div></div>
 </div>
 <dialog id="dlg1"><div class="h2" id="d1Title">Tavolina</div>
@@ -232,6 +235,9 @@ $('#d1Save').onclick=async()=>{ const st=$('#dlg1').dataset.st;
   try{ await fetch('/tabela/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({station:st, ops:d1Ops, removed:d1Start.filter(n=>!d1Ops.includes(n)), date:D.past? D.date : undefined})}); }catch(e){}
   $('#dlg1').close(); load(false); };
 $('#btnRefresh').onclick=()=>load(true);
+/* full screen (button or F11, i.e. the window as large as the screen): body.fs hides the hourly table */
+const fsSync=()=>document.body.classList.toggle('fs', !!document.fullscreenElement || (innerHeight>=screen.height-2 && innerWidth>=screen.width-2));
+document.addEventListener('fullscreenchange', fsSync); addEventListener('resize', fsSync); fsSync();
 $('#btnFull').onclick=()=>{ const el=document.documentElement; if(document.fullscreenElement) document.exitFullscreen(); else if(el.requestFullscreen) el.requestFullscreen(); };
 /* date picker: today (live) or any past day; the choice is kept in the address (?date=) */
 function setDate(v){ pickedDate= v && v<localToday()? v : '';
