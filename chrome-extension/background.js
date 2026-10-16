@@ -60,7 +60,8 @@ function schedule(reason) { clearTimeout(timer); timer = setTimeout(() => push(r
 
 chrome.cookies.onChanged.addListener(info => {
   const d = (info.cookie.domain || '').replace(/^\./, '');
-  if (d.endsWith(ROOT_DOMAIN) && /^(\.AspNet\.Cookies|ASP\.NET_SessionId|gjs)/.test(info.cookie.name) && !info.removed) schedule('cookie-changed');
+  // .AspNetCore.Cookies(Cn): the Delivery Platform's login since 10/2026 — without it a renewed Delivery session waited for the 30-min push (16.10.2026)
+  if (d.endsWith(ROOT_DOMAIN) && /^(\.AspNet\.Cookies|\.AspNetCore\.Cookies|ASP\.NET_SessionId|gjs)/.test(info.cookie.name) && !info.removed) schedule('cookie-changed');
 });
 chrome.runtime.onInstalled.addListener(() => { push('installed'); chrome.alarms.create('wms-push', { periodInMinutes: 30 }); });
 chrome.runtime.onStartup.addListener(() => { push('browser-start'); chrome.alarms.create('wms-push', { periodInMinutes: 30 }); });
