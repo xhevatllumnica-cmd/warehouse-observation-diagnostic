@@ -48,7 +48,15 @@ SELECT /*pulse:M*/ CONVERT(varchar(19),GETDATE(),126) gen,
   GROUP BY CASE WHEN r<DATEADD(day,-1,CAST(GETDATE() AS date)) THEN 'older' ELSE CONVERT(varchar(10),CAST(r AS date),23) END,
     CASE WHEN CAST(r AS time)<=CAST('13:00' AS time) THEN 13 WHEN CAST(r AS time)<=CAST('15:00' AS time) THEN 15 WHEN CAST(r AS time)<=CAST('17:30' AS time) THEN 17 ELSE 24 END, cmp
   ORDER BY 1,2,3 FOR JSON PATH) openr,
- (SELECT Id id, Name name, IsCheckIn ci, IsCheckOut co FROM Stations WHERE WarehouseId=1 AND IsActive=1 AND Name<>'test' ORDER BY Id FOR JSON PATH) stations
+ (SELECT Id id, Name name, IsCheckIn ci, IsCheckOut co FROM Stations WHERE WarehouseId=1 AND IsActive=1 AND Name<>'test' ORDER BY Id FOR JSON PATH) stations,
+ -- shw (card "Pickup store", the lead 16.10.2026): warehouse-01 orders tagged "Showroom" (OrderTags — the WMS has no shipping-method
+ -- field: ShippingMethodId is always 0) that left the depot — first check-out (4/18) — per local day, the last 7 days; s23 = of them now
+ -- WMS status 23 "At showroom"; f / l = first / last departure. Counts only.
+ (SELECT CONVERT(varchar(10),k.c1,23) d, COUNT(*) n, SUM(CASE WHEN o.WmsStatusId=23 THEN 1 ELSE 0 END) s23, MIN(CONVERT(varchar(5),k.c1,108)) f, MAX(CONVERT(varchar(5),k.c1,108)) l
+  FROM (SELECT pl.OrderId, pl.PlatformId, MIN(pl.InsertDateTime) c1 FROM ProductLogs pl WITH (NOLOCK) WHERE pl.LogTypeId IN (4,18) AND pl.OrderId>0 AND pl.InsertDateTime>=DATEADD(day,-30,CAST(GETDATE() AS date))
+        GROUP BY pl.OrderId, pl.PlatformId HAVING MIN(pl.InsertDateTime)>=DATEADD(day,-7,CAST(GETDATE() AS date))) k
+  JOIN Orders o ON o.OrderId=k.OrderId AND o.PlatformId=k.PlatformId AND o.WarehouseId=1 AND ','+o.OrderTags+',' LIKE '%,Showroom,%'
+  GROUP BY CONVERT(varchar(10),k.c1,23) FOR JSON PATH) shw
 
 -- @A productivity (second accounts of one person, the lead 13.10.2026: arian.r@ → arian.racaj@ (Arian Racaj), albert.d@ → albert.demiri@ (Albert Demiri); same in @B)
 SELECT /*pulse:A*/ CONVERT(varchar(19),GETDATE(),126) gen,

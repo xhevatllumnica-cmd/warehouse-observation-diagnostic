@@ -134,6 +134,10 @@ function draw(){
   } else if(D.past) cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Shfaqen vetëm për sot (gjendja aktuale në databazë). Për ditë të kaluara: tavolinat dhe operatorët më poshtë.</div></div>`;
   else cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Vijnë nga databaza e WMS çdo orë (07–22). Ende pa rifreskim sot${C.gen? ' — i fundit '+dmy(C.gen.slice(0,10))+' '+C.gen.slice(11,16) : ''}.</div></div>`;
   cards+=`<div class="card"><div class="lbl">Porosi të dala ${D.past? 'atë ditë' : 'sot'}</div><div class="big">${L.ordersOut!=null? L.ordersOut : '—'}</div><div class="foot">ekipi: ${coH? fmt(Math.round(coOrd/coH*10)/10) : '—'} porosi/orë aktive</div></div>`;
+  // Pickup store (16.10.2026): "Showroom" orders that left the depot (first check-out) — from the WMS database, every hour
+  const PS=D.pickupStore;
+  cards+=`<div class="card"><div class="lbl">Pickup store (Showroom)</div><div class="big">${PS? PS.n : '—'}</div>`
+    +`<div class="foot">${PS? `porosi dalë ${D.past? 'atë ditë' : 'sot'} nga depoja për showroom${PS.n? ' · '+PS.f+(PS.l!==PS.f? '–'+PS.l : '') : ''}<br>në showroom tani: <b>${PS.s23}</b>${D.past? '' : ' · WMS deri '+hm(PS.at)}` : 'ende pa të dhëna nga WMS (rifreskim çdo orë)'}</div></div>`;
   $('#cards').innerHTML=cards;
   $('#secTitle').textContent='Tavolinat — '+(D.past? dmy(D.date)+'.'+D.date.slice(0,4) : 'sot');
   drawStations();

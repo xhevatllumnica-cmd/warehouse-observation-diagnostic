@@ -169,7 +169,7 @@ if(capacity && STAFF && capacity.opsMeta){
 }
 const shipments= rows.K? {at:rows.K._at||null, gen:rows.K.gen, stops:J(rows.K.stops), carriers:J(rows.K.carriers), trucks:J(rows.K.trucks)} : null;
 const returns= rows.L? {at:rows.L._at||null, gen:rows.L.gen, batches:J(rows.L.batches), units:J(rows.L.units), disp:J(rows.L.disp), monthly:J(rows.L.monthly), dispMonthly:J(rows.L.dispMonthly), legacy:J(rows.L.legacy)} : null;
-const board= rows.M? {at:rows.M._at||null, gen:rows.M.gen, outd:J(rows.M.outd), openr:J(rows.M.openr), stations:J(rows.M.stations)} : null;
+const board= rows.M? {at:rows.M._at||null, gen:rows.M.gen, outd:J(rows.M.outd), openr:J(rows.M.openr), stations:J(rows.M.stations), shw:'shw' in rows.M? J(rows.M.shw) : null} : null;   // shw: Pickup store (Showroom) departures, 16.10.2026
 // per block: when its result was read and whether it is stale. A block that was not run (or failed) keeps its previous
 // result from pulse/raw/ — e.g. the board (M) of an older day, which the Tabela ditore then shows as "not refreshed today".
 const today=(d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'))(new Date());

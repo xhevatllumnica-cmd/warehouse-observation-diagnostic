@@ -1253,7 +1253,9 @@ async function tabelaData(force, date){
   const active={}; ((live&&live.ops)||[]).forEach(o=>{ if(o.first&&o.last) active[o.name]=hmL(o.first)+'–'+hmL(o.last); });
   const shifts=active;
   const liveOut= live&&live.ops? Object.assign({}, live, {ops:live.ops.map(o=>{ const c=Object.assign({},o); delete c._ordT; delete c._ciT; delete c._retT; delete c._mpT; delete c._outT; delete c._podT; delete c._refT; return c; })}) : live;
-  return {date:today, past:!!past, podPosts, picks:picksDay(today), stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë stafit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
+  // Pickup store (the lead, 16.10.2026): "Showroom" orders that left the depot that day (Pulse block M shw, hourly); null = not read yet
+  const shwRow=board&&Array.isArray(board.shw)? (board.shw.find(r=>r.d===today)||{d:today, n:0, s23:0}) : null;
+  return {date:today, past:!!past, podPosts, picks:picksDay(today), pickupStore: shwRow? Object.assign({}, shwRow, {at:board.at||null}) : null, stations, stationInfo:stationPresence.info(today).map(x=> x.liveUser && !warehouseStaffSet().has(normName(x.liveUser))? Object.assign({}, x, {liveUser:'llogari jashtë stafit'}) : x), assign:{tables:tabelaBoard.currentAssign(rec, today), effective:placement.tables, fixed:(rec.edits&&rec.edits[today])||[], updatedAt:rec.updatedAt, historyFrom:Object.keys(rec.history||{}).sort()[0]||null}, cards, shifts, scheduleLoaded:!!day, live:liveOut, cut:tabelaBoard.cutoffs(board, today, yday),
     roster:[...new Set(scheduleStaffList().map(n=>STAFF_ALIASES[normName(n)]||n))], sessionExpired:!!sessionExpired};
 }
 const bnAdapter=require('./bottleneck/adapter.js'), bnDetectors=require('./bottleneck/detectors.js'), bnXlsx=require('./bottleneck/xlsx.js');
