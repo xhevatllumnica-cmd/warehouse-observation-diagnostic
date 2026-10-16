@@ -322,7 +322,12 @@ function campLive(box){
           ${kc(campFmt(w.checkedIn),'Produkte check-in','')}
           ${kc(w.snap?campFmt(w.snap.ordersInProcessing):'—','Orders in processing', w.snap?'Ready to complete: '+campFmt(w.snap.ordersReadyToUnmap):'')}
         </div>
-        ${w.snaps.length>1?`<h3 style="font-size:12.5px;margin:12px 0 4px">Orders in processing gjatë ditës</h3>${w.snaps.slice(-10).map(s=>barRow(fmtTime(s.at),num(s.ordersInProcessing),Math.max(1,...w.snaps.map(x=>num(x.ordersInProcessing))),'var(--imp)')).join('')}`:''}
+        ${w.snaps.length>1?(()=>{ // all 24 hours (the lead, 16.10.2026): per hour the last snapshot taken in it (every ~15 min), empty hours shown as —
+          const byH=Array.from({length:24},()=>null); w.snaps.forEach(s=>{ byH[new Date(s.at).getHours()]=s; });
+          const max=Math.max(1,...w.snaps.map(x=>num(x.ordersInProcessing)));
+          return `<h3 style="font-size:12.5px;margin:12px 0 4px">Orders in processing gjatë ditës <span class="sub">24 orë · leximi i fundit i çdo ore · Ready to Complete në kllapa</span></h3>`
+            + byH.map((s,hh)=> s? barRow(String(hh).padStart(2,'0')+':00 · '+fmtTime(s.at)+' ('+campFmt(s.ordersReadyToUnmap)+')',num(s.ordersInProcessing),max,'var(--imp)')
+              : `<div class="small faint" style="padding:2px 0">${String(hh).padStart(2,'0')}:00 — ${date===campToday()&&hh>new Date().getHours()?'ende pa lexim':'pa lexim'}</div>`).join(''); })():''}
         <div class="hint" style="margin-top:8px">Burimi: agjenti WMS (/Order/GetPreparedOrders, ProductLogs, GetDashboardStats). Përdori si kontroll për raportin orar; mos i ngatërro njësitë (porosi ≠ produkte).</div></div>
     </div>
     ${calc?`<div class="card" style="margin-top:14px"><h3>Kapaciteti i ditës</h3>
