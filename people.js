@@ -14,12 +14,12 @@ let ppFrom=null, ppTo=null, ppData=null, ppSeq=0, ppBusy=false;
 const PP_COLS=[
   ['claim','Claim','njësi', o=>o.claimOrders? o.claimOrders+' porosi' : ''],
   ['picking','Picking','produkte', ()=>''],
-  ['checkout','Check-out','produkte', o=>o.checkoutOrders? o.checkoutOrders+' porosi' : ''],
+  ['checkout','Check-out','porosi', ()=>''],   // orders only (the lead, 17.10.2026) — ppVal reads checkoutOrders
   ['pod','POD','porosi', ()=>''],
   ['checkin','Check-In','njësi', ()=>''],
   ['mapping','Mapping','njësi', ()=>''],
   ['retref','Kthime/Refuzime','', o=>(o.ref? o.ref+' refuzime' : '')+(o.ref&&o.ret? ' · ' : '')+(o.ret? o.ret+' kthime' : '')]];
-const ppVal=(o,k)=> k==='retref'? (o.ref||0)+(o.ret||0) : (o[k]||0);
+const ppVal=(o,k)=> k==='retref'? (o.ref||0)+(o.ret||0) : k==='checkout'? (o.checkoutOrders||0) : (o[k]||0);
 function ppIso(d){ return fmtLocalDate(d); }
 function renderPeopleProcess(v){
   const t=todayStr(); if(!ppFrom){ ppFrom=t; ppTo=t; }
@@ -56,5 +56,5 @@ function ppDraw(){
     <tbody>${ops.length? ops.map(o=>`<tr><td><b>${h(o.name)}</b></td>${PP_COLS.map(c=>cell(o,c)).join('')}<td class="num">${o.days}</td></tr>`).join('')
       : `<tr><td colspan="${PP_COLS.length+2}"><div class="empty">Asnjë aktivitet i stafit në këtë periudhë.</div></td></tr>`}
       ${ops.length? `<tr style="border-top:2px solid var(--line)"><td><b>Gjithsej</b></td>${PP_COLS.map(c=>cell(tot,c)).join('')}<td></td></tr>` : ''}</tbody></table></div>
-    <div class="hint" style="margin-top:8px"><b>Claim</b> = njësi të rezervuara për një porosi (WMS, log 3 me porosi — kuptim i nxjerrë nga të dhënat). <b>Picking</b> = njësi të skanuara në sesionet e picking-ut (databaza e WMS, rifreskim çdo orë 07–22). <b>Check-out</b> = produkte me check-out (log 4 + 18) dhe porositë e tyre. <b>POD</b> = porosi të skanuara për kurierët (Delivery Platform). <b>Check-In</b> = njësi të pranuara (log 2). <b>Mapping</b> = njësi të vendosura në raft (log 7). <b>Kthime/Refuzime</b> = porosi të refuzuara të pranuara (Delivery Platform) + produkte të kthyera të procesuara (WMS 20/21/22/29). Vetëm llogaritë e stafit të depos; llogaritë temp dhe ato pa emër nuk numërohen. Shifrat janë për planifikim dhe zhvillim, jo për masa disiplinore.</div></div>`;
+    <div class="hint" style="margin-top:8px"><b>Claim</b> = njësi të rezervuara për një porosi (WMS, log 3 me porosi — kuptim i nxjerrë nga të dhënat). <b>Picking</b> = njësi të skanuara në sesionet e picking-ut (databaza e WMS, rifreskim çdo orë 07–22). <b>Check-out</b> = porosi me check-out (porosi të ndryshme në log 4 + 18, si te Statistikat e WH). <b>POD</b> = porosi të skanuara për kurierët (Delivery Platform). <b>Check-In</b> = njësi të pranuara (log 2). <b>Mapping</b> = njësi të vendosura në raft (log 7). <b>Kthime/Refuzime</b> = porosi të refuzuara të pranuara (Delivery Platform) + produkte të kthyera të procesuara (WMS 20/21/22/29). Vetëm llogaritë e stafit të depos; llogaritë temp dhe ato pa emër nuk numërohen. Shifrat janë për planifikim dhe zhvillim, jo për masa disiplinore.</div></div>`;
 }
