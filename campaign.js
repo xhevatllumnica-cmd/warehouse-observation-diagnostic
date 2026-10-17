@@ -172,9 +172,15 @@ function campRealCard(selDate){
   const pct=(a,b)=>b? Math.round(a/b*100)+'%' : '—';
   const sel=campRealDay(selDate), selDay=campDay(selDate);
   let cIn=0, cOut=0;
-  const hourly=sel&&sel.has? sel.rows.map(r=>{ cIn+=num(r.cr); cOut+=num(r.co);
-    const e=selDay? campExpWin(selDay, selDate, (r.h+1)*60) : null;
-    return `<tr><td>${String(r.h).padStart(2,'0')}:00–${String(r.h+1).padStart(2,'0')}:00</td><td>${campFmt(r.cr)}</td><td>${campFmt(cIn)} ${e?`<span class="faint">/ ${campFmt(e)}</span>`:''}</td><td>${campFmt(r.co)}</td><td>${campFmt(cOut)}</td><td>${campFmt(r.cu)}</td><td>${campFmt(r.ci)}</td><td>${campFmt(cIn-cOut)}</td></tr>`; }).join('') : '';
+  // every hour of the window, always (the lead, 18.10.2026): an hour with no activity is 0; an hour the WMS has not been read
+  // for yet (after the last Pulse read, e.g. the evening when the hourly refresh did not run) says so instead of 0
+  const readUpTo=campReal&&campReal.at? new Date(campReal.at).getTime() : 0, byH={}; ((sel&&sel.rows)||[]).forEach(r=>byH[r.h]=r);
+  const hourly=sel? Array.from({length:24-sel.from},(_,i)=>sel.from+i).map(hh=>{ const r=byH[hh], start=new Date(selDate+'T'+String(hh).padStart(2,'0')+':00:00').getTime();
+    const lbl=`${String(hh).padStart(2,'0')}:00–${String(hh+1).padStart(2,'0')}:00`;
+    if(!r && start>=readUpTo) return `<tr class="faint"><td>${lbl}</td><td colspan="7"><span class="faint">${start>Date.now()? 'ende pa ardhur' : 'pa lexuar ende nga WMS (lexohet me rifreskimin e radhës)'}</span></td></tr>`;
+    const x=r||{cr:0,co:0,cu:0,ci:0}; cIn+=num(x.cr); cOut+=num(x.co);
+    const e=selDay? campExpWin(selDay, selDate, (hh+1)*60) : null, part= r && readUpTo>start && readUpTo<start+3600000? ' <span class="badge b-warn" title="Ora u lexua nga WMS para se të mbarojë">e pjesshme</span>' : '';
+    return `<tr><td>${lbl}${part}</td><td>${campFmt(x.cr)}</td><td>${campFmt(cIn)} ${e?`<span class="faint">/ ${campFmt(e)}</span>`:''}</td><td>${campFmt(x.co)}</td><td>${campFmt(cOut)}</td><td>${campFmt(x.cu)}</td><td>${campFmt(x.ci)}</td><td>${campFmt(cIn-cOut)}</td></tr>`; }).join('') : '';
   return `<div class="card" style="margin-bottom:14px"><h3>Kampanja ditë pas dite <span class="sub">WMS · nga ${h(fmtDateAl(c.start))} ora ${h(c.launchTime||'00:00')} · depo 01</span></h3>
     <div class="tablewrap"><table><thead><tr><th>Dita</th><th>Dritarja</th><th>Porosi të krijuara</th><th>Parashikimi</th><th>Porosi të dala<br><span class="sub">check-out i parë</span></th><th>Njësi check-out</th><th>Njësi check-in</th><th>Hyrë − dalë<br><span class="sub">kumulative nga nisja</span></th></tr></thead>
     <tbody>${rows.map(({d,R,from,exp,expDay,cumIn,cumOut})=>`<tr ${d.date===selDate?'style="outline:1px solid var(--accent)"':''}>

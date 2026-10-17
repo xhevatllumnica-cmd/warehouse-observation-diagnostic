@@ -118,11 +118,16 @@ const picking= 'pickS' in E? {at:E._at||null, hours:J(E.pickH), days:J(E.pickS),
 // 90 days at most, so a campaign stays complete after it leaves the window.
 let campH=null;
 if('campH' in C){ const cur=J(C.campH), days=[...new Set(cur.map(r=>r.d))].sort(), first=days[0]||'';
-  let prev=[]; try{ prev=((JSON.parse(fs.readFileSync(path.join(DIR,'data.json'),'utf8')).campaign||{}).hours)||[]; }catch(e){}
-  const prevDays=new Set(prev.map(r=>r.d)), keep=d=> d<first || (d===first && prevDays.has(d));
-  const from=new Date(Date.now()-90*86400000).toISOString().slice(0,10);
-  const hours=prev.filter(r=>keep(r.d)).concat(cur.filter(r=>!keep(r.d))).filter(r=>r.d>=from).sort((a,b)=>a.d===b.d? a.h-b.h : a.d<b.d?-1:1);
-  campH={at:C._at||null, hours}; }
+  let prevC=null; try{ prevC=JSON.parse(fs.readFileSync(path.join(DIR,'data.json'),'utf8')).campaign||null; }catch(e){}
+  const prev=(prevC&&prevC.hours)||[];
+  // an OLDER block-C result than the one already built (e.g. a build that ran while the newest result was still being written,
+  // 18.10.2026) must never replace newer hours: the campaign hours stay as they were
+  if(prevC && prevC.at && C._at && C._at<prevC.at) campH=prevC;
+  else{
+    const prevDays=new Set(prev.map(r=>r.d)), keep=d=> d<first || (d===first && prevDays.has(d));
+    const from=new Date(Date.now()-90*86400000).toISOString().slice(0,10);
+    const hours=prev.filter(r=>keep(r.d)).concat(cur.filter(r=>!keep(r.d))).filter(r=>r.d>=from).sort((a,b)=>a.d===b.d? a.h-b.h : a.d<b.d?-1:1);
+    campH={at:C._at||null, hours}; } }
 
 // inbound batches (block F, optional): kept as the query's compact objects — rendered by the app's Inbound Flow page
 const inb=rows.F? J(rows.F.inb) : null, inbDaily=rows.F? J(rows.F.inbDaily) : null;
