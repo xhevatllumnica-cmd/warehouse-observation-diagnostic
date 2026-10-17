@@ -398,12 +398,13 @@ function picksDay(iso){
   const staff=warehouseStaffSet(), old=iso<ROSTER_FROM, canon=fn=>STAFF_ALIASES[normName(fn)]||fn;
   const own=fn=> old || staff.has(normName(fn)) || staff.has(normName(STAFF_ALIASES[normName(fn)]||''));
   const H=P.hours.filter(r=>r.d===iso && own(r.fn)), S=(P.days||[]).filter(r=>r.d===iso && own(r.fn));
-  const byHour={}, byOp={}; H.forEach(r=>{ byHour[r.h]=(byHour[r.h]||0)+(+r.n||0); const k=canon(r.fn||('#'+r.u)); byOp[k]=(byOp[k]||0)+(+r.n||0); });
+  const byHour={}, byOp={}, opH={}; H.forEach(r=>{ byHour[r.h]=(byHour[r.h]||0)+(+r.n||0); const k=canon(r.fn||('#'+r.u)); byOp[k]=(byOp[k]||0)+(+r.n||0);
+    const m=opH[k]||(opH[k]={}); m[r.h]=(m[r.h]||0)+(+r.n||0); });   // per person per hour: the board's hourly table (17.10.2026)
   const sum=(arr,k)=>arr.reduce((a,r)=>a+(+r[k]||0),0), activeH=Object.keys(byHour).length;
   return {at:P.at||null, picks:sum(H,'n'), pickers:Object.keys(byOp).length, activeHours:activeH, byHour,
     sessions:sum(S,'s'), orders:sum(S,'o'), rq:sum(S,'rq'), sc:sum(S,'sc'),
     top:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).slice(0,3).map(([name,n])=>({name,n})),
-    ops:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).map(([name,n])=>({name,n}))};
+    ops:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).map(([name,n])=>({name,n, byHour:opH[name]||{}, activeHours:Object.keys(opH[name]||{}).length}))};
 }
 async function buildFlow2h(db, iso){
   const today=isoToday(); const prevIso=isoAddDays(iso,-1);
