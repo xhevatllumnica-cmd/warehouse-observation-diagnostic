@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="sq">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proceset sipas operatorit</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<style>
+/* "Proceset sipas operatorit" as a page of its own (the lead, 17.10.2026): the same table as the app's People tab, full width */
+body{ background:var(--bg,#f4f5f7); margin:0; }
+.wrap{ padding:16px clamp(12px,2vw,28px) 24px; max-width:1900px; margin:0 auto; }
+</style>
+</head>
+<body>
+<div class="wrap" id="view"><div class="empty">Po ngarkohet…</div></div>
+<script>
+/* the few app.js helpers people.js uses */
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>Array.from(r.querySelectorAll(s));
+function h(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const todayStr=()=>fmtLocalDate(new Date());
+function fmtLocalDate(t){ return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`; }
+function fmtDateAl(d){ const p=(d||'').split('-'); return p.length===3?`${p[2]}.${p[1]}.${p[0]}`:d; }
+function fmtTime(iso){ if(!iso) return '—'; const d=new Date(iso); return isNaN(d)? '—' : d.toTimeString().slice(0,5); }
+function pagehead(title,desc,actionsHTML=''){ return `<div class="pagehead"><div><div style="font-size:19px;font-weight:700">${h(title)}</div><div class="desc">${desc}</div></div><div class="actions">${actionsHTML}</div></div>`; }
+function toast(msg){ let t=$('#toast'); if(!t){ t=document.createElement('div'); t.id='toast'; t.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1e8449;color:#fff;padding:11px 18px;border-radius:10px;z-index:200;font-size:13px'; document.body.appendChild(t); }
+  t.textContent=msg; t.style.opacity='1'; clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.transition='opacity .4s'; t.style.opacity='0'; },1800); }
+window.PP_STANDALONE=true;
+</script>
+<script src="/people.js?v=6"></script>
+<script>
+renderPeopleProcess($('#view'));
+// a period that includes today is re-read every 5 minutes (the screen stays current); older periods do not change
+setInterval(()=>{ if(ppTo===todayStr() && !document.hidden) ppLoad(); }, 5*60000);
+</script>
+<script src="/table-sort.js?v=3"></script>
+</body>
+</html>

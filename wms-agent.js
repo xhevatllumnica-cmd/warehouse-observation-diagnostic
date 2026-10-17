@@ -1521,6 +1521,7 @@ http.createServer(async (req,resp)=>{
       resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(b);
     }
     // Tabela ditore — same-origin only (no CORS header): operator names
+    if(q.pathname==='/proceset' || q.pathname==='/proceset/'){ return fs.readFile(path.join(APPDIR,'proceset.html'),(e,d)=>{ if(e){ resp.writeHead(404); return resp.end('not found'); } resp.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}); resp.end(d); }); }   // Proceset sipas operatorit as a page of its own (17.10.2026)
     if(q.pathname==='/postat' || q.pathname==='/postat/'){ return fs.readFile(path.join(APPDIR,'postat.html'),(e,d)=>{ if(e){ resp.writeHead(404); return resp.end('not found'); } resp.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}); resp.end(d); }); }
     if(q.pathname==='/tabela' || q.pathname==='/tabela/'){ return fs.readFile(path.join(APPDIR,'tabela.html'),(e,d)=>{ if(e){ resp.writeHead(404); return resp.end('not found'); } resp.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}); resp.end(d); }); }
     if(q.pathname==='/tabela/data' || q.pathname==='/tabela/assign'){

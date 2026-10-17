@@ -25,7 +25,7 @@ function ppIso(d){ return fmtLocalDate(d); }
 function renderPeopleProcess(v){
   const t=todayStr(); if(!ppFrom){ ppFrom=t; ppTo=t; }
   const quick=[['Sot',0,0],['Dje',1,1],['7 ditë',6,0],['30 ditë',29,0]];
-  v.innerHTML=pagehead('Proceset sipas operatorit','Çdo proces që ka kryer secili operator në periudhën e zgjedhur, nga WMS dhe Delivery Platform. Vetëm llogaritë e stafit të depos; dy llogaritë e të njëjtit person bashkohen.')
+  v.innerHTML=pagehead('Proceset sipas operatorit','Çdo proces që ka kryer secili operator në periudhën e zgjedhur, nga WMS dhe Delivery Platform. Vetëm llogaritë e stafit të depos; dy llogaritë e të njëjtit person bashkohen.', window.PP_STANDALONE? '' : `<button class="btn" id="ppOpen">↗ Hap si faqe më vete</button>`)
     +`<div class="filters" style="align-items:center">${quick.map(([l,a,b])=>`<button class="btn sm" data-ppq="${a},${b}">${l}</button>`).join('')}
         <label class="small">nga <input type="date" id="ppFrom" value="${h(ppFrom)}" max="${t}" style="width:auto;min-height:32px"></label>
         <label class="small">deri <input type="date" id="ppTo" value="${h(ppTo)}" max="${t}" style="width:auto;min-height:32px"></label>
@@ -33,6 +33,7 @@ function renderPeopleProcess(v){
       <div id="ppBody"><div class="empty">Po lexohet…</div></div>`;
   const back=n=>{ const d=new Date(); d.setDate(d.getDate()-n); return ppIso(d); };
   $$('[data-ppq]').forEach(b=>b.onclick=()=>{ const [a,c]=b.dataset.ppq.split(',').map(Number); ppFrom=back(a); ppTo=back(c); renderPeopleProcess(v); });
+  const ob=$('#ppOpen'); if(ob) ob.onclick=()=>window.open('/proceset','proceset');   // the same table as a page of its own (17.10.2026)
   $('#ppGo').onclick=()=>{ const f=$('#ppFrom').value, to=$('#ppTo').value; if(!f||!to||f>to){ toast('Zgjidh një periudhë të vlefshme'); return; } ppFrom=f; ppTo=to; ppLoad(); };
   if(ppData && ppData.from===ppFrom && ppData.to===ppTo) ppDraw(); else ppLoad();
 }
