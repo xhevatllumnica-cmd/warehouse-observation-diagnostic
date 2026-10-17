@@ -211,7 +211,8 @@ function renderPostat(v){
 function renderTabela(v){
   v.innerHTML = pagehead('Tabela ditore',
     'Tabela në hyrje: porosi/orë për tavolinë me emrin e operatorit (live nga WMS, çdo 2 min), carryover i djeshëm dhe porositë e gatshme deri 13:00 · 15:00 · 17:30 (databaza e WMS, çdo orë). Për ekranin në hyrje hape si faqe më vete: <b>http://localhost:8790/tabela</b>.',
-    `<button class="btn" id="tabOpen">↗ Hap si faqe më vete</button>`)
+    `<button class="btn" id="tabOpen">↗ Hap si faqe më vete</button><button class="btn" id="tabRot" title="Tabela ditore dhe Proceset sipas operatorit me radhë, çdo 30 sekonda">🖥 Monitori: Tabela ↔ Proceset</button>`)
     + `<iframe id="tabFrame" src="/tabela" style="width:100%;height:calc(100vh - 170px);min-height:560px;border:1px solid var(--line);border-radius:12px;background:var(--panel)"></iframe>`;
   $('#tabOpen').onclick=()=>window.open('/tabela','tabela');
+  $('#tabRot').onclick=()=>window.open('/ekrani?s=30&p=tabela,proceset','ekrani');   // monitor rotation (17.10.2026)
 }

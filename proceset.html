@@ -27,7 +27,7 @@ function toast(msg){ let t=$('#toast'); if(!t){ t=document.createElement('div');
   t.textContent=msg; t.style.opacity='1'; clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.transition='opacity .4s'; t.style.opacity='0'; },1800); }
 window.PP_STANDALONE=true;
 </script>
-<script src="/people.js?v=6"></script>
+<script src="/people.js?v=7"></script>
 <script>
 renderPeopleProcess($('#view'));
 // a period that includes today is re-read every 5 minutes (the screen stays current); older periods do not change
