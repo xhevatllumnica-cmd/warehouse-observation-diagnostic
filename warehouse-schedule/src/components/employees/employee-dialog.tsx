@@ -15,18 +15,21 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { EMPLOYEE_COLORS } from "@/lib/constants";
-import type { EmployeeDTO } from "@/lib/types";
+import type { EmployeeDTO, PositionDTO } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function EmployeeDialog({
   employee,
+  positions,
   open,
   defaultColorIndex,
   onClose,
 }: {
   employee: EmployeeDTO | null;
+  positions: PositionDTO[];
   open: boolean;
   defaultColorIndex: number;
   onClose: () => void;
@@ -36,6 +39,7 @@ export function EmployeeDialog({
   const [name, setName] = useState("");
   const [color, setColor] = useState<string>(EMPLOYEE_COLORS[0]);
   const [aliases, setAliases] = useState("");
+  const [positionId, setPositionId] = useState("");
   const [isActive, setIsActive] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,6 +48,7 @@ export function EmployeeDialog({
     setName(employee?.name ?? "");
     setColor(employee?.color ?? EMPLOYEE_COLORS[defaultColorIndex % EMPLOYEE_COLORS.length]);
     setAliases(employee?.aliases.split(",").join(", ") ?? "");
+    setPositionId(employee?.positionId ?? "");
     setIsActive(employee?.isActive ?? true);
     setError(null);
   }, [open, employee, defaultColorIndex]);
@@ -51,7 +56,7 @@ export function EmployeeDialog({
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     startTransition(async () => {
-      const input = { name, color, aliases, isActive };
+      const input = { name, color, aliases, isActive, positionId: positionId || null };
       const res = employee ? await updateEmployee(employee.id, input) : await createEmployee(input);
       if (!res.ok) {
         setError(res.error);
@@ -83,6 +88,23 @@ export function EmployeeDialog({
               autoFocus
               aria-invalid={Boolean(error)}
             />
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label htmlFor="emp-position">Pozita</Label>
+            <NativeSelect id="emp-position" value={positionId} onChange={(e) => setPositionId(e.target.value)}>
+              <option value="">— pa pozitë —</option>
+              {positions
+                .filter((p) => p.isActive || p.id === positionId)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </NativeSelect>
+            {positions.length === 0 && (
+              <p className="text-xs text-muted-foreground">Shtoni pozitat te faqja Pozitat.</p>
+            )}
           </div>
 
           <div className="grid gap-1.5">

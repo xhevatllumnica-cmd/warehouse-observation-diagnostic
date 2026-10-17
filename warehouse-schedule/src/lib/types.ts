@@ -10,6 +10,16 @@ export interface EmployeeDTO {
   isActive: boolean;
   sortOrder: number;
   aliases: string;
+  positionId: string | null;
+}
+
+export interface PositionDTO {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  isActive: boolean;
+  sortOrder: number;
 }
 
 export interface ShiftDTO {
