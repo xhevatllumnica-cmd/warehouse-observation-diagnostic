@@ -1201,6 +1201,48 @@ async function fetchMerreVet(iso){
     first: ts.length? new Date(Math.min(...ts)).toISOString() : null, last: ts.length? new Date(Math.max(...ts)).toISOString() : null, at:new Date().toISOString()};
   mvCache[iso]={t:Date.now(), v}; return v;
 }
+/* People → "Proceset sipas operatorit" (the warehouse lead, 17.10.2026), GET /people/process?from=YYYY-MM-DD&to=YYYY-MM-DD (≤ 31 days):
+   per person (the staff accounts only, a person's two accounts merged), each process they did in the period —
+     claim     = units reserved for an order (WMS LogTypeId 3 with an order; meaning inferred from the data) · orders
+     picking   = units scanned in pick sessions (PickSessionScan via WMS Pulse)
+     checkout  = products checked out (LogTypeId 4 + 18) · orders (distinct, as Statistikat e WH § 5.4)
+     pod       = orders scanned for POD (Delivery Platform, Accept Delivery) by the account
+     checkin   = units checked in (LogTypeId 2) · mapping = units mapped to a shelf row (LogTypeId 7)
+     returns   = refused orders collected (Delivery Platform Scanned Refusals) + customer-return units processed (WMS 20/21/22/29)
+   One day at a time: older days are kept in memory for 6 h, today for 2 min. A source that cannot be read (e.g. the Delivery Platform
+   session) is named in `errors` and its column stays empty for those days — never guessed. */
+const peopleDayCache={};
+async function peopleDay(iso){
+  const today=isoToday(), c=peopleDayCache[iso]; if(c && Date.now()-c.t<(iso>=today? 120000 : 6*3600000)) return c.v;
+  const staff=warehouseStaffSet(), canon=n=>STAFF_ALIASES[normName(n)]||n, own=n=> !!n && (staff.has(normName(n)) || staff.has(normName(STAFF_ALIASES[normName(n)]||'')));
+  const P={}, errors=[], op=raw=>{ const name=canon(String(raw).replace(/\s+/g,' ').trim()); return P[name]||(P[name]={name, claim:0, claimO:new Set(), picking:0, checkout:0, orders:new Set(), pod:new Set(), checkin:0, mapping:0, ref:0, ret:0}); };
+  const age=Math.round((new Date(today+'T00:00:00')-new Date(iso+'T00:00:00'))/86400000);
+  const dl=await fetchDayProductLogs(isoToMdy(iso), {noCache: age<CACHE_SETTLE_DAYS});
+  if(dl.error) errors.push('WMS: '+dl.error);
+  else dl.rows.forEach(x=>{ const id=Number(x.LogTypeId), who=String(x.UpdatedByName||'').trim(); if(!own(who)) return;
+    if(id===3 && x.OrderId){ const o=op(who); o.claim++; o.claimO.add(x.OrderId); }
+    else if(id===4||id===18){ const o=op(who); o.checkout++; if(x.OrderId) o.orders.add(x.OrderId); }
+    else if(id===2) op(who).checkin++;
+    else if(id===7) op(who).mapping++;
+    else if(id===20||id===21||id===22||id===29) op(who).ret++; });
+  const pk=picksDay(iso); if(pk) (pk.ops||[]).forEach(p=>{ op(p.name).picking+=p.n; }); else errors.push('Picking: WMS Pulse pa të dhëna');
+  const ps=await fetchPodScans(iso); if(ps.error) errors.push('POD: '+ps.error); else (ps.rows||[]).forEach(r=>{ if(own(r.scanner)) op(r.scanner).pod.add(r.oid+'|'+r.pid); });
+  const rs=await fetchRefusalScans(iso); if(rs.error) errors.push('Refuzime: '+rs.error); else (rs.rows||[]).forEach(r=>{ if(own(r.receiver)) op(r.receiver).ref+=r.n; });
+  const v={date:iso, errors, ops:Object.values(P).map(o=>({name:o.name, claim:o.claim, claimOrders:o.claimO.size, picking:o.picking, checkout:o.checkout, checkoutOrders:o.orders.size,
+    pod:o.pod.size, checkin:o.checkin, mapping:o.mapping, ref:o.ref, ret:o.ret}))};
+  if(!errors.some(e=>/auth_expired/.test(e)) || iso>=today) peopleDayCache[iso]={t:Date.now(), v};   // a day read without a session is retried next time
+  return v;
+}
+async function peopleProcess(from, to){
+  const days=[]; for(let d=from; d<=to && days.length<31; d=isoAddDays(d,1)) days.push(d);
+  const by={}, errors={};
+  for(const d of days){ const r=await peopleDay(d); r.errors.forEach(e=>{ (errors[e]=errors[e]||[]).push(d); });
+    r.ops.forEach(o=>{ const t=by[o.name]||(by[o.name]={name:o.name, claim:0, claimOrders:0, picking:0, checkout:0, checkoutOrders:0, pod:0, checkin:0, mapping:0, ref:0, ret:0, days:new Set()});
+      ['claim','claimOrders','picking','checkout','checkoutOrders','pod','checkin','mapping','ref','ret'].forEach(k=>t[k]+=o[k]||0);
+      if(o.claim||o.picking||o.checkout||o.pod||o.checkin||o.mapping||o.ref||o.ret) t.days.add(d); }); }
+  const ops=Object.values(by).map(o=>Object.assign({}, o, {days:o.days.size})).filter(o=>o.days>0).sort((a,b)=>a.name.localeCompare(b.name));
+  return {from, to:days[days.length-1]||to, days:days.length, ops, errors:Object.entries(errors).map(([e,ds])=>({error:e, days:ds})), at:new Date().toISOString()};
+}
 /* Kampanja → Pasqyra live cards (the warehouse lead, 15.10.2026), GET /camp/live?date=YYYY-MM-DD&from=HH:MM:
      pod      = orders scanned for POD (Delivery Platform, Accept Delivery) by the staff on the schedule, from `from` (the launch
                 hour on the launch day, else 00:00) — "Të përfunduara"
@@ -1488,6 +1530,11 @@ http.createServer(async (req,resp)=>{
         tabelaBoard.saveAssign(APPDIR, body, tabelaStations(), isoToday()); return send(200, {ok:true}); }
       const dq=String(q.query.date||''); if(dq && !/^\d{4}-\d{2}-\d{2}$/.test(dq)) return send(400,{error:'date: YYYY-MM-DD'});
       return send(200, await tabelaData(!!q.query.refresh, dq||null));
+    }
+    if(q.pathname==='/people/process'){   // People → Proceset sipas operatorit (counts per person) — same-origin only, no CORS header
+      const t=isoToday(), f=String(q.query.from||t), to=String(q.query.to||f), ok=s=>/^\d{4}-\d{2}-\d{2}$/.test(s);
+      if(!ok(f) || !ok(to) || f>to || to>t) return json(400,{error:'from / to: YYYY-MM-DD, from ≤ to, jo në të ardhmen'});
+      const r=await peopleProcess(f, to); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r));
     }
     if(q.pathname==='/camp/live'){   // Kampanja live cards (counts only) — same-origin only, no CORS header
       const d=String(q.query.date||isoToday()), f=String(q.query.from||'00:00');

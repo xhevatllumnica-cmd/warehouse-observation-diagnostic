@@ -473,6 +473,7 @@ const ROUTES = [
   {id:'matrix', title:'Staff Capability Matrix', ic:'▦', render:renderMatrix},
   {id:'staffobs', title:'Staff Observation Log', ic:'📝', render:renderStaffObs},
   {id:'capacity', title:'Kapaciteti & Stafi', ic:'👥', render:renderCapacity},
+  {id:'proceset', title:'Proceset sipas operatorit', ic:'📊', render:renderPeopleProcess},
   {id:'orari', title:'Orari i punës', ic:'📅', render:renderOrari},
   {sec:'Diagnose'},
   {id:'problems', title:'Bottleneck Register', ic:'⚠', render:(typeof renderBottleneck==='function'? renderBottleneck : renderProblems)},
