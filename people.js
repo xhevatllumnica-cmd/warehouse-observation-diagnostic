@@ -49,10 +49,10 @@ function ppDraw(){
   const ops=ppData.ops||[], tot={}; PP_COLS.forEach(([k])=>tot[k]=ops.reduce((a,o)=>a+ppVal(o,k),0));
   ['claimOrders','checkoutOrders','ref','ret'].forEach(k=>tot[k]=ops.reduce((a,o)=>a+(o[k]||0),0));
   const cell=(o,[k,,unit,sub])=>{ const n=ppVal(o,k), s=sub(o);
-    return `<td class="num" data-sort="${n}">${n? `<b>${n.toLocaleString('de-DE')}</b>${unit? ' <span class="faint small">'+unit+'</span>' : ''}${s? `<div class="faint small">${h(s)}</div>` : ''}` : '<span class="faint">—</span>'}</td>`; };
+    return `<td class="num" data-sort="${n}"${k==='checkout'? ' style="color:var(--crit)"' : ''}>${n? `<b>${n.toLocaleString('de-DE')}</b>${unit? ' <span class="faint small"'+(k==='checkout'? ' style="color:inherit;opacity:.8"' : '')+'>'+unit+'</span>' : ''}${s? `<div class="faint small"${k==='checkout'? ' style="color:inherit;opacity:.8"' : ''}>${h(s)}</div>` : ''}` : '<span class="faint">—</span>'}</td>`; };
   const err=(ppData.errors||[]).map(e=>`<div class="note warn"><b>${h(e.error)}</b> — ${e.days.length} ditë (${e.days.map(fmtDateAl).join(', ')}): kjo kolonë nuk është e plotë për ato ditë.${/auth_expired/.test(e.error)? ' Hap deliveryplatform.gjirafamall.com në Chrome që sesioni të rinovohet, pastaj shtyp «Shfaq».' : ''}</div>`).join('');
   body.innerHTML= err + `<div class="card"><h3 style="margin-top:0">${h(fmtDateAl(ppData.from))}${ppData.to!==ppData.from? ' – '+h(fmtDateAl(ppData.to)) : ''} <span class="sub">${ops.length} operatorë · ${ppData.days} ditë</span></h3>
-    <div class="tablewrap"><table><thead><tr><th>Emri dhe Mbiemri</th>${PP_COLS.map(c=>`<th class="num">${h(c[1])}</th>`).join('')}<th class="num">Ditë aktive</th></tr></thead>
+    <div class="tablewrap"><table><thead><tr><th>Emri dhe Mbiemri</th>${PP_COLS.map(c=>`<th class="num"${c[0]==='checkout'? ' style="color:var(--crit)"' : ''}>${h(c[1])}</th>`).join('')}<th class="num">Ditë aktive</th></tr></thead>
     <tbody>${ops.length? ops.map(o=>`<tr><td><b>${h(o.name)}</b></td>${PP_COLS.map(c=>cell(o,c)).join('')}<td class="num">${o.days}</td></tr>`).join('')
       : `<tr><td colspan="${PP_COLS.length+2}"><div class="empty">Asnjë aktivitet i stafit në këtë periudhë.</div></td></tr>`}
       ${ops.length? `<tr style="border-top:2px solid var(--line)"><td><b>Gjithsej</b></td>${PP_COLS.map(c=>cell(tot,c)).join('')}<td></td></tr>` : ''}</tbody></table></div>
