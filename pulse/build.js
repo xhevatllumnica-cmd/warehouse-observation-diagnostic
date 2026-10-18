@@ -127,7 +127,13 @@ if('campH' in C){ const cur=J(C.campH), days=[...new Set(cur.map(r=>r.d))].sort(
     const prevDays=new Set(prev.map(r=>r.d)), keep=d=> d<first || (d===first && prevDays.has(d));
     const from=new Date(Date.now()-90*86400000).toISOString().slice(0,10);
     const hours=prev.filter(r=>keep(r.d)).concat(cur.filter(r=>!keep(r.d))).filter(r=>r.d>=from).sort((a,b)=>a.d===b.d? a.h-b.h : a.d<b.d?-1:1);
-    campH={at:C._at||null, hours}; } }
+    campH={at:C._at||null, hours}; }
+  // campDn: orders processed per day × creation hour, staff only (as the other figures), summed over people; older days kept
+  if(campH!==prevC && 'campDn' in C){ const dn={}; J(C.campDn).forEach(r=>{ if(STAFF && !STAFF.set.has(normN(r.fn))) return; const k=r.d+'|'+r.c; dn[k]=(dn[k]||0)+(+r.n||0); });
+    const curDn=Object.entries(dn).map(([k,n])=>{ const [d,c]=k.split('|'); return {d,c,n}; }), dnDays=[...new Set(curDn.map(r=>r.d))].sort(), f2=dnDays[0]||'';
+    const prevDn=(prevC&&prevC.done)||[], prevDnDays=new Set(prevDn.map(r=>r.d)), keep2=d=> d<f2 || (d===f2 && prevDnDays.has(d));
+    campH.done=prevDn.filter(r=>keep2(r.d)).concat(curDn.filter(r=>!keep2(r.d))).sort((a,b2)=>a.d===b2.d? (a.c<b2.c?-1:1) : a.d<b2.d?-1:1); }
+  else if(prevC && prevC.done && campH && !campH.done) campH.done=prevC.done; }
 
 // inbound batches (block F, optional): kept as the query's compact objects — rendered by the app's Inbound Flow page
 const inb=rows.F? J(rows.F.inb) : null, inbDaily=rows.F? J(rows.F.inbDaily) : null;

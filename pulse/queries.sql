@@ -143,7 +143,18 @@ SELECT /*pulse:C*/
    UNION ALL
    SELECT CONVERT(varchar(10),c.InsertDateTime,23), DATEPART(hour,c.InsertDateTime), 0, 0, 0, 1
      FROM ProductCheckIns c WHERE c.WarehouseId=1 AND c.InsertDateTime >= DATEADD(day,-10,CAST(GETDATE() AS date))
- ) x GROUP BY d, h FOR JSON PATH) campH
+ ) x GROUP BY d, h FOR JSON PATH) campH,
+ -- campDn (Kampanja "Porosi të procesuara", the lead 18.10.2026: only orders CREATED in the campaign count): orders processed — the first
+ -- completed check-out (LogTypeId 9) — per local day (d) × local creation hour (c = 'YYYY-MM-DD HH') × the account's full name (fn), the last
+ -- 10 days, warehouse 01. build.js keeps the staff only and older days; the app counts c ≥ the launch.
+ (SELECT CONVERT(varchar(10),x.t9,23) d, CONVERT(varchar(13),t.l,120) c, LTRIM(RTRIM(ISNULL(us.FirstName,'')+' '+ISNULL(us.LastName,''))) fn, COUNT(*) n
+  FROM (SELECT pl.OrderId, pl.PlatformId, pl.InsertDateTime t9, pl.UpdateBy, ROW_NUMBER() OVER (PARTITION BY pl.OrderId, pl.PlatformId ORDER BY pl.InsertDateTime) rn
+        FROM ProductLogs pl WITH (NOLOCK) WHERE pl.LogTypeId=9 AND pl.OrderId>0 AND pl.InsertDateTime>=DATEADD(day,-10,CAST(GETDATE() AS date))) x
+  JOIN Orders o ON o.OrderId=x.OrderId AND o.PlatformId=x.PlatformId AND o.WarehouseId=1
+  CROSS APPLY (SELECT CAST((o.CreatedOnUtc AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) l) t
+  LEFT JOIN (SELECT UserId, MIN(FirstName) FirstName, MIN(LastName) LastName FROM Users GROUP BY UserId) us ON us.UserId=x.UpdateBy
+  WHERE x.rn=1
+  GROUP BY CONVERT(varchar(10),x.t9,23), CONVERT(varchar(13),t.l,120), LTRIM(RTRIM(ISNULL(us.FirstName,'')+' '+ISNULL(us.LastName,''))) FOR JSON PATH) campDn
 
 -- @D stock & locations (warehouse 01 unless noted)
 SELECT /*pulse:D*/
