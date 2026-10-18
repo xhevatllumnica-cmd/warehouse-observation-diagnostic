@@ -924,8 +924,9 @@ function campTotalsNow(){
   const lt=String(c.launchTime||'00:00'), lh=parseInt(lt,10)||0, launchKey=c.start+' '+p2(lh), launch=new Date(c.start+'T'+lt+':00');
   const created=P.hours.filter(r=>r.d>=c.start && r.d<=c.end && (r.d>c.start || +r.h>=lh)).reduce((a,r)=>a+(+r.cr||0),0);
   // processed: the orders CREATED in the campaign window, whenever they are processed (also after the end) — so the backlog can reach 0
-  const processed=P.done.filter(r=>r.c>=launchKey && r.c<=c.end+' 23').reduce((a,r)=>a+(+r.n||0),0);
-  return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, processed, backlog:Math.max(0, created-processed), at:P.at||null};
+  const D=P.done.filter(r=>r.c>=launchKey && r.c<=c.end+' 23'), processed=D.reduce((a,r)=>a+(+r.n||0),0);
+  const lastDay=D.reduce((m,r)=>r.d>m? r.d : m, '');   // the day the latest campaign order was processed (for the final message)
+  return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, processed, backlog:Math.max(0, created-processed), lastDay, at:P.at||null};
 }
 function campChatText(T, mark, final){
   const f=n=>Number(n||0).toLocaleString('de-DE'), asOf=T.at? new Date(T.at) : null;
@@ -936,7 +937,7 @@ function campChatText(T, mark, final){
     +'Porosi të procesuara: *'+f(T.processed)+'* (vetëm porositë e krijuara në kampanjë)\n'
     +'Backlog i mbetur: *'+f(T.backlog)+'*'+(T.created? ' ('+Math.round(T.processed/T.created*100)+'% e procesuar)' : '')+'\n'
     +(asOf? '\n_WMS deri '+p2(asOf.getHours())+':'+p2(asOf.getMinutes())+'_' : '')
-    +(final? '\n\nBacklog-u i kampanjës është 0 — të gjitha porositë e kampanjës janë procesuar. Ky është mesazhi i fundit.' : '');
+    +(final? '\n\n*Porosia e fundit e kampanjës u procesua'+(T.lastDay? ' më '+T.lastDay.split('-').reverse().join('.') : '')+'.* Backlog-u i kampanjës është 0 — të gjitha porositë e kampanjës janë procesuar. Ky është mesazhi i fundit.' : '');
 }
 let campChatBusy=false;
 async function campChatTick(){

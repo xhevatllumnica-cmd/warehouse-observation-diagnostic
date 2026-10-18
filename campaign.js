@@ -211,7 +211,8 @@ function campRealDay(date){
 function campRealCard(selDate){
   const c=campCfg(); if(!c.start) return '';
   if(!campReal){ campRealLoad(); return `<div class="card" style="margin-bottom:14px"><h3>Kampanja ditë pas dite (WMS)</h3><div class="hint">Duke ngarkuar…</div></div>`; }
-  const today=campToday(), days=campDays().filter(d=>d.date>=c.start&&d.date<=today);
+  // the campaign window only: from the launch to the end day (Sun 18.10 24:00) — no later day (the lead, 19.10.2026)
+  const today=campToday(), days=campDays().filter(d=>d.date>=c.start&&d.date<=today&&(!c.end||d.date<=c.end));
   if(!days.length) return '';
   let cumIn=0, cumOut=0;
   const rows=days.map(d=>{ const R=campRealDay(d.date)||{cr:0,co:0,cu:0,ci:0,has:false}, from=campWinStart(d.date);
@@ -331,15 +332,19 @@ function campLoadLocal(){
 function campImportFile(e){ const f=e.target.files[0]; if(!f) return; const r=new FileReader();
   r.onload=()=>{ try{ campApplyPlan(JSON.parse(r.result)); toast('Plani u ngarkua'); renderCampaign($('#view')); }catch(err){ toast('Skedar i pavlefshëm: '+(err.message||err)); } }; r.readAsText(f); }
 
-function campDayPicker(id){
-  const sel=campSelDate();
-  return `<select id="${id}">${campDays().map(d=>`<option value="${d.date}" ${d.date===sel?'selected':''}>${h(campDayName(d.date))} ${h(fmtDateAl(d.date))}${d.date===campToday()?' · sot':''}</option>`).join('')}</select>`;
+function campDayPicker(id, sel, upToEnd){
+  sel=sel||campSelDate(); const c=campCfg();
+  // Pasqyra live: only the campaign's days (start … end); the plan's cleanup day after the end is not listed (19.10.2026)
+  const days=campDays().filter(d=>!upToEnd || !c.end || d.date<=c.end);
+  return `<select id="${id}">${days.map(d=>`<option value="${d.date}" ${d.date===sel?'selected':''}>${h(campDayName(d.date))} ${h(fmtDateAl(d.date))}${d.date===campToday()?' · sot':''}</option>`).join('')}</select>`;
 }
 function campWireDayPicker(id){ const s=$('#'+id); if(s) s.onchange=e=>{ campSel=e.target.value; renderCampaign($('#view')); }; }
 
 /* ---- Pasqyra live ---- */
 function campLive(box){
-  const c=campCfg(), date=campSelDate(), day=campDay(date), calc=campCalc(date), ents=campEntries(date), last=ents[ents.length-1];
+  // after the end (e.g. Monday 19.10) the live view stays on the campaign's last day; the totals keep counting the processing
+  const c0=campCfg(), sel0=campSelDate(), date= c0.end && sel0>c0.end? c0.end : sel0;
+  const c=c0, day=campDay(date), calc=campCalc(date), ents=campEntries(date), last=ents[ents.length-1];
   const ev=last?campEval(last,date):null, w=campWms(date), rec=campDailyRec(date);
   const nowMin=new Date().getHours()*60+new Date().getMinutes();
   const expNow=date===campToday()?campExpWin(day,date,nowMin):(date<campToday()?campExpWin(day,date,1440):null), rw=campRealDay(date);
@@ -347,7 +352,7 @@ function campLive(box){
   const kc=(val,lbl,foot,cls)=>`<div class="card kpi"><div class="val ${cls||''}">${val}</div><div class="lbl">${lbl}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
   const devCls=ev&&ev.dev!=null?(ev.dev>=num(c.triggerPct,7)?'warn':(ev.dev<=-20?'warn':'ok')):'';
   const verify=c.context.verify||[];
-  box.innerHTML=`<div class="filters" style="align-items:center">${campDayPicker('campLiveDay')}
+  box.innerHTML=`<div class="filters" style="align-items:center">${campDayPicker('campLiveDay', date, true)}
       <span class="badge b-new">${h(campPhase(date))}</span>
       ${ev?campLevelBadge(ev.level)+` <span class="small muted">${h(ev.why)}</span>`:'<span class="small muted">Ende s\'ka raport orar për këtë ditë</span>'}
       <span style="margin-left:auto" class="btnrow"><button class="btn sm primary" id="campAddH">＋ Raport orar</button>${wmsOnAgent()?'<button class="btn sm" id="campSync">⟳ Sync WMS</button>':''}</span></div>
