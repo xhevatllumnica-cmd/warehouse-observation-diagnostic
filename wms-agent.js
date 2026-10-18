@@ -925,8 +925,9 @@ function campTotalsNow(){
   // orders online: created in the window minus those now Cancelled (WMS status 7, the lead 19.10.2026)
   const W=P.hours.filter(r=>r.d>=c.start && r.d<=c.end && (r.d>c.start || +r.h>=lh));
   const created=W.reduce((a,r)=>a+(+r.cr||0)-(+r.cx||0),0), cancelled=W.reduce((a,r)=>a+(+r.cx||0),0);
+  const completeNoCO=W.reduce((a,r)=>a+(+r.cs||0),0);   // Complete (status 2) without a warehouse check-out — counted as processed (19.10.2026)
   // processed: the orders CREATED in the campaign window, whenever they are processed (also after the end) — so the backlog can reach 0
-  const D=P.done.filter(r=>r.c>=launchKey && r.c<=c.end+' 23'), processed=D.reduce((a,r)=>a+(+r.n||0),0);
+  const D=P.done.filter(r=>r.c>=launchKey && r.c<=c.end+' 23'), processed=D.reduce((a,r)=>a+(+r.n||0),0)+completeNoCO;
   const lastDay=D.reduce((m,r)=>r.d>m? r.d : m, '');   // the day the latest campaign order was processed (for the final message)
   return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, cancelled, processed, backlog:Math.max(0, created-processed), lastDay, at:P.at||null};
 }
