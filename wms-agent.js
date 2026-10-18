@@ -929,7 +929,7 @@ function campTotalsNow(){
 function campChatText(T, mark, final){
   const f=n=>Number(n||0).toLocaleString('de-DE'), asOf=T.at? new Date(T.at) : null;
   return (final? '✅ ' : '')+'*'+T.name+' — gjithë kampanja · '+mark+'*\n'
-    +'_'+T.start.split('-').reverse().join('.')+' '+T.launchTime+' → '+T.end.split('-').reverse().join('.')+' 24:00 · Depo 01_\n\n'
+    +'_'+T.start.split('-').reverse().join('.')+' '+T.launchTime+' → '+T.end.split('-').reverse().join('.')+' 24:00_\n\n'
     +'Porosi online: *'+f(T.created)+'*\n'
     +'Porosi të procesuara: *'+f(T.processed)+'* (vetëm porositë e krijuara në kampanjë)\n'
     +'Backlog i mbetur: *'+f(T.backlog)+'*'+(T.created? ' ('+Math.round(T.processed/T.created*100)+'% e procesuar)' : '')+'\n'
@@ -1509,6 +1509,14 @@ http.createServer(async (req,resp)=>{
     // ---- Google Chat (Flow 2h report) ----
     if(q.pathname==='/pod/pending'){   // POD by courier — same-origin only, no CORS header
       const v=await podPending(!!q.query.refresh); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(Object.assign({}, v, {chat:{marks:POD_CHAT_MARKS, enabled:!!(cfg.podChatWebhook||(cfg.podChatToFlowSpace&&cfg.googleChatWebhook)), target: cfg.podChatWebhook? 'pod' : cfg.podChatToFlowSpace? 'flow' : null}})));
+    }
+    if(q.pathname==='/camp/chat-test' && req.method==='POST'){   // one test message now (not counted as a mark) — same-origin only
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      if(!cfg.googleChatWebhook) return json(400,{error:'Vendos fillimisht webhook-un e Google Chat.'});
+      const T=campTotalsNow(); if(!T || T.error) return json(400,{error:(T&&T.error)||'kampanja nuk është e ngarkuar'});
+      const n=new Date(), r=await postToChat('_Mesazh prove nga Warehouse Observation._\n\n'+campChatText(T, p2(n.getHours())+':'+p2(n.getMinutes()), false));
+      console.log('[wms-agent] Google Chat campaign test: '+(r.ok?'sent ✓':'FAILED '+r.error));
+      return json(r.ok?200:502, Object.assign(r,{created:T.created, processed:T.processed, backlog:T.backlog}));
     }
     if(q.pathname==='/camp/chat-preview'){   // the campaign message as it would go out now — nothing is sent
       const T=campTotalsNow(); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});
