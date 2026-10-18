@@ -1284,6 +1284,8 @@ async function campLive(iso, from){
     else{ const last=ev.filter(e=>isOrd(e)||isProd(e)).reduce((m,e)=>Math.max(m,e.t),0); a=fromMs; b=last||fromMs; }
     const hrs=Math.max((b-a)/3600000, 0), inW=ev.filter(e=>e.t>=a && e.t<=b);
     const orders=new Set(inW.filter(isOrd).map(e=>e.x.OrderId)).size, products=inW.filter(isProd).length;
+    // orders processed in the whole window so far (the lead, 18.10.2026: "Backlog në fund të ditës" = created − processed)
+    out.done=new Set(ev.filter(isOrd).map(e=>e.x.OrderId)).size;
     out.tempo={orders, products, hours:Math.round(hrs*10)/10, ordersPerHour: hrs>0? Math.floor(orders/hrs) : null, productsPerHour: hrs>0? Math.floor(products/hrs) : null,
       window: iso>=today? 'last2h' : 'day', a:new Date(a).toISOString(), b:new Date(b).toISOString()};
   }

@@ -312,11 +312,12 @@ function campLive(box){
       ${kc(L&&L.tempo&&L.tempo.ordersPerHour!=null?L.tempo.ordersPerHour+' porosi/orë':L0,'Ritmi real', L&&L.tempo&&L.tempo.ordersPerHour!=null?'<b>'+L.tempo.productsPerHour+'</b> produkte/orë · '+(L.tempo.window==='last2h'?'2 orët e fundit (si Flow 2h)':'mesatarja nga '+h(campHHMM(campWinStart(date)))+' deri te check-out-i i fundit'):(L&&L.tempoError?'WMS: '+h(L.tempoError):''))}
       ${kc(ev&&ev.staffNeeded!=null?ev.staffNeeded:'—','Persona outbound të nevojshëm tani', 'me '+c.ordersPerHour+' porosi/orë/person'+(last&&last.staff!=null?' · prezent: '+last.staff:''))}
       ${kc(calc?calc.total||'—':'—','Stafi i planifikuar', day?`outbound ${num(day.outbound)} (${num(day.s1)} / ${num(day.s2)}) · inbound ${num(day.inbound)}`:'')}
-      ${(()=>{ const s=L&&L.backlogEnd, manual=rec&&rec.backlogEnd!=null&&rec.backlogEnd!=='';
-        const val= s? num(s.pending) : manual? num(rec.backlogEnd) : null, goal=num(c.kpi.backlogEnd);
-        const foot= s? 'pa POD pas check-out · '+(isToday?'deri tani ('+h(fmtTime(s.at))+')':'gjendja e fundit '+h(fmtTime(s.at)))+' · objektivi ≤ '+campFmt(goal)
-          : manual? 'nga raporti ditor · objektivi ≤ '+campFmt(goal) : 'regjistrohet çdo 30 min që nga 15.10.2026 · objektivi ≤ '+campFmt(goal);
-        return kc(val!=null?campFmt(val):(L||!isToday?'—':L0),'Backlog në fund të ditës', foot, val!=null&&goal? (val>goal?'warn':'ok') : ''); })()}
+      ${(()=>{ // simple math (the lead, 18.10.2026): orders created that day (WMS) − orders processed that day (check-out completed, staff)
+        const created= rw&&rw.has? rw.cr : null, done= L&&L.done!=null? L.done : null, goal=num(c.kpi.backlogEnd);
+        const val= created!=null&&done!=null? Math.max(0, created-done) : null;
+        const foot= val!=null? `krijuar <b>${campFmt(created)}</b> − procesuar <b>${campFmt(done)}</b>${isToday?' · deri tani':''}${campWinStart(date)?' · nga '+h(campHHMM(campWinStart(date))):''} · objektivi ≤ ${campFmt(goal)}`
+          : (created==null? 'porositë e krijuara: pa të dhëna nga WMS ende' : L&&L.tempoError? 'WMS: '+h(L.tempoError) : '');
+        return kc(val!=null?campFmt(val):(L||!isToday?'—':L0),'Backlog në fund të ditës'+(isToday?' (deri tani)':''), foot, val!=null&&goal? (val>goal?'warn':'ok') : ''); })()}
     </div>
     <div class="grid g-2">
       <div class="card"><h3>Porositë e hyra: reale kundrejt parashikimit <span class="sub">kumulative sipas orës</span></h3>${campChartSVG(day,ents,date)}
