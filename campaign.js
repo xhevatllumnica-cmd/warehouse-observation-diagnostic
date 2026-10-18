@@ -141,6 +141,34 @@ function campRealLoad(){
    (Sun 18.10 24:00) — orders online (created, WMS hourly), orders processed (Pulse campaign.done: orders with a completed check-out
    by the staff, ONLY those created from the launch on — an older order processed in the campaign does not count, 18.10.2026) and the
    backlog left = online − processed. Three cards with a light tint of their own. */
+/* Google Chat for the campaign totals (the lead, 18.10.2026): its own space — the agent posts the three "gjithë kampanja" figures at
+   09:00 … 23:00 until the backlog is 0. The webhook URL is a secret: saved in the agent's config, never shown back. */
+let campChatOpen=false;
+function campChatBoxHTML(){
+  return `<details class="card" id="campChatBox" style="margin-bottom:14px" ${campChatOpen?'open':''}><summary style="cursor:pointer"><b>Google Chat — mesazhi i kampanjës</b> <span class="faint small" id="campChatSum">· po kontrolloj…</span></summary>
+    <div class="hint" style="margin:8px 0">Tri shifrat e mësipërme (online, të procesuara, backlog i mbetur) dërgohen në një hapësirë të veçantë të Google Chat çdo 2 orë (09:00, 11:00 … 23:00), derisa backlog-u të bëhet 0 — atëherë vjen një mesazh i fundit dhe dërgimi ndalet. Jo në Warehouse flow.
+      <ol style="margin:6px 0 0 18px;padding:0">
+        <li>Në Google Chat: <b>+ New chat → Create a space</b> → emri p.sh. "Kampanja — Depo" → <b>Create</b>. Shto anëtarët që duhet ta shohin.</li>
+        <li>Te emri i hapësirës: <b>Apps &amp; integrations</b> → <b>Webhooks</b> → <b>Add webhook</b> → emri p.sh. "Kampanja" → <b>Save</b>.</li>
+        <li>Kopjo URL-në e webhook-ut, ngjite këtu dhe shtyp <b>Ruaj</b>, pastaj <b>Dërgo provë</b>.</li>
+      </ol></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="password" id="campChatUrl" placeholder="https://chat.googleapis.com/v1/spaces/…/messages?key=…" style="flex:1;min-width:260px">
+      <button class="btn primary sm" id="campChatSave">Ruaj</button><button class="btn sm" id="campChatTest">Dërgo provë</button><button class="btn sm ghost" id="campChatDel">Hiqe</button>
+    </div><div class="hint" id="campChatMsg" style="margin-top:6px"></div></details>`;
+}
+function campWireChatBox(){
+  const box=$('#campChatBox'); if(!box) return; box.ontoggle=()=>{ campChatOpen=box.open; };
+  const msg=t=>{ const m=$('#campChatMsg'); if(m) m.innerHTML=t; };
+  const post=async(path,payload)=>{ const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload||{})}); const j=await r.json().catch(()=>({})); if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status)); return j; };
+  const status=async()=>{ const s=$('#campChatSum'); if(!s) return; try{ const j=await (await fetch('/camp/chat-status',{cache:'no-store'})).json();
+    s.textContent= !j.configured? '· jo e lidhur — nuk dërgohet asgjë' : '· e lidhur ✓'+(j.finished? ' · përfunduar (backlog 0)' : '')+(j.last? ' · i fundit: '+j.last.hour+' ('+new Date(j.last.at).toLocaleString()+')' : '')+(j.lastError? ' · ⚠ '+j.lastError.error : ''); }catch(e){ s.textContent='· agjenti s\'përgjigjet'; } };
+  $('#campChatSave').onclick=async()=>{ const url=($('#campChatUrl').value||'').trim(); if(!url){ msg('Ngjit URL-në e webhook-ut.'); return; }
+    try{ await post('/camp/chat-webhook',{url}); $('#campChatUrl').value=''; msg('<span style="color:var(--ok)">✓ U ruajt. Shtyp «Dërgo provë».</span>'); status(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  $('#campChatTest').onclick=async()=>{ msg('Po dërgoj…'); try{ await post('/camp/chat-test'); msg('<span style="color:var(--ok)">✓ U dërgua — shiko hapësirën në Google Chat.</span>'); status(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  $('#campChatDel').onclick=async()=>{ try{ await post('/camp/chat-webhook',{url:''}); msg('Webhook-u u hoq — nuk dërgohen më mesazhe.'); status(); }catch(e){ msg('<span style="color:var(--crit)">✗ '+h(e.message)+'</span>'); } };
+  status();
+}
 function campTotalsCards(){
   const c=campCfg(); if(!c.start||!c.end) return '';
   const today=campToday(), launchKey=c.start+' '+String(campMin(c.launchTime||'00:00')/60|0).padStart(2,'0');
@@ -344,6 +372,7 @@ function campLive(box){
         return kc(val!=null?campFmt(val):(campReal?'—':L0),'Backlog në fund të ditës'+(isToday?' (deri tani)':''), foot, val!=null&&goal? (val>goal?'warn':'ok') : ''); })()}
     </div>
     ${campTotalsCards()}
+    ${wmsOnAgent()? campChatBoxHTML() : ''}
     <div class="grid g-2">
       <div class="card"><h3>Porositë e hyra: reale kundrejt parashikimit <span class="sub">kumulative sipas orës</span></h3>${campChartSVG(day,ents,date)}
         <div class="hint">— vija blu: parashikimi · - - portokalli: pragu i skenarit të lartë (+${c.triggerPct}%) · vija e errët: porositë e krijuara në WMS · pikat jeshile: raportet orare.${campWinStart(date)?' Dita e nisjes numërohet nga ora '+h(campHHMM(campWinStart(date)))+' (parashikimi dhe WMS nga ajo orë).':''}${day&&day.curve==='launch'?' Kurba e ditës së nisjes është zhvendosur te ora '+h(c.launchTime)+' (SUPOZIM).':''}</div></div>
@@ -369,6 +398,7 @@ function campLive(box){
         ${day.note?`<div class="muted">${h(day.note)}</div>`:''}
       </div></div>`:''}`;
   campWireDayPicker('campLiveDay');
+  campWireChatBox();
   $('#campAddH').onclick=()=>campHourlyForm(null,date);
   const sb=$('#campSync'); if(sb) sb.onclick=()=>{ sb.disabled=true; sb.textContent='⟳ Duke sinkronizuar…'; wmsAgentSync(2,1).then(r=>{ toast(r.ok?'WMS u sinkronizua':'Sync dështoi: '+r.msg); renderCampaign($('#view')); }); };
 }

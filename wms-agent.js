@@ -910,7 +910,8 @@ async function chatTick(){
 }
 setInterval(chatTick, 60*1000);
 /* Kampanja totals to Google Chat (the warehouse lead, 18.10.2026): the three "gjithë kampanja" cards — orders online, orders processed
-   (only orders created from the launch on), backlog left — posted to the Flow (2h) space at the same marks (09:00 … 23:00), from the
+   (only orders created from the launch on), backlog left — posted to the campaign's OWN space (cfg.campChatWebhook, never Warehouse flow)
+   at the Flow marks (09:00 … 23:00), from the
    launch on, UNTIL the backlog is 0: then one last message and no more for that campaign (data/camp-chat-state.json). Same basis as the
    app: the campaign in the shared DB (start, launchTime, end), Pulse campaign.hours / campaign.done (hourly, staff only). */
 const CAMP_CHAT_FILE=path.join(APPDIR,'data','camp-chat-state.json');
@@ -930,6 +931,7 @@ function campChatText(T, mark, final){
   const f=n=>Number(n||0).toLocaleString('de-DE'), asOf=T.at? new Date(T.at) : null;
   return (final? '✅ ' : '')+'*'+T.name+' — gjithë kampanja · '+mark+'*\n'
     +'_'+T.start.split('-').reverse().join('.')+' '+T.launchTime+' → '+T.end.split('-').reverse().join('.')+' 24:00_\n\n'
+    +'_Shifrat e më poshtme paraqesin vetëm porositë e krijuara gjatë kampanjës dhe procesimin e tyre, por nuk paraqesin shifra për porosi të mëhershme apo më vonshme!_\n\n'
     +'Porosi online: *'+f(T.created)+'*\n'
     +'Porosi të procesuara: *'+f(T.processed)+'* (vetëm porositë e krijuara në kampanjë)\n'
     +'Backlog i mbetur: *'+f(T.backlog)+'*'+(T.created? ' ('+Math.round(T.processed/T.created*100)+'% e procesuar)' : '')+'\n'
@@ -938,7 +940,7 @@ function campChatText(T, mark, final){
 }
 let campChatBusy=false;
 async function campChatTick(){
-  if(!cfg.googleChatWebhook || campChatBusy) return;
+  if(!cfg.campChatWebhook || campChatBusy) return;   // its own Google Chat space, never Warehouse flow (18.10.2026) — nothing goes out until it is set
   const h=latestElapsedMark(); if(h==null) return;
   const T=campTotalsNow(); if(!T || T.error || !T.created || Date.now()<T.launch.getTime()) return;
   const st=campChatState(), key=T.start+'|'+T.launchTime, today=isoToday();   // one state per campaign
@@ -947,7 +949,7 @@ async function campChatTick(){
   if(st.lastError && st.lastError.hour===h && Date.now()-new Date(st.lastError.at).getTime()<10*60*1000) return;
   campChatBusy=true;
   try{
-    const final=T.backlog===0, r=await postToChat(campChatText(T, p2(h)+':00', final));
+    const final=T.backlog===0, r=await postToChat(campChatText(T, p2(h)+':00', final), cfg.campChatWebhook);
     console.log('[wms-agent] Google Chat campaign '+p2(h)+':00'+(final?' (final)':'')+': '+(r.ok?'sent ✓':'FAILED '+r.error));
     if(r.ok){ st.sent={key, day:today, marks:[...sent,h]}; st.last={at:new Date().toISOString(), hour:p2(h)+':00', backlog:T.backlog}; delete st.lastError; if(final) st.finished={key, at:new Date().toISOString()}; }
     else st.lastError={at:new Date().toISOString(), hour:h, error:r.error};
@@ -1510,18 +1512,31 @@ http.createServer(async (req,resp)=>{
     if(q.pathname==='/pod/pending'){   // POD by courier — same-origin only, no CORS header
       const v=await podPending(!!q.query.refresh); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(Object.assign({}, v, {chat:{marks:POD_CHAT_MARKS, enabled:!!(cfg.podChatWebhook||(cfg.podChatToFlowSpace&&cfg.googleChatWebhook)), target: cfg.podChatWebhook? 'pod' : cfg.podChatToFlowSpace? 'flow' : null}})));
     }
+    if(q.pathname==='/camp/chat-status'){ const st=campChatState(); return json(200,{configured:!!cfg.campChatWebhook, last:st.last||null, finished:st.finished||null, lastError:st.lastError||null}); }
+    if(q.pathname==='/camp/chat-webhook' && req.method==='POST'){   // the campaign space's webhook — kept only in the git-ignored config, never sent back
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
+      const url=String(body&&body.url||'').trim();
+      if(url && !/^https:\/\/chat\.googleapis\.com\/v1\/spaces\/[^/]+\/messages\?/.test(url)) return json(400,{error:'Kjo s\'duket si webhook i Google Chat (duhet të fillojë me https://chat.googleapis.com/v1/spaces/…/messages?key=…).'});
+      if(url && url===cfg.googleChatWebhook) return json(400,{error:'Ky është webhook-u i Warehouse flow — krijo një hapësirë të veçantë për kampanjën.'});
+      try{ const onDisk=JSON.parse(fs.readFileSync(CFG_FILE,'utf8')); if(url) onDisk.campChatWebhook=url; else delete onDisk.campChatWebhook; fs.writeFileSync(CFG_FILE, JSON.stringify(onDisk,null,2)); if(url) cfg.campChatWebhook=url; else delete cfg.campChatWebhook; }
+      catch(e){ return json(500,{error:'S\'u ruajt: '+e.message}); }
+      console.log('[wms-agent] campaign Google Chat webhook '+(url?'saved':'removed')+'.');
+      return json(200,{ok:true, configured:!!url});
+    }
     if(q.pathname==='/camp/chat-test' && req.method==='POST'){   // one test message now (not counted as a mark) — same-origin only
       const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
-      if(!cfg.googleChatWebhook) return json(400,{error:'Vendos fillimisht webhook-un e Google Chat.'});
+      if(!cfg.campChatWebhook) return json(400,{error:'Vendos fillimisht webhook-un e hapësirës së kampanjës.'});
       const T=campTotalsNow(); if(!T || T.error) return json(400,{error:(T&&T.error)||'kampanja nuk është e ngarkuar'});
-      const n=new Date(), r=await postToChat('_Mesazh prove nga Warehouse Observation._\n\n'+campChatText(T, p2(n.getHours())+':'+p2(n.getMinutes()), false));
+      const n=new Date(), r=await postToChat('_Mesazh prove nga Warehouse Observation._\n\n'+campChatText(T, p2(n.getHours())+':'+p2(n.getMinutes()), false), cfg.campChatWebhook);
+      if(r.ok){ const st=campChatState(); st.last={at:new Date().toISOString(), hour:'prova', backlog:T.backlog}; saveCampChatState(st); }
       console.log('[wms-agent] Google Chat campaign test: '+(r.ok?'sent ✓':'FAILED '+r.error));
       return json(r.ok?200:502, Object.assign(r,{created:T.created, processed:T.processed, backlog:T.backlog}));
     }
     if(q.pathname==='/camp/chat-preview'){   // the campaign message as it would go out now — nothing is sent
       const T=campTotalsNow(); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});
       if(!T || T.error) return resp.end('S\'ka të dhëna kampanje: '+((T&&T.error)||'kampanja nuk është e ngarkuar'));
-      const st=campChatState(); return resp.end(campChatText(T, String(q.query.mark||'--:--'), T.backlog===0)+'\n\n— gjendja e dërgimit: '+JSON.stringify({last:st.last||null, finished:st.finished||null, webhook:!!cfg.googleChatWebhook}));
+      const st=campChatState(); return resp.end(campChatText(T, String(q.query.mark||'--:--'), T.backlog===0)+'\n\n— gjendja e dërgimit: '+JSON.stringify({last:st.last||null, finished:st.finished||null, webhook:!!cfg.campChatWebhook}));
     }
     if(q.pathname==='/pod/chat-preview'){ const v=await podPending(false); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}); return resp.end(podChatText(v, String(q.query.mark||'16:30'))); }
     // POD space webhook: saved only in the git-ignored config, never sent back to a page; same-origin only (no CORS header)
