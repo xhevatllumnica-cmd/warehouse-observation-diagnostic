@@ -1265,6 +1265,27 @@ async function campBacklogTick(){
   try{ const v=await podPending(false); if(v && !v.error) campBacklogSave(isoToday(), v.total); }catch(e){} finally{ campBacklogBusy=false; }
 }
 setInterval(campBacklogTick, 30*60*1000); setTimeout(campBacklogTick, 90*1000);
+/* Kampanja totals (the warehouse lead, 18.10.2026), GET /camp/totals?start=YYYY-MM-DD&from=HH:MM&end=YYYY-MM-DD: the orders processed
+   over the whole campaign — distinct orders with a completed check-out (LogTypeId 9, as /camp/live `done` and Flow 2h) by the staff, from the launch
+   (start + from) to the end of the end day; per day and in all (an order counted once). Past days cached 6 h, today 2 min. */
+const campDoneCache={};
+async function campDoneDay(iso, fromMs){
+  const k=iso+'|'+fromMs, c=campDoneCache[k], today=isoToday(); if(c && Date.now()-c.t<(iso>=today? 120000 : 6*3600000)) return c.v;
+  const staff=warehouseStaffSet(), own=n=> !!n && (staff.has(normName(n)) || staff.has(normName(STAFF_ALIASES[normName(n)]||'')));
+  const age=Math.round((new Date(today+'T00:00:00')-new Date(iso+'T00:00:00'))/86400000);
+  const dl=await fetchDayProductLogs(isoToMdy(iso), {noCache: age<CACHE_SETTLE_DAYS}); if(dl.error) return {error:dl.error};
+  const ids=new Set(); dl.rows.forEach(x=>{ const id=Number(x.LogTypeId); if(id!==ORDER_DONE_LOGTYPE_ID || !x.OrderId || !own(x.UpdatedByName)) return;
+    const t=parseWmsDate(x.InsertDateTime); if(t!=null && t>=fromMs) ids.add(String(x.OrderId)); });
+  const v={date:iso, ids:[...ids]}; campDoneCache[k]={t:Date.now(), v}; return v;
+}
+async function campTotals(start, from, end){
+  const today=isoToday(), last= end<today? end : today, all=new Set(), days=[], errors=[];
+  for(let d=start; d<=last; d=isoAddDays(d,1)){
+    const r=await campDoneDay(d, d===start? new Date(start+'T'+from+':00').getTime() : 0);
+    if(r.error){ errors.push(d+': '+r.error); days.push({date:d, done:null}); continue; }
+    r.ids.forEach(id=>all.add(id)); days.push({date:d, done:r.ids.length}); }
+  return {start, from, end, processed:all.size, days, errors, at:new Date().toISOString()};
+}
 const campLiveCache={};
 async function campLive(iso, from){
   const key=iso+'|'+from, c=campLiveCache[key], today=isoToday();
@@ -1539,6 +1560,11 @@ http.createServer(async (req,resp)=>{
       const t=isoToday(), f=String(q.query.from||t), to=String(q.query.to||f), ok=s=>/^\d{4}-\d{2}-\d{2}$/.test(s);
       if(!ok(f) || !ok(to) || f>to || to>t) return json(400,{error:'from / to: YYYY-MM-DD, from ≤ to, jo në të ardhmen'});
       const r=await peopleProcess(f, to); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r));
+    }
+    if(q.pathname==='/camp/totals'){   // Kampanja totals over the whole campaign (counts only) — same-origin only, no CORS header
+      const s=String(q.query.start||''), f=String(q.query.from||'00:00'), e=String(q.query.end||''), ok=x=>/^\d{4}-\d{2}-\d{2}$/.test(x);
+      if(!ok(s) || !ok(e) || s>e || !/^\d{2}:\d{2}$/.test(f) || s>isoToday()) return json(400,{error:'start / end: YYYY-MM-DD, from: HH:MM'});
+      const r=await campTotals(s, f, e); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r));
     }
     if(q.pathname==='/camp/live'){   // Kampanja live cards (counts only) — same-origin only, no CORS header
       const d=String(q.query.date||isoToday()), f=String(q.query.from||'00:00');

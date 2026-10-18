@@ -137,6 +137,33 @@ function campRealLoad(){
     .catch(()=>{ campReal={hours:[], error:true}; })
     .finally(()=>{ campRealBusy=false; if(location.hash==='#campaign') renderCampaign($('#view')); });
 }
+/* campaign totals (the lead, 18.10.2026): from the launch (start + launchTime, e.g. Wed 14.10 16:00) to the end of the end day
+   (Sun 18.10 24:00) — orders online (created, WMS hourly), orders processed (agent /camp/totals: distinct orders with a completed
+   check-out by the staff) and the backlog left = online − processed. Three cards with a light tint of their own. */
+let campTot=null, campTotBusy=false, campTotAt=0;
+function campTotalsLoad(){
+  const c=campCfg(); if(!c.start||!c.end||campTotBusy||(campTot&&Date.now()-campTotAt<120000)) return campTot;
+  campTotBusy=true;
+  fetch('/camp/totals?start='+c.start+'&from='+(c.launchTime||'00:00')+'&end='+c.end,{cache:'no-store'}).then(r=>r.json()).then(v=>{ campTot=v; campTotAt=Date.now(); })
+    .catch(e=>{ campTot={error:String(e.message||e)}; campTotAt=Date.now(); })
+    .finally(()=>{ campTotBusy=false; if(location.hash==='#campaign' && campTab==='live') renderCampaign($('#view')); });
+  return campTot;
+}
+function campTotalsCards(){
+  const c=campCfg(); if(!c.start||!c.end) return '';
+  const T=wmsOnAgent()? campTotalsLoad() : null, today=campToday();
+  const days=[]; for(let d=c.start; d<=c.end && d<=today; d=fmtLocalDate(new Date(dobj(d).getTime()+86400000))) days.push(d);
+  const R=days.map(d=>campRealDay(d)), created= campReal&&R.some(r=>r&&r.has)? R.reduce((a,r)=>a+(r&&r.has? r.cr : 0),0) : null;
+  const done= T&&!T.error&&T.processed!=null? T.processed : null, left= created!=null&&done!=null? Math.max(0, created-done) : null;
+  const period=`${h(campDayName(c.start))} ${h(c.launchTime||'00:00')} → ${h(campDayName(c.end))} 24:00`;
+  const card=(tint,val,lbl,foot)=>`<div class="card kpi" style="background:color-mix(in srgb, ${tint} 9%, var(--panel));border-color:color-mix(in srgb, ${tint} 30%, var(--line))"><div class="val">${val}</div><div class="lbl">${lbl}</div><div class="foot">${foot}</div></div>`;
+  const loading='<span class="small muted">po lexohet…</span>';
+  return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px">
+    ${card('var(--accent)', created!=null? campFmt(created) : (campReal? '—' : loading), 'Porosi online — gjithë kampanja', period+' · WMS'+(campReal&&campReal.at? ' deri '+h(fmtTime(campReal.at)) : ''))}
+    ${card('var(--ok)', done!=null? campFmt(done) : (T&&T.error? '—' : loading), 'Porosi të procesuara — gjithë kampanja', period+(T&&T.error? ' · WMS: '+h(T.error) : ' · check-out i përfunduar nga stafi'))}
+    ${card('var(--crit)', left!=null? campFmt(left) : (T&&T.error? '—' : loading), 'Backlog i mbetur — gjithë kampanja', 'online − të procesuara'+(left!=null? ' = '+campFmt(created)+' − '+campFmt(done) : ''))}
+  </div>`;
+}
 /* live cards (the lead, 15.10.2026) from the agent's /camp/live: POD done from the window start, orders past check-out
    still waiting for POD + WMS "Orders Ready To Complete" (now), the Flow (2h) tempo and the day's last backlog snapshot */
 const campLiveData={}, campLiveBusy={};
@@ -302,6 +329,7 @@ function campLive(box){
       ${ev?campLevelBadge(ev.level)+` <span class="small muted">${h(ev.why)}</span>`:'<span class="small muted">Ende s\'ka raport orar për këtë ditë</span>'}
       <span style="margin-left:auto" class="btnrow"><button class="btn sm primary" id="campAddH">＋ Raport orar</button>${wmsOnAgent()?'<button class="btn sm" id="campSync">⟳ Sync WMS</button>':''}</span></div>
     ${verify.length?`<div class="note warn"><b>Për t'u verifikuar:</b> ${verify.map(h).join(' · ')}</div>`:''}
+    ${campTotalsCards()}
     ${campRealCard(date)}
     <div class="grid g-kpi" style="margin-bottom:14px">
       ${last? kc(campFmt(last.ordersIn),'Porosi të hyra deri '+h(last.time), ev&&ev.expected!=null?'pritej '+campFmt(ev.expected)+(ev.dev!=null?' ('+(ev.dev>=0?'+':'')+Math.round(ev.dev)+'%)':''):'', devCls)
