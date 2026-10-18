@@ -233,9 +233,8 @@ function renderStatsBody(d){
    units checked in, created − out — from the WMS database through Pulse (campaign.hours, hourly 07–22; the last 10 days and the
    days kept before). The day: its own picker, else the page's day, else today. Every hour is listed: no activity = 0, not read yet
    from the WMS / not come yet = said so. */
-const statsLocalToday=()=>fmtLocalDate(new Date());   // local day — statsLocalToday() is UTC (wrong 00:00–02:00)
 let statsHourDate='', statsPulseH=null, statsPulseAt=0, statsPulseBusy=false;
-function statsHourDay(){ return statsHourDate || (statsRange==='day' && statsDate) || statsLocalToday(); }
+function statsHourDay(){ return statsHourDate || (statsRange==='day' && statsDate) || todayStr(); }
 function statsPulseLoad(){
   if(statsPulseBusy || (statsPulseH && Date.now()-statsPulseAt<120000)) return;
   statsPulseBusy=true;
@@ -253,7 +252,7 @@ function statsHourRows(day){
     return {hh, cr:+x.cr||0, cIn, co:+x.co||0, cOut, cu:+x.cu||0, ci:+x.ci||0, partial: !!r && readUpTo>start && readUpTo<start+3600000}; });
 }
 function statsHourlyCard(d){
-  const today=statsLocalToday(), day=statsHourDay(), P=statsPulseH; if(!P) statsPulseLoad();
+  const today=todayStr(), day=statsHourDay(), P=statsPulseH; if(!P) statsPulseLoad();
   const ctl=`<span class="no-print" style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap">
       <input type="date" id="statsHourDate" value="${h(day)}" max="${h(today)}" title="Zgjidh ditën" style="width:auto;min-height:32px">
       <button class="btn sm ${day===today?'primary':''}" id="statsHourToday" title="Sot">SOT</button>
@@ -275,8 +274,8 @@ function statsHourLoad(){ statsPulseLoad(); statsHourRedraw(); }
 function statsHourRedraw(){ const el=$('#statsHourCard'); if(!el || !statsLast) return; el.outerHTML=statsHourlyCard(statsLast); statsHourWire(statsLast); }
 function statsHourWire(d){
   const di=$('#statsHourDate'); if(!di) return;
-  di.onchange=e=>{ const v=e.target.value; statsHourDate= v && v<=statsLocalToday()? v : ''; statsHourRedraw(); };
-  $('#statsHourToday').onclick=()=>{ statsHourDate=statsLocalToday(); statsHourRedraw(); };
+  di.onchange=e=>{ const v=e.target.value; statsHourDate= v && v<=todayStr()? v : ''; statsHourRedraw(); };
+  $('#statsHourToday').onclick=()=>{ statsHourDate=todayStr(); statsHourRedraw(); };
   const cb=$('#statsHourCard [data-csv="hourly"]'); if(cb) cb.onclick=()=>{ const day=statsHourDay(), rows=statsHourRows(day); if(!rows) return toast('Të dhënat ende po lexohen');
     statsCsv('wh-ore-pas-ore-'+day, ['Ora','Krijuara','Kumulative','Dala','Dala kumulative','Njësi check-out','Njësi check-in','Hyrë − dalë'],
       rows.map(r=>[String(r.hh).padStart(2,'0')+':00', ...(r.state? ['','','','','','',''] : [r.cr,r.cIn,r.co,r.cOut,r.cu,r.ci,r.cIn-r.cOut])])); };

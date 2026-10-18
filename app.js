@@ -109,7 +109,7 @@ const $  = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
 const uid = (p='id')=> p+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const nowISO = ()=> new Date().toISOString();
-const todayStr = ()=> new Date().toISOString().slice(0,10);
+const todayStr = ()=> fmtLocalDate(new Date());   // local day — toISOString() is UTC and gave yesterday 00:00–02:00 (Kosovo)
 const nowTime  = ()=> new Date().toTimeString().slice(0,5);
 function h(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function num(v,d=0){ const n=parseFloat(v); return isNaN(n)?d:n; }
