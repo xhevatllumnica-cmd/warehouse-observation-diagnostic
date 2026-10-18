@@ -929,7 +929,9 @@ function campTotalsNow(){
   // processed: the orders CREATED in the campaign window, whenever they are processed (also after the end) — so the backlog can reach 0
   const D=P.done.filter(r=>r.c>=launchKey && r.c<=c.end+' 23'), processed=D.reduce((a,r)=>a+(+r.n||0),0)+completeNoCO;
   const lastDay=D.reduce((m,r)=>r.d>m? r.d : m, '');   // the day the latest campaign order was processed (for the final message)
-  return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, cancelled, processed, backlog:Math.max(0, created-processed), lastDay, at:P.at||null};
+  // the campaign orders still open, by WMS status (Pulse campaign.open, current state) — null until the query has run
+  let open=null; if(Array.isArray(P.open)){ open={}; P.open.filter(r=>r.c>=launchKey && r.c<=c.end+' 23').forEach(r=>{ open[r.st]=(open[r.st]||0)+(+r.n||0); }); }
+  return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, cancelled, processed, backlog:Math.max(0, created-processed), lastDay, open, at:P.at||null};
 }
 function campChatText(T, mark, final){
   const f=n=>Number(n||0).toLocaleString('de-DE'), asOf=T.at? new Date(T.at) : null;
@@ -963,6 +965,29 @@ async function campChatTick(){
   } finally{ campChatBusy=false; }
 }
 setInterval(campChatTick, 60*1000);
+/* One extra message (the lead, 19.10.2026) when the only campaign orders still open have WMS status 24, 0 or 3 — the statuses whose
+   meaning is not known yet — so the lead can decide about them. Checked every minute, sent once per campaign (the same space). */
+const CAMP_UNKNOWN_ST=['24','0','3'];
+let campUnknownBusy=false;
+async function campUnknownTick(){
+  if(!cfg.campChatWebhook || campUnknownBusy) return;
+  const T=campTotalsNow(); if(!T || T.error || !T.open || Date.now()<T.launch.getTime()) return;
+  const left=Object.entries(T.open).filter(([,n])=>n>0), total=left.reduce((a,[,n])=>a+n,0);
+  if(!total || !left.every(([st])=>CAMP_UNKNOWN_ST.includes(String(st)))) return;   // something else is still open (e.g. 29 in transit, 25 in the depot)
+  const st=campChatState(), key=T.start+'|'+T.launchTime; if(st.onlyUnknown && st.onlyUnknown.key===key) return;
+  campUnknownBusy=true;
+  try{
+    const f=n=>Number(n||0).toLocaleString('de-DE');
+    const text='⚠ *'+T.name+' — në backlog kanë mbetur vetëm porositë me statuset 24 / 0 / 3*\n\n'
+      +'Porosi të hapura të kampanjës: *'+f(total)+'*\n'
+      +left.sort((a,b)=>b[1]-a[1]).map(([s,n])=>'• statusi '+s+': *'+f(n)+'*').join('\n')+'\n\n'
+      +'Kuptimi i këtyre statuseve ende nuk është sqaruar: duhet vendosur nëse janë porosi të hapura, të anuluara apo të përfunduara.';
+    const r=await postToChat(text, cfg.campChatWebhook);
+    console.log('[wms-agent] Google Chat campaign — only statuses 24/0/3 left: '+(r.ok?'sent ✓':'FAILED '+r.error));
+    if(r.ok){ st.onlyUnknown={key, at:new Date().toISOString(), total, open:T.open}; saveCampChatState(st); }
+  } finally{ campUnknownBusy=false; }
+}
+setInterval(campUnknownTick, 60*1000);
 setTimeout(chatTick, 15000);
 
 /* WMS Pulse build. The scheduled Claude task only runs the read-only queries (pulse/queries.sql) — a shell step there
@@ -1542,7 +1567,7 @@ http.createServer(async (req,resp)=>{
     if(q.pathname==='/camp/chat-preview'){   // the campaign message as it would go out now — nothing is sent
       const T=campTotalsNow(); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});
       if(!T || T.error) return resp.end('S\'ka të dhëna kampanje: '+((T&&T.error)||'kampanja nuk është e ngarkuar'));
-      const st=campChatState(); return resp.end(campChatText(T, String(q.query.mark||'--:--'), T.backlog===0)+'\n\n— gjendja e dërgimit: '+JSON.stringify({last:st.last||null, finished:st.finished||null, webhook:!!cfg.campChatWebhook}));
+      const st=campChatState(); return resp.end(campChatText(T, String(q.query.mark||'--:--'), T.backlog===0)+'\n\n— gjendja e dërgimit: '+JSON.stringify({last:st.last||null, finished:st.finished||null, onlyUnknown:st.onlyUnknown||null, webhook:!!cfg.campChatWebhook})+'\n— të hapura sipas statusit: '+JSON.stringify(T.open));
     }
     if(q.pathname==='/pod/chat-preview'){ const v=await podPending(false); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}); return resp.end(podChatText(v, String(q.query.mark||'16:30'))); }
     // POD space webhook: saved only in the git-ignored config, never sent back to a page; same-origin only (no CORS header)

@@ -133,7 +133,9 @@ if('campH' in C){ const cur=J(C.campH), days=[...new Set(cur.map(r=>r.d))].sort(
     const curDn=Object.entries(dn).map(([k,n])=>{ const [d,c]=k.split('|'); return {d,c,n}; }), dnDays=[...new Set(curDn.map(r=>r.d))].sort(), f2=dnDays[0]||'';
     const prevDn=(prevC&&prevC.done)||[], prevDnDays=new Set(prevDn.map(r=>r.d)), keep2=d=> d<f2 || (d===f2 && prevDnDays.has(d));
     campH.done=prevDn.filter(r=>keep2(r.d)).concat(curDn.filter(r=>!keep2(r.d))).sort((a,b2)=>a.d===b2.d? (a.c<b2.c?-1:1) : a.d<b2.d?-1:1); }
-  else if(prevC && prevC.done && campH && !campH.done) campH.done=prevC.done; }
+  else if(prevC && prevC.done && campH && !campH.done) campH.done=prevC.done;
+  // campOpen: the campaign orders still open by creation hour × WMS status — the current state (19.10.2026)
+  if(campH && campH!==prevC){ if('campOpen' in C) campH.open=J(C.campOpen); else if(prevC && prevC.open) campH.open=prevC.open; } }
 
 // inbound batches (block F, optional): kept as the query's compact objects — rendered by the app's Inbound Flow page
 const inb=rows.F? J(rows.F.inb) : null, inbDaily=rows.F? J(rows.F.inbDaily) : null;

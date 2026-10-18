@@ -158,7 +158,15 @@ SELECT /*pulse:C*/
   CROSS APPLY (SELECT CAST((o.CreatedOnUtc AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) l) t
   LEFT JOIN (SELECT UserId, MIN(FirstName) FirstName, MIN(LastName) LastName FROM Users GROUP BY UserId) us ON us.UserId=x.UpdateBy
   WHERE x.rn=1 AND o.WmsStatusId<>7   -- cancelled orders are not counted (19.10.2026)
-  GROUP BY CONVERT(varchar(10),x.t9,23), CONVERT(varchar(13),t.l,120), LTRIM(RTRIM(ISNULL(us.FirstName,'')+' '+ISNULL(us.LastName,''))) FOR JSON PATH) campDn
+  GROUP BY CONVERT(varchar(10),x.t9,23), CONVERT(varchar(13),t.l,120), LTRIM(RTRIM(ISNULL(us.FirstName,'')+' '+ISNULL(us.LastName,''))) FOR JSON PATH) campDn,
+ -- campOpen (Kampanja, the lead 19.10.2026: notify when only statuses 24 / 0 / 3 are left): the orders still OPEN — not Cancelled (7), not
+ -- Complete (2), no completed check-out (LogTypeId 9) — per local creation hour (c) × WMS status (st), created in the last 30 days, warehouse 01.
+ -- The current state (not kept between builds); the agent reads the campaign's creation window from it.
+ (SELECT CONVERT(varchar(13),t.l,120) c, o.WmsStatusId st, COUNT(*) n
+  FROM Orders o CROSS APPLY (SELECT CAST((o.CreatedOnUtc AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) l) t
+  WHERE o.WarehouseId=1 AND o.CreatedOnUtc>=DATEADD(day,-30,GETUTCDATE()) AND o.WmsStatusId NOT IN (2,7)
+    AND NOT EXISTS (SELECT 1 FROM ProductLogs p9 WITH (NOLOCK) WHERE p9.OrderId=o.OrderId AND p9.PlatformId=o.PlatformId AND p9.LogTypeId=9)
+  GROUP BY CONVERT(varchar(13),t.l,120), o.WmsStatusId FOR JSON PATH) campOpen
 
 -- @D stock & locations (warehouse 01 unless noted)
 SELECT /*pulse:D*/
