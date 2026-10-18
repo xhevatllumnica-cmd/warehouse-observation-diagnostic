@@ -126,22 +126,23 @@ SELECT /*pulse:C*/
  (SELECT WmsStatusId s, MIN(ShippingAttribute) a FROM OrderStatusMapping WHERE ShippingAttribute IS NOT NULL GROUP BY WmsStatusId FOR JSON PATH) statusNames,
  -- campH (app tab "Kampanja", day by day from the launch, the lead 14.10.2026): per local day × hour, the last 10 days, warehouse 01:
  -- cr orders created (CreatedOnUtc → local), co orders checked out (first check-out 4/18), cu units checked out, ci units checked in
- -- (ProductCheckIns). build.js keeps older days, so a campaign stays complete after it leaves the 10-day window.
- (SELECT d, h, SUM(cr) cr, SUM(co) co, SUM(cu) cu, SUM(ci) ci FROM (
-   SELECT CONVERT(varchar(10),t.l,23) d, DATEPART(hour,t.l) h, 1 cr, 0 co, 0 cu, 0 ci
+ -- (ProductCheckIns), cx of the created orders those now WMS status 7 = Cancelled (the lead, 19.10.2026: left out of the campaign).
+ -- build.js keeps older days, so a campaign stays complete after it leaves the 10-day window.
+ (SELECT d, h, SUM(cr) cr, SUM(co) co, SUM(cu) cu, SUM(ci) ci, SUM(cx) cx FROM (
+   SELECT CONVERT(varchar(10),t.l,23) d, DATEPART(hour,t.l) h, 1 cr, 0 co, 0 cu, 0 ci, CASE WHEN o.WmsStatusId=7 THEN 1 ELSE 0 END cx
      FROM Orders o CROSS APPLY (SELECT CAST((o.CreatedOnUtc AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) l) t
      WHERE o.WarehouseId=1 AND o.CreatedOnUtc >= DATEADD(day,-10,GETUTCDATE())
    UNION ALL
-   SELECT CONVERT(varchar(10),f.fco,23), DATEPART(hour,f.fco), 0, 1, 0, 0
+   SELECT CONVERT(varchar(10),f.fco,23), DATEPART(hour,f.fco), 0, 1, 0, 0, 0
      FROM (SELECT pl.OrderId, pl.PlatformId, MIN(pl.InsertDateTime) fco FROM ProductLogs pl WITH (NOLOCK)
            JOIN Orders o ON o.OrderId=pl.OrderId AND o.PlatformId=pl.PlatformId AND o.WarehouseId=1
            WHERE pl.LogTypeId IN (4,18) AND pl.InsertDateTime >= DATEADD(day,-10,CAST(GETDATE() AS date)) GROUP BY pl.OrderId, pl.PlatformId) f
    UNION ALL
-   SELECT CONVERT(varchar(10),pl.InsertDateTime,23), DATEPART(hour,pl.InsertDateTime), 0, 0, 1, 0
+   SELECT CONVERT(varchar(10),pl.InsertDateTime,23), DATEPART(hour,pl.InsertDateTime), 0, 0, 1, 0, 0
      FROM ProductLogs pl WITH (NOLOCK) JOIN Orders o ON o.OrderId=pl.OrderId AND o.PlatformId=pl.PlatformId AND o.WarehouseId=1
      WHERE pl.LogTypeId IN (4,18) AND pl.InsertDateTime >= DATEADD(day,-10,CAST(GETDATE() AS date))
    UNION ALL
-   SELECT CONVERT(varchar(10),c.InsertDateTime,23), DATEPART(hour,c.InsertDateTime), 0, 0, 0, 1
+   SELECT CONVERT(varchar(10),c.InsertDateTime,23), DATEPART(hour,c.InsertDateTime), 0, 0, 0, 1, 0
      FROM ProductCheckIns c WHERE c.WarehouseId=1 AND c.InsertDateTime >= DATEADD(day,-10,CAST(GETDATE() AS date))
  ) x GROUP BY d, h FOR JSON PATH) campH,
  -- campDn (Kampanja "Porosi të procesuara", the lead 18.10.2026: only orders CREATED in the campaign count): orders processed — the first
@@ -153,7 +154,7 @@ SELECT /*pulse:C*/
   JOIN Orders o ON o.OrderId=x.OrderId AND o.PlatformId=x.PlatformId AND o.WarehouseId=1
   CROSS APPLY (SELECT CAST((o.CreatedOnUtc AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2) l) t
   LEFT JOIN (SELECT UserId, MIN(FirstName) FirstName, MIN(LastName) LastName FROM Users GROUP BY UserId) us ON us.UserId=x.UpdateBy
-  WHERE x.rn=1
+  WHERE x.rn=1 AND o.WmsStatusId<>7   -- cancelled orders are not counted (19.10.2026)
   GROUP BY CONVERT(varchar(10),x.t9,23), CONVERT(varchar(13),t.l,120), LTRIM(RTRIM(ISNULL(us.FirstName,'')+' '+ISNULL(us.LastName,''))) FOR JSON PATH) campDn
 
 -- @D stock & locations (warehouse 01 unless noted)

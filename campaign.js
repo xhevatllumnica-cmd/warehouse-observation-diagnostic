@@ -173,7 +173,8 @@ function campTotalsCards(){
   const c=campCfg(); if(!c.start||!c.end) return '';
   const today=campToday(), launchKey=c.start+' '+String(campMin(c.launchTime||'00:00')/60|0).padStart(2,'0');
   const days=[]; for(let d=c.start; d<=c.end && d<=today; d=fmtLocalDate(new Date(dobj(d).getTime()+86400000))) days.push(d);
-  const R=days.map(d=>campRealDay(d)), created= campReal&&R.some(r=>r&&r.has)? R.reduce((a,r)=>a+(r&&r.has? r.cr : 0),0) : null;
+  const R=days.map(d=>campRealDay(d)), created= campReal&&R.some(r=>r&&r.has)? R.reduce((a,r)=>a+(r&&r.has? r.net : 0),0) : null;   // cancelled orders (WMS 7) are not campaign orders (19.10.2026)
+  const cancelled= campReal? R.reduce((a,r)=>a+(r&&r.has? r.cx : 0),0) : 0;
   // processed: only orders created from the launch on (an order made before Wed 16:00 does not count, even if processed in the campaign)
   const DN=campReal&&Array.isArray(campReal.done)? campReal.done : null;
   // the orders CREATED in the campaign window, whenever processed (also after the end), so the backlog can reach 0 (18.10.2026)
@@ -182,7 +183,7 @@ function campTotalsCards(){
   const card=(tint,val,lbl,foot)=>`<div class="card kpi" style="background:color-mix(in srgb, ${tint} 9%, var(--panel));border-color:color-mix(in srgb, ${tint} 30%, var(--line))"><div class="val">${val}</div><div class="lbl">${lbl}</div><div class="foot">${foot}</div></div>`;
   const loading='<span class="small muted">po lexohet…</span>';
   return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px">
-    ${card('var(--accent)', created!=null? campFmt(created) : (campReal? '—' : loading), 'Porosi online — gjithë kampanja', period+' · WMS'+(campReal&&campReal.at? ' deri '+h(fmtTime(campReal.at)) : ''))}
+    ${card('var(--accent)', created!=null? campFmt(created) : (campReal? '—' : loading), 'Porosi online — gjithë kampanja', period+(cancelled? ' · pa '+campFmt(cancelled)+' të anuluara' : '')+' · WMS'+(campReal&&campReal.at? ' deri '+h(fmtTime(campReal.at)) : ''))}
     ${card('var(--ok)', done!=null? campFmt(done) : (campReal? '—' : loading), 'Porosi të procesuara — gjithë kampanja', period+' · vetëm porositë e krijuara nga '+h(campDayName(c.start))+' '+h(c.launchTime||'00:00')+' · check-out i përfunduar nga stafi')}
     ${card('var(--crit)', left!=null? campFmt(left) : (campReal? '—' : loading), 'Backlog i mbetur — gjithë kampanja', 'online − të procesuara'+(left!=null? ' = '+campFmt(created)+' − '+campFmt(done) : ''))}
   </div>`;
@@ -206,7 +207,7 @@ function campRealDay(date){
   const c=campCfg(); if(!campReal||!c.start||date<c.start) return null;
   const H=Math.floor(campWinStart(date)/60), rows=(campReal.hours||[]).filter(r=>r.d===date&&r.h>=H).sort((a,b)=>a.h-b.h);
   const s=k=>rows.reduce((a,r)=>a+num(r[k]),0);
-  return {rows, from:H, cr:s('cr'), co:s('co'), cu:s('cu'), ci:s('ci'), has:rows.length>0};
+  return {rows, from:H, cr:s('cr'), co:s('co'), cu:s('cu'), ci:s('ci'), cx:s('cx'), net:s('cr')-s('cx'), has:rows.length>0};   // cx: now Cancelled (status 7)
 }
 function campRealCard(selDate){
   const c=campCfg(); if(!c.start) return '';
@@ -370,9 +371,9 @@ function campLive(box){
       ${(()=>{ // simple math (the lead, 18.10.2026): orders created that day (WMS) − CAMPAIGN orders processed that day — only orders
         // created from the launch on count as processed (Pulse campaign.done, day × creation hour, staff; hourly)
         const DN=campReal&&Array.isArray(campReal.done)? campReal.done : null, launchKey=c.start+' '+String(campMin(c.launchTime||'00:00')/60|0).padStart(2,'0');
-        const created= rw&&rw.has? rw.cr : null, done= DN? DN.filter(r=>r.d===date && r.c>=launchKey).reduce((a,r)=>a+num(r.n),0) : null, goal=num(c.kpi.backlogEnd);
+        const created= rw&&rw.has? rw.net : null, done= DN? DN.filter(r=>r.d===date && r.c>=launchKey).reduce((a,r)=>a+num(r.n),0) : null, goal=num(c.kpi.backlogEnd);
         const val= created!=null&&done!=null? Math.max(0, created-done) : null;
-        const foot= val!=null? `krijuar <b>${campFmt(created)}</b> − procesuar <b>${campFmt(done)}</b> (vetëm porosi të kampanjës)${isToday?' · deri tani':''}${campWinStart(date)?' · nga '+h(campHHMM(campWinStart(date))):''} · objektivi ≤ ${campFmt(goal)}`
+        const foot= val!=null? `krijuar <b>${campFmt(created)}</b> − procesuar <b>${campFmt(done)}</b> (vetëm porosi të kampanjës)${rw&&rw.cx? ' · pa '+campFmt(rw.cx)+' të anuluara' : ''}${isToday?' · deri tani':''}${campWinStart(date)?' · nga '+h(campHHMM(campWinStart(date))):''} · objektivi ≤ ${campFmt(goal)}`
           : (created==null? 'porositë e krijuara: pa të dhëna nga WMS ende' : 'porositë e procesuara: pa të dhëna nga WMS ende');
         return kc(val!=null?campFmt(val):(campReal?'—':L0),'Backlog në fund të ditës'+(isToday?' (deri tani)':''), foot, val!=null&&goal? (val>goal?'warn':'ok') : ''); })()}
     </div>

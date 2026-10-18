@@ -922,7 +922,8 @@ function campTotalsNow(){
   let P=null; try{ P=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).campaign||null; }catch(e){}
   if(!P || !Array.isArray(P.hours) || !Array.isArray(P.done)) return {error:'Pulse pa të dhëna kampanje'};
   const lt=String(c.launchTime||'00:00'), lh=parseInt(lt,10)||0, launchKey=c.start+' '+p2(lh), launch=new Date(c.start+'T'+lt+':00');
-  const created=P.hours.filter(r=>r.d>=c.start && r.d<=c.end && (r.d>c.start || +r.h>=lh)).reduce((a,r)=>a+(+r.cr||0),0);
+  // orders online: created in the window minus those now Cancelled (WMS status 7, the lead 19.10.2026)
+  const created=P.hours.filter(r=>r.d>=c.start && r.d<=c.end && (r.d>c.start || +r.h>=lh)).reduce((a,r)=>a+(+r.cr||0)-(+r.cx||0),0);
   // processed: the orders CREATED in the campaign window, whenever they are processed (also after the end) — so the backlog can reach 0
   const D=P.done.filter(r=>r.c>=launchKey && r.c<=c.end+' 23'), processed=D.reduce((a,r)=>a+(+r.n||0),0);
   const lastDay=D.reduce((m,r)=>r.d>m? r.d : m, '');   // the day the latest campaign order was processed (for the final message)
