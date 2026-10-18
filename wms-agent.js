@@ -923,11 +923,12 @@ function campTotalsNow(){
   if(!P || !Array.isArray(P.hours) || !Array.isArray(P.done)) return {error:'Pulse pa të dhëna kampanje'};
   const lt=String(c.launchTime||'00:00'), lh=parseInt(lt,10)||0, launchKey=c.start+' '+p2(lh), launch=new Date(c.start+'T'+lt+':00');
   // orders online: created in the window minus those now Cancelled (WMS status 7, the lead 19.10.2026)
-  const created=P.hours.filter(r=>r.d>=c.start && r.d<=c.end && (r.d>c.start || +r.h>=lh)).reduce((a,r)=>a+(+r.cr||0)-(+r.cx||0),0);
+  const W=P.hours.filter(r=>r.d>=c.start && r.d<=c.end && (r.d>c.start || +r.h>=lh));
+  const created=W.reduce((a,r)=>a+(+r.cr||0)-(+r.cx||0),0), cancelled=W.reduce((a,r)=>a+(+r.cx||0),0);
   // processed: the orders CREATED in the campaign window, whenever they are processed (also after the end) — so the backlog can reach 0
   const D=P.done.filter(r=>r.c>=launchKey && r.c<=c.end+' 23'), processed=D.reduce((a,r)=>a+(+r.n||0),0);
   const lastDay=D.reduce((m,r)=>r.d>m? r.d : m, '');   // the day the latest campaign order was processed (for the final message)
-  return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, processed, backlog:Math.max(0, created-processed), lastDay, at:P.at||null};
+  return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, cancelled, processed, backlog:Math.max(0, created-processed), lastDay, at:P.at||null};
 }
 function campChatText(T, mark, final){
   const f=n=>Number(n||0).toLocaleString('de-DE'), asOf=T.at? new Date(T.at) : null;
@@ -937,6 +938,8 @@ function campChatText(T, mark, final){
     +'Porosi online: *'+f(T.created)+'*\n'
     +'Porosi të procesuara: *'+f(T.processed)+'* (vetëm porositë e krijuara në kampanjë)\n'
     +'Backlog i mbetur: *'+f(T.backlog)+'*'+(T.created? ' ('+Math.round(T.processed/T.created*100)+'% e procesuar)' : '')+'\n'
+    // the cancelled orders of the campaign (WMS status 7) — every message until the end (the lead, 19.10.2026)
+    +'Totali i porosive të anuluara: *'+f(T.cancelled)+'*\n'
     +(asOf? '\n_WMS deri '+p2(asOf.getHours())+':'+p2(asOf.getMinutes())+'_' : '')
     +(final? '\n\n*Porosia e fundit e kampanjës u procesua'+(T.lastDay? ' më '+T.lastDay.split('-').reverse().join('.') : '')+'.* Backlog-u i kampanjës është 0 — të gjitha porositë e kampanjës janë procesuar. Ky është mesazhi i fundit.' : '');
 }
