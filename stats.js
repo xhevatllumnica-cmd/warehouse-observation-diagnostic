@@ -228,52 +228,64 @@ function renderStatsBody(d){
   return warn + cards + daily + hourly + heat + putaway + prod + appBlock + pending + settings;
 }
 
-/* "5.1 Throughput sipas orës" can show a day of its own (date picker + SOT), apart from the page's period: that day is read
-   with the same /stats/live?date=… and kept per day and shift (today's for 2 minutes, it is still filling). '' = the period. */
-let statsHourDate='', statsHourMem={}, statsHourSeq=0;
-const statsHourKey=()=>statsHourDate+'|'+statsShift;
-function statsHourSrc(d){ if(!statsHourDate) return d; const m=statsHourMem[statsHourKey()]; return m&&!m.loading&&!m.error? m : null; }
+/* "5.1 Orë pas ore" (the lead, 19.10.2026 — replaces "Throughput sipas orës"; the heatmap below shows the same by weekday): one
+   day, 00:00–23:59, the same columns as Kampanja → "orë pas ore" — orders created, orders out (first check-out), units checked out,
+   units checked in, created − out — from the WMS database through Pulse (campaign.hours, hourly 07–22; the last 10 days and the
+   days kept before). The day: its own picker, else the page's day, else today. Every hour is listed: no activity = 0, not read yet
+   from the WMS / not come yet = said so. */
+const statsLocalToday=()=>fmtLocalDate(new Date());   // local day — statsLocalToday() is UTC (wrong 00:00–02:00)
+let statsHourDate='', statsPulseH=null, statsPulseAt=0, statsPulseBusy=false;
+function statsHourDay(){ return statsHourDate || (statsRange==='day' && statsDate) || statsLocalToday(); }
+function statsPulseLoad(){
+  if(statsPulseBusy || (statsPulseH && Date.now()-statsPulseAt<120000)) return;
+  statsPulseBusy=true;
+  fetch('/pulse/data',{cache:'no-store'}).then(r=>r.json()).then(j=>{ statsPulseH=(j&&j.campaign)||{hours:[]}; statsPulseAt=Date.now(); })
+    .catch(e=>{ statsPulseH={hours:[], error:String(e.message||e)}; statsPulseAt=Date.now(); })
+    .finally(()=>{ statsPulseBusy=false; statsHourRedraw(); });
+}
+function statsHourRows(day){
+  const P=statsPulseH; if(!P) return null;
+  const by={}; (P.hours||[]).filter(r=>r.d===day).forEach(r=>by[r.h]=r);
+  const readUpTo=P.at? new Date(P.at).getTime() : 0; let cIn=0, cOut=0;
+  return Array.from({length:24},(_,hh)=>{ const r=by[hh], start=new Date(day+'T'+String(hh).padStart(2,'0')+':00:00').getTime();
+    if(!r && start>=readUpTo) return {hh, state: start>Date.now()? 'future' : 'unread'};
+    const x=r||{cr:0,co:0,cu:0,ci:0}; cIn+=+x.cr||0; cOut+=+x.co||0;
+    return {hh, cr:+x.cr||0, cIn, co:+x.co||0, cOut, cu:+x.cu||0, ci:+x.ci||0, partial: !!r && readUpTo>start && readUpTo<start+3600000}; });
+}
 function statsHourlyCard(d){
-  const own=statsHourDate? statsHourMem[statsHourKey()] : null, src=statsHourSrc(d), today=todayStr();
+  const today=statsLocalToday(), day=statsHourDay(), P=statsPulseH; if(!P) statsPulseLoad();
   const ctl=`<span class="no-print" style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap">
-      <input type="date" id="statsHourDate" value="${h(statsHourDate)}" max="${h(today)}" title="Zgjidh një ditë të kaluar" style="width:auto;min-height:32px">
-      <button class="btn sm ${statsHourDate===today?'primary':''}" id="statsHourToday" title="Throughput-i i sotëm sipas orës">SOT</button>
-      ${statsHourDate? '<button class="btn sm ghost" id="statsHourReset" title="Kthehu te periudha e zgjedhur lart">✕ periudha</button>' : ''}
+      <input type="date" id="statsHourDate" value="${h(day)}" max="${h(today)}" title="Zgjidh ditën" style="width:auto;min-height:32px">
+      <button class="btn sm ${day===today?'primary':''}" id="statsHourToday" title="Sot">SOT</button>
       <button class="btn sm ghost" data-csv="hourly">⬇ CSV</button></span>`;
-  const sub= statsHourDate? fmtDateAl(statsHourDate)+(statsHourDate===today? ' · sot, dita ende në vazhdim' : '') : 'mesatarja për ditë e periudhës së zgjedhur lart';
+  const fmt=n=>Number(n||0).toLocaleString('de-DE'), rows=statsHourRows(day);
   let body;
-  if(statsHourDate && (!own || own.loading)) body='<div class="empty">Po lexohen të dhënat e ditës nga WMS…</div>';
-  else if(statsHourDate && own.error) body=`<div class="empty">${h(own.error)}</div>`;
-  else { const t=src.throughput, maxH=Math.max(1,...t.byHour.map(x=>x.ordersPerDay)), per=statsHourDate? '' : '/ditë';
-    body=t.byHour.map(x=>barRow(String(x.hour).padStart(2,'0')+':00', x.ordersPerDay, maxH, 'var(--ok)', `${x.ordersPerDay} porosi${per} · ${x.unitsPerDay} njësi${per}`)).join('')||'<div class="empty">—</div>';
-    const sc=src.scope, scope=`${h(sc.warehouse)} · ${h(sc.platform)} · ${sc.days===1? h(fmtDateAl(sc.from)) : h(fmtDateAl(sc.from))+' → '+h(fmtDateAl(sc.to))} · turni: ${h(sc.shift)}`;
-    body+=statsMeta(statsHourDate? 'porosi të dala atë ditë sipas orës së check-out-it të parë, dhe njësi, për çdo orë.' : 'mesatarja për ditë e porosive të dala (sipas orës së check-out-it të parë) dhe e njësive, për çdo orë.','WMS · ProductLogs', scope, src.refreshedAt); }
-  return `<div class="card" id="statsHourCard" style="margin-bottom:14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h3 style="margin:0">5.1 Throughput sipas orës <span class="sub">${h(sub)}</span></h3>${ctl}</div>${body}</div>`;
+  if(!P) body='<div class="empty">Po lexohen të dhënat nga WMS…</div>';
+  else if(P.error) body=`<div class="empty">${h(P.error)}</div>`;
+  else if(!(P.hours||[]).some(r=>r.d===day) && day<today) body=`<div class="empty">S'ka të dhëna orë pas ore për ${h(fmtDateAl(day))} (ruhen 10 ditët e fundit dhe ditët e kampanjës).</div>`;
+  else body=`<div class="tablewrap"><table><thead><tr><th>Ora</th><th>Krijuara</th><th>Kumulative</th><th>Dala</th><th>Dala kumulative</th><th>Njësi check-out</th><th>Njësi check-in</th><th>Hyrë − dalë (dita)</th></tr></thead><tbody>
+      ${rows.map(r=>{ const lbl=`${String(r.hh).padStart(2,'0')}:00–${String(r.hh).padStart(2,'0')}:59`;
+        if(r.state) return `<tr class="faint"><td>${lbl}</td><td colspan="7"><span class="faint">${r.state==='future'? 'ende pa ardhur' : 'pa lexuar ende nga WMS (lexohet me rifreskimin e radhës)'}</span></td></tr>`;
+        return `<tr><td>${lbl}${r.partial? ' <span class="badge b-warn" title="Ora u lexua nga WMS para se të mbarojë">e pjesshme</span>' : ''}</td><td>${fmt(r.cr)}</td><td>${fmt(r.cIn)}</td><td>${fmt(r.co)}</td><td>${fmt(r.cOut)}</td><td>${fmt(r.cu)}</td><td>${fmt(r.ci)}</td><td>${fmt(r.cIn-r.cOut)}</td></tr>`; }).join('')}
+    </tbody></table></div>`
+    + statsMeta('Krijuara = porosi të regjistruara në WMS (Depo 01) sipas orës lokale; Dala = porosi me check-out-in e parë (4/18) në atë orë; njësi check-out = skanime 4/18 të porosive të Depo 01; njësi check-in = ProductCheckIns të Depo 01; Hyrë − dalë = kumulative e ditës. Të gjitha llogaritë, si te Kampanja.','WMS · databaza (Pulse, çdo orë 07–22)', 'Depo 01 · '+h(fmtDateAl(day)), P.at||null);
+  return `<div class="card" id="statsHourCard" style="margin-bottom:14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h3 style="margin:0">5.1 Orë pas ore <span class="sub">${h(fmtDateAl(day))}${day===today?' · sot, dita ende në vazhdim':''} · 00:00–23:59</span></h3>${ctl}</div>${body}</div>`;
 }
-async function statsHourLoad(){
-  const key=statsHourKey(), m=statsHourMem[key];
-  if(!statsHourDate || (m && (m.loading || (statsHourDate!==todayStr() && !m.error) || Date.now()-(m.at||0)<120000))) return statsHourRedraw();
-  statsHourMem[key]={loading:true}; statsHourRedraw();
-  try{ const r=await fetch('/stats/live?date='+encodeURIComponent(statsHourDate)+'&shift='+encodeURIComponent(statsShift),{cache:'no-store'}); const j=await r.json();
-    statsHourMem[key]= !r.ok||j.error? {error: j.error==='auth_expired'? 'Sesioni i WMS ka skaduar — ngjit cookie-n e re te WMS Data & Performance.' : (j.error||('HTTP '+r.status)), at:Date.now()} : Object.assign(j,{at:Date.now()}); }
-  catch(e){ statsHourMem[key]={error:'Agjenti s\'përgjigjet ('+e.message+').', at:Date.now()}; }
-  statsHourRedraw();
-}
+function statsHourLoad(){ statsPulseLoad(); statsHourRedraw(); }
 function statsHourRedraw(){ const el=$('#statsHourCard'); if(!el || !statsLast) return; el.outerHTML=statsHourlyCard(statsLast); statsHourWire(statsLast); }
 function statsHourWire(d){
   const di=$('#statsHourDate'); if(!di) return;
-  di.onchange=e=>{ const v=e.target.value; statsHourDate= v && v<=todayStr()? v : ''; statsHourLoad(); };
-  $('#statsHourToday').onclick=()=>{ statsHourDate=todayStr(); statsHourLoad(); };
-  const rs=$('#statsHourReset'); if(rs) rs.onclick=()=>{ statsHourDate=''; statsHourRedraw(); };
-  const cb=$('#statsHourCard [data-csv="hourly"]'); if(cb) cb.onclick=()=>{ const s=statsHourSrc(d); if(!s) return toast('Të dhënat e ditës ende po lexohen');
-    statsCsv('wh-throughput-ora'+(statsHourDate? '-'+statsHourDate : ''), ['Ora', statsHourDate? 'Porosi' : 'Porosi/ditë', statsHourDate? 'Njësi' : 'Njësi/ditë'], s.throughput.byHour.map(x=>[String(x.hour).padStart(2,'0')+':00',x.ordersPerDay,x.unitsPerDay])); };
+  di.onchange=e=>{ const v=e.target.value; statsHourDate= v && v<=statsLocalToday()? v : ''; statsHourRedraw(); };
+  $('#statsHourToday').onclick=()=>{ statsHourDate=statsLocalToday(); statsHourRedraw(); };
+  const cb=$('#statsHourCard [data-csv="hourly"]'); if(cb) cb.onclick=()=>{ const day=statsHourDay(), rows=statsHourRows(day); if(!rows) return toast('Të dhënat ende po lexohen');
+    statsCsv('wh-ore-pas-ore-'+day, ['Ora','Krijuara','Kumulative','Dala','Dala kumulative','Njësi check-out','Njësi check-in','Hyrë − dalë'],
+      rows.map(r=>[String(r.hh).padStart(2,'0')+':00', ...(r.state? ['','','','','','',''] : [r.cr,r.cIn,r.co,r.cOut,r.cu,r.ci,r.cIn-r.cOut])])); };
 }
 function wireStatsBody(d){
   if(!d) return;
   const t=d.throughput, pa=d.putaway, pr=d.productivity, app=statsAppData(d.scope.from, d.scope.to);
   const csv={
     daily:()=>statsCsv('wh-porosi-ditore',['Data','Porosi të dala','Njësi','Weekend','E pjesshme'], t.byDay.map(x=>[x.date,x.orders,x.units,x.weekend?'po':'jo',x.partial?'po':'jo'])),
-    hourly:()=>statsCsv('wh-throughput-ora',['Ora','Porosi/ditë','Njësi/ditë'], t.byHour.map(x=>[String(x.hour).padStart(2,'0')+':00',x.ordersPerDay,x.unitsPerDay])),
     heatmap:()=>statsCsv('wh-heatmap',['Dita',...[...Array(24).keys()].map(x=>String(x).padStart(2,'0'))], t.heatmap.map((r,i)=>[STATS_WEEKDAYS[i],...r])),
     putaway:()=>statsCsv('wh-checkin-map',['Metrika','Vlera'], [['Njësi të mapuara',pa.pairs],['Mediana (min)',pa.medianMin],['p90 (min)',pa.p90Min],['Mediana periudha e kaluar (min)',pa.prevMedianMin],['Të pamapuara',pa.unmapped],...Object.entries(pa.unmappedBuckets).map(([k,v])=>['Të pamapuara '+k,v])]),
     workers:()=>statsCsv('wh-produktiviteti',['Operatori','Check-in','Map','Check-out','Ditë aktive','Op. të peshuara','Op./ditë','Periudha e kaluar','Ndryshimi %','Kategoria','Kulm','Në rënie'], pr.workers.map(w=>[w.operator,w.checkin,w.map,w.checkout,w.activeDays,w.weighted,w.perDay,w.prevPerDay,w.changePct,w.band,w.spike?'po':'',w.declining?'po':''])),
@@ -281,7 +293,7 @@ function wireStatsBody(d){
   };
   $$('[data-csv]').forEach(b=>b.onclick=()=>csv[b.dataset.csv]());
   $$('[data-heat]').forEach(td=>td.onclick=()=>{ const [i,hh]=td.dataset.heat.split('|').map(Number); statsHeatPopup(d, i, hh); });
-  statsHourWire(d); if(statsHourDate) statsHourLoad();   // the hourly card's own day (and its CSV)
+  statsHourWire(d); statsHourLoad();   // 5.1 Orë pas ore: its own day, data and CSV
   const save=$('#stSave'); if(save) save.onclick=async()=>{
     const thresholds={}; $$('[data-thg]').forEach(i=>{ const k=i.dataset.thg; thresholds[k]={green:Number(i.value), yellow:Number($(`[data-thy="${k}"]`).value)}; });
     try{ const r=await fetch('/stats/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cutoff:$('#stCut').value.trim(), targetOrdersPerDay:Number($('#stTarget').value), thresholds})});
