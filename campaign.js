@@ -323,7 +323,6 @@ function campLive(box){
       ${ev?campLevelBadge(ev.level)+` <span class="small muted">${h(ev.why)}</span>`:'<span class="small muted">Ende s\'ka raport orar për këtë ditë</span>'}
       <span style="margin-left:auto" class="btnrow"><button class="btn sm primary" id="campAddH">＋ Raport orar</button>${wmsOnAgent()?'<button class="btn sm" id="campSync">⟳ Sync WMS</button>':''}</span></div>
     ${verify.length?`<div class="note warn"><b>Për t'u verifikuar:</b> ${verify.map(h).join(' · ')}</div>`:''}
-    ${campTotalsCards()}
     ${campRealCard(date)}
     <div class="grid g-kpi" style="margin-bottom:14px">
       ${last? kc(campFmt(last.ordersIn),'Porosi të hyra deri '+h(last.time), ev&&ev.expected!=null?'pritej '+campFmt(ev.expected)+(ev.dev!=null?' ('+(ev.dev>=0?'+':'')+Math.round(ev.dev)+'%)':''):'', devCls)
@@ -334,13 +333,16 @@ function campLive(box){
       ${kc(L&&L.tempo&&L.tempo.ordersPerHour!=null?L.tempo.ordersPerHour+' porosi/orë':L0,'Ritmi real', L&&L.tempo&&L.tempo.ordersPerHour!=null?'<b>'+L.tempo.productsPerHour+'</b> produkte/orë · '+(L.tempo.window==='last2h'?'2 orët e fundit (si Flow 2h)':'mesatarja nga '+h(campHHMM(campWinStart(date)))+' deri te check-out-i i fundit'):(L&&L.tempoError?'WMS: '+h(L.tempoError):''))}
       ${kc(ev&&ev.staffNeeded!=null?ev.staffNeeded:'—','Persona outbound të nevojshëm tani', 'me '+c.ordersPerHour+' porosi/orë/person'+(last&&last.staff!=null?' · prezent: '+last.staff:''))}
       ${kc(calc?calc.total||'—':'—','Stafi i planifikuar', day?`outbound ${num(day.outbound)} (${num(day.s1)} / ${num(day.s2)}) · inbound ${num(day.inbound)}`:'')}
-      ${(()=>{ // simple math (the lead, 18.10.2026): orders created that day (WMS) − orders processed that day (check-out completed, staff)
-        const created= rw&&rw.has? rw.cr : null, done= L&&L.done!=null? L.done : null, goal=num(c.kpi.backlogEnd);
+      ${(()=>{ // simple math (the lead, 18.10.2026): orders created that day (WMS) − CAMPAIGN orders processed that day — only orders
+        // created from the launch on count as processed (Pulse campaign.done, day × creation hour, staff; hourly)
+        const DN=campReal&&Array.isArray(campReal.done)? campReal.done : null, launchKey=c.start+' '+String(campMin(c.launchTime||'00:00')/60|0).padStart(2,'0');
+        const created= rw&&rw.has? rw.cr : null, done= DN? DN.filter(r=>r.d===date && r.c>=launchKey).reduce((a,r)=>a+num(r.n),0) : null, goal=num(c.kpi.backlogEnd);
         const val= created!=null&&done!=null? Math.max(0, created-done) : null;
-        const foot= val!=null? `krijuar <b>${campFmt(created)}</b> − procesuar <b>${campFmt(done)}</b>${isToday?' · deri tani':''}${campWinStart(date)?' · nga '+h(campHHMM(campWinStart(date))):''} · objektivi ≤ ${campFmt(goal)}`
-          : (created==null? 'porositë e krijuara: pa të dhëna nga WMS ende' : L&&L.tempoError? 'WMS: '+h(L.tempoError) : '');
-        return kc(val!=null?campFmt(val):(L||!isToday?'—':L0),'Backlog në fund të ditës'+(isToday?' (deri tani)':''), foot, val!=null&&goal? (val>goal?'warn':'ok') : ''); })()}
+        const foot= val!=null? `krijuar <b>${campFmt(created)}</b> − procesuar <b>${campFmt(done)}</b> (vetëm porosi të kampanjës)${isToday?' · deri tani':''}${campWinStart(date)?' · nga '+h(campHHMM(campWinStart(date))):''} · objektivi ≤ ${campFmt(goal)}`
+          : (created==null? 'porositë e krijuara: pa të dhëna nga WMS ende' : 'porositë e procesuara: pa të dhëna nga WMS ende');
+        return kc(val!=null?campFmt(val):(campReal?'—':L0),'Backlog në fund të ditës'+(isToday?' (deri tani)':''), foot, val!=null&&goal? (val>goal?'warn':'ok') : ''); })()}
     </div>
+    ${campTotalsCards()}
     <div class="grid g-2">
       <div class="card"><h3>Porositë e hyra: reale kundrejt parashikimit <span class="sub">kumulative sipas orës</span></h3>${campChartSVG(day,ents,date)}
         <div class="hint">— vija blu: parashikimi · - - portokalli: pragu i skenarit të lartë (+${c.triggerPct}%) · vija e errët: porositë e krijuara në WMS · pikat jeshile: raportet orare.${campWinStart(date)?' Dita e nisjes numërohet nga ora '+h(campHHMM(campWinStart(date)))+' (parashikimi dhe WMS nga ajo orë).':''}${day&&day.curve==='launch'?' Kurba e ditës së nisjes është zhvendosur te ora '+h(c.launchTime)+' (SUPOZIM).':''}</div></div>
