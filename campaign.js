@@ -148,7 +148,8 @@ function campTotalsCards(){
   const R=days.map(d=>campRealDay(d)), created= campReal&&R.some(r=>r&&r.has)? R.reduce((a,r)=>a+(r&&r.has? r.cr : 0),0) : null;
   // processed: only orders created from the launch on (an order made before Wed 16:00 does not count, even if processed in the campaign)
   const DN=campReal&&Array.isArray(campReal.done)? campReal.done : null;
-  const done= DN? DN.filter(r=>r.d>=c.start && r.d<=c.end && r.c>=launchKey).reduce((a,r)=>a+num(r.n),0) : null, left= created!=null&&done!=null? Math.max(0, created-done) : null;
+  // the orders CREATED in the campaign window, whenever processed (also after the end), so the backlog can reach 0 (18.10.2026)
+  const done= DN? DN.filter(r=>r.c>=launchKey && r.c<=c.end+' 23').reduce((a,r)=>a+num(r.n),0) : null, left= created!=null&&done!=null? Math.max(0, created-done) : null;
   const period=`${h(campDayName(c.start))} ${h(c.launchTime||'00:00')} → ${h(campDayName(c.end))} 24:00`;
   const card=(tint,val,lbl,foot)=>`<div class="card kpi" style="background:color-mix(in srgb, ${tint} 9%, var(--panel));border-color:color-mix(in srgb, ${tint} 30%, var(--line))"><div class="val">${val}</div><div class="lbl">${lbl}</div><div class="foot">${foot}</div></div>`;
   const loading='<span class="small muted">po lexohet…</span>';

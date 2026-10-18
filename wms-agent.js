@@ -909,6 +909,52 @@ async function chatTick(){
   }finally{ chatBusy=false; }
 }
 setInterval(chatTick, 60*1000);
+/* Kampanja totals to Google Chat (the warehouse lead, 18.10.2026): the three "gjithë kampanja" cards — orders online, orders processed
+   (only orders created from the launch on), backlog left — posted to the Flow (2h) space at the same marks (09:00 … 23:00), from the
+   launch on, UNTIL the backlog is 0: then one last message and no more for that campaign (data/camp-chat-state.json). Same basis as the
+   app: the campaign in the shared DB (start, launchTime, end), Pulse campaign.hours / campaign.done (hourly, staff only). */
+const CAMP_CHAT_FILE=path.join(APPDIR,'data','camp-chat-state.json');
+function campChatState(){ try{ return JSON.parse(fs.readFileSync(CAMP_CHAT_FILE,'utf8')); }catch(e){ return {}; } }
+function saveCampChatState(s){ try{ fs.mkdirSync(path.dirname(CAMP_CHAT_FILE),{recursive:true}); fs.writeFileSync(CAMP_CHAT_FILE, JSON.stringify(s,null,2)); }catch(e){} }
+function campTotalsNow(){
+  const db=loadDb()||{}, c=db.campaign; if(!c || !c.start || !c.end) return null;
+  let P=null; try{ P=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).campaign||null; }catch(e){}
+  if(!P || !Array.isArray(P.hours) || !Array.isArray(P.done)) return {error:'Pulse pa të dhëna kampanje'};
+  const lt=String(c.launchTime||'00:00'), lh=parseInt(lt,10)||0, launchKey=c.start+' '+p2(lh), launch=new Date(c.start+'T'+lt+':00');
+  const created=P.hours.filter(r=>r.d>=c.start && r.d<=c.end && (r.d>c.start || +r.h>=lh)).reduce((a,r)=>a+(+r.cr||0),0);
+  // processed: the orders CREATED in the campaign window, whenever they are processed (also after the end) — so the backlog can reach 0
+  const processed=P.done.filter(r=>r.c>=launchKey && r.c<=c.end+' 23').reduce((a,r)=>a+(+r.n||0),0);
+  return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, processed, backlog:Math.max(0, created-processed), at:P.at||null};
+}
+function campChatText(T, mark, final){
+  const f=n=>Number(n||0).toLocaleString('de-DE'), asOf=T.at? new Date(T.at) : null;
+  return (final? '✅ ' : '')+'*'+T.name+' — gjithë kampanja · '+mark+'*\n'
+    +'_'+T.start.split('-').reverse().join('.')+' '+T.launchTime+' → '+T.end.split('-').reverse().join('.')+' 24:00 · Depo 01_\n\n'
+    +'Porosi online: *'+f(T.created)+'*\n'
+    +'Porosi të procesuara: *'+f(T.processed)+'* (vetëm porositë e krijuara në kampanjë)\n'
+    +'Backlog i mbetur: *'+f(T.backlog)+'*'+(T.created? ' ('+Math.round(T.processed/T.created*100)+'% e procesuar)' : '')+'\n'
+    +(asOf? '\n_WMS deri '+p2(asOf.getHours())+':'+p2(asOf.getMinutes())+'_' : '')
+    +(final? '\n\nBacklog-u i kampanjës është 0 — të gjitha porositë e kampanjës janë procesuar. Ky është mesazhi i fundit.' : '');
+}
+let campChatBusy=false;
+async function campChatTick(){
+  if(!cfg.googleChatWebhook || campChatBusy) return;
+  const h=latestElapsedMark(); if(h==null) return;
+  const T=campTotalsNow(); if(!T || T.error || !T.created || Date.now()<T.launch.getTime()) return;
+  const st=campChatState(), key=T.start+'|'+T.launchTime, today=isoToday();   // one state per campaign
+  if(st.finished && st.finished.key===key) return;   // backlog reached 0: no more messages for this campaign
+  const sent=(st.sent&&st.sent.key===key&&st.sent.day===today&&st.sent.marks)||[]; if(sent.includes(h)) return;
+  if(st.lastError && st.lastError.hour===h && Date.now()-new Date(st.lastError.at).getTime()<10*60*1000) return;
+  campChatBusy=true;
+  try{
+    const final=T.backlog===0, r=await postToChat(campChatText(T, p2(h)+':00', final));
+    console.log('[wms-agent] Google Chat campaign '+p2(h)+':00'+(final?' (final)':'')+': '+(r.ok?'sent ✓':'FAILED '+r.error));
+    if(r.ok){ st.sent={key, day:today, marks:[...sent,h]}; st.last={at:new Date().toISOString(), hour:p2(h)+':00', backlog:T.backlog}; delete st.lastError; if(final) st.finished={key, at:new Date().toISOString()}; }
+    else st.lastError={at:new Date().toISOString(), hour:h, error:r.error};
+    saveCampChatState(st);
+  } finally{ campChatBusy=false; }
+}
+setInterval(campChatTick, 60*1000);
 setTimeout(chatTick, 15000);
 
 /* WMS Pulse build. The scheduled Claude task only runs the read-only queries (pulse/queries.sql) — a shell step there
@@ -1463,6 +1509,11 @@ http.createServer(async (req,resp)=>{
     // ---- Google Chat (Flow 2h report) ----
     if(q.pathname==='/pod/pending'){   // POD by courier — same-origin only, no CORS header
       const v=await podPending(!!q.query.refresh); resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(Object.assign({}, v, {chat:{marks:POD_CHAT_MARKS, enabled:!!(cfg.podChatWebhook||(cfg.podChatToFlowSpace&&cfg.googleChatWebhook)), target: cfg.podChatWebhook? 'pod' : cfg.podChatToFlowSpace? 'flow' : null}})));
+    }
+    if(q.pathname==='/camp/chat-preview'){   // the campaign message as it would go out now — nothing is sent
+      const T=campTotalsNow(); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});
+      if(!T || T.error) return resp.end('S\'ka të dhëna kampanje: '+((T&&T.error)||'kampanja nuk është e ngarkuar'));
+      const st=campChatState(); return resp.end(campChatText(T, String(q.query.mark||'--:--'), T.backlog===0)+'\n\n— gjendja e dërgimit: '+JSON.stringify({last:st.last||null, finished:st.finished||null, webhook:!!cfg.googleChatWebhook}));
     }
     if(q.pathname==='/pod/chat-preview'){ const v=await podPending(false); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'}); return resp.end(podChatText(v, String(q.query.mark||'16:30'))); }
     // POD space webhook: saved only in the git-ignored config, never sent back to a page; same-origin only (no CORS header)
