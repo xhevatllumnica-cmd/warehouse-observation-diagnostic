@@ -204,8 +204,19 @@ function stationCards(stations, rec, ops, today, day, normName, aliases, presenc
   const ARR={out:'_outT', orders:'_ordT', units:'_ciT', map:'_mpT', pod:'_podT', ref:'_refT', ret:'_retT'};
   const metricsOf=st=> st.kind==='ret'? ['ref','ret'] : st.kind==='map'? ['map'] : st.kind==='pod'? ['pod'] : st.co&&st.ci? ['out','orders','units'] : st.co? ['out','orders'] : st.ci? ['units'] : [];
   const used={}, scansAt={};   // operator|metric → indices of scans already credited to a card; card|operator → times of the scans credited there
+  /* one person on SEVERAL tables doing the same work (a correction on the board — moved during the day; the lead, 19.10.2026: Albina
+     at Check-out 1, then at Check-out 3): each of their scans goes to the table where the others on it scanned least within ±15 min,
+     so the move shows without a time being typed (ties → the first table). Everyone else: unchanged. */
+  const multi={}, onTable=st=>[...new Set((rec.tables[st.name]||[]).map(canon))];
+  Object.keys(ARR).forEach(m=>{ const sts=(stations||[]).filter(st=>!st.kind && !st.auto && metricsOf(st).includes(m)), of={};
+    sts.forEach(st=>onTable(st).forEach(n=>(of[n]=of[n]||[]).push(st)));
+    Object.entries(of).forEach(([name,mine])=>{ const arr=by[name]&&by[name][ARR[m]]; if(mine.length<2 || !arr || !arr.length) return;
+      const others=mine.map(st=>onTable(st).filter(n=>n!==name).flatMap(n=>(by[n]&&by[n][ARR[m]])||[])), map=new Map();
+      arr.forEach((t,i)=>{ let best=0, bn=Infinity; others.forEach((o,k)=>{ const c=o.filter(x=>Math.abs(x-t)<=15*60000).length; if(c<bn){ bn=c; best=k; } }); map.set(i, mine[best].name); });
+      multi[name+'|'+m]=map; }); });
   const take=(name,m,wins,stName)=>{ const o=by[name], arr=o&&o[ARR[m]]; if(!arr) return 0; const u=used[name+'|'+m]||(used[name+'|'+m]=new Set()); let n=0;
-    arr.forEach((t,i)=>{ if(!u.has(i) && wins.some(w=>t>=w[0] && t<w[1])){ u.add(i); n++; (scansAt[stName+'|'+name]=scansAt[stName+'|'+name]||[]).push(t); } }); return n; };
+    const mm=multi[name+'|'+m];
+    arr.forEach((t,i)=>{ if(!u.has(i) && (!mm || mm.get(i)===stName) && wins.some(w=>t>=w[0] && t<w[1])){ u.add(i); n++; (scansAt[stName+'|'+name]=scansAt[stName+'|'+name]||[]).push(t); } }); return n; };
   const has=(o,m)=> o && o[ARR[m]] && o[ARR[m]].length;
   const autoOf=st=> st.kind==='map'? (ops||[]).filter(o=>has(o,'map')) : st.kind==='pod'? (ops||[]).filter(o=>has(o,'pod'))
     : st.kind==='ret'? (ops||[]).filter(o=>has(o,'ref')||has(o,'ret')) : st.kind==='poolco'? (ops||[]).filter(o=>has(o,'out')) : st.kind==='poolci'? (ops||[]).filter(o=>has(o,'units')) : [];
