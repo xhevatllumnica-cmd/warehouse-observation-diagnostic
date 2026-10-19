@@ -249,7 +249,8 @@ $('#d1Save').onclick=async()=>{ const st=$('#dlg1').dataset.st;
   $('#dlg1').close(); load(false); };
 $('#btnRefresh').onclick=()=>load(true);
 /* full screen (button or F11, i.e. the window as large as the screen): body.fs hides the hourly table */
-const fsSync=()=>document.body.classList.toggle('fs', !!document.fullscreenElement || (innerHeight>=screen.height-2 && innerWidth>=screen.width-2));
+const KIOSK=/[?&]kiosk=1/.test(location.search);   // opened by the monitor rotation (/ekrani): always the cards only
+const fsSync=()=>document.body.classList.toggle('fs', KIOSK || !!document.fullscreenElement || (innerHeight>=screen.height-2 && innerWidth>=screen.width-2));
 document.addEventListener('fullscreenchange', fsSync); addEventListener('resize', fsSync); fsSync();
 $('#btnFull').onclick=()=>{ const el=document.documentElement; if(document.fullscreenElement) document.exitFullscreen(); else if(el.requestFullscreen) el.requestFullscreen(); };
 /* date picker: today (live) or any past day; the choice is kept in the address (?date=) */
