@@ -439,6 +439,12 @@ async function buildFlow2h(db, iso){
   const pct=(now,then)=> (then!=null && then>0) ? Math.round((now-then)/then*100) : null;
   const P=pulsePickHours(), pAt=P&&P.at? new Date(P.at) : null;
   const pk=(d,h)=>picksUntil(P, d, h, staff);
+  /* POD (the lead, 19.10.2026): ALL orders handed to the courier posts until the mark, in one number — distinct orders (order +
+     platform) scanned in the Delivery Platform (Accept Delivery), every account (not only the staff, unlike the board card). The
+     Delivery Platform is a separate session: if it is not available the line says so, nothing is guessed. */
+  const [podCur, podPrev]=await Promise.all([iso, prevIso].map(d=>fetchPodScans(d).catch(e=>({error:String(e&&e.message||e)}))));
+  const podUntil=(src,d,h)=>{ if(!src || src.error || !src.rows) return null; const lim=new Date(d+'T'+p2(h)+':00:00').getTime();
+    return new Set(src.rows.filter(r=>r.t<lim).map(r=>r.oid+'|'+r.pid)).size; };
   const marks = FLOW_MARKS.map((h,i)=>{
     const c=cur.marks[i], p=prev.error?null:prev.marks[i], before=i?cur.marks[i-1]:cur.base;
     const picks=pk(iso,h), picksBefore=pk(iso,h-2), markT=new Date(iso+'T'+p2(h)+':00:00');
@@ -449,6 +455,8 @@ async function buildFlow2h(db, iso){
       picksAsOf: pAt && pAt<markT ? p2(pAt.getHours())+':'+p2(pAt.getMinutes()) : null,
       tempoPicks: picks!=null&&picksBefore!=null? Math.floor((picks-picksBefore)/2) : null,
       checkedOut:c.checkedOut, checkedOutPrev:p?p.checkedOut:null, checkedOutPct:p?pct(c.checkedOut,p.checkedOut):null,
+      pod:podUntil(podCur,iso,h), podPrev:podUntil(podPrev,prevIso,h), podPct:pct(podUntil(podCur,iso,h), podUntil(podPrev,prevIso,h)),
+      podError: podCur&&podCur.error? (podCur.error==='auth_expired'? 'Delivery Platform session expired' : podCur.error) : null,
       // floored, like AI Operator (18:00 on 23.09: 309 products / 2h = 154.5 → it reports 154)
       tempoOrders:Math.floor((c.orders-before.orders)/2), tempoProducts:Math.floor((c.checkedOut-before.checkedOut)/2),
       future: iso===today && h>nowH+0.001 };
@@ -891,7 +899,8 @@ function flowChatText(data, m){
     +'Orders completed today: *'+m.orders+'*'+pct(m.ordersPct)+' — yesterday at this hour '+yv(m.ordersPrev)+'\n'
     +'Check-ins: *'+m.checkedIn+'* — yesterday '+yv(m.checkedInPrev)+'\n'
     +'Picks: *'+yv(m.picks)+'*'+pct(m.picksPct)+' units'+(m.picksAsOf?' (WMS until '+m.picksAsOf+')':'')+' — yesterday '+yv(m.picksPrev)+'\n'
-    +'Checkout products: *'+m.checkedOut+'*'+pct(m.checkedOutPct)+' — yesterday: '+yv(m.checkedOutPrev)+'\n\n'
+    +'Checkout products: *'+m.checkedOut+'*'+pct(m.checkedOutPct)+' — yesterday: '+yv(m.checkedOutPrev)+'\n'
+    +'POD — orders out to the couriers: *'+yv(m.pod)+'*'+(m.pod!=null? pct(m.podPct)+' — yesterday at this hour '+yv(m.podPrev) : ' ('+(m.podError||'Delivery Platform not available')+')')+'\n\n'
     +'Current tempo: *'+m.tempoOrders+'* orders/hour · *'+m.tempoProducts+'* products/hour'+(m.tempoPicks!=null?' · *'+m.tempoPicks+'* picks/hour':'')+' (last 2 hours)'
     +(pf?'\n\nYesterday full day: '+pf.checkedIn+' check-ins · '+pf.checkedOut+' checkout (products) · '+pf.orders+' orders':'')
     +(data.reliable===false?'\n\n⚠ Të dhëna jo të plota për njërën nga ditët (faqëzimi i WMS-it).':'');
