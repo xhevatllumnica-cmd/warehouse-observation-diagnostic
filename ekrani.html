@@ -46,13 +46,15 @@ const bar=document.getElementById('bar'); let hideT=null; const wake=()=>{ bar.c
 document.addEventListener('mousemove', wake); wake();
 // keyboard: → / ← next / previous, space pause
 document.addEventListener('keydown', e=>{ if(e.key==='ArrowRight') show(i+1); else if(e.key==='ArrowLeft') show(i-1); else if(e.key===' '){ e.preventDefault(); document.getElementById('bPause').click(); } });
-/* fit each page to the monitor (the lead, 19.10.2026): the page's own size is measured at zoom 1 and the whole page is zoomed down
-   so it fits the screen without scrolling (never up). Measured and set in one step, so nothing flickers; again every 5 s (the data
-   changes the height), on load and on resize. */
+/* fit each page to the screen (the lead, 19.10.2026: the pages were larger than the TV; the TV is 4K, 3840×2160, where the pages at
+   their normal size used a fifth of the height): the largest zoom (0.3–4) at which the whole page fits without scrolling — so a page is
+   ENLARGED on a big screen and reduced on a small one. The page reflows at each zoom, so the zoom is found by halving (12 steps), all in
+   one script run (nothing is painted in between, nothing flickers); again every 5 s (the data changes the height), on load and resize. */
 function fit(f){ try{ const doc=f.contentDocument; if(!doc || !doc.documentElement || !doc.body) return; const el=doc.documentElement;
-  el.style.overflow='hidden'; el.style.zoom='1';
-  const W=f.clientWidth, H=f.clientHeight, w=Math.max(el.scrollWidth, doc.body.scrollWidth), hh=Math.max(el.scrollHeight, doc.body.scrollHeight);
-  const z=Math.min(1, W/w, H/hh); el.style.zoom= z<0.999? String(Math.floor(z*1000)/1000) : '1'; }catch(e){} }
+  el.style.overflow='hidden';
+  const fits=z=>{ el.style.zoom=String(z); return el.scrollHeight<=el.clientHeight+1 && el.scrollWidth<=el.clientWidth+1; };
+  let lo=0.3, hi=4; if(fits(hi)) lo=hi; else for(let k=0;k<12;k++){ const mid=(lo+hi)/2; if(fits(mid)) lo=mid; else hi=mid; }
+  el.style.zoom=String(Math.floor(lo*100)/100); }catch(e){} }
 const fitAll=()=>frames.forEach(fit);
 frames.forEach(f=>f.addEventListener('load', ()=>{ fit(f); setTimeout(()=>fit(f), 1500); }));
 setInterval(fitAll, 5000); addEventListener('resize', fitAll); document.addEventListener('fullscreenchange', ()=>setTimeout(fitAll, 300));
