@@ -241,7 +241,16 @@ SELECT /*pulse:E*/
   LEFT JOIN Stations st ON st.Id=x.StationId
   LEFT JOIN (SELECT PickSessionId, COUNT(*) n FROM PickSessionOrder GROUP BY PickSessionId) o ON o.PickSessionId=x.Id
   LEFT JOIN (SELECT PickSessionId, SUM(ScannedQuantity) sc FROM PickSessionItem GROUP BY PickSessionId) i ON i.PickSessionId=x.Id
-  GROUP BY CONVERT(varchar(10),x.t,23), st.Name FOR JSON PATH) pickSt
+  GROUP BY CONVERT(varchar(10),x.t,23), st.Name FOR JSON PATH) pickSt,
+ -- ciBulk (the lead, 19.10.2026): check-ins with NO check-in log — a bulk check-in writes ProductCheckIns only, no ProductLogs
+ -- LogTypeId 2 (19.10: Bardh Thaçi, 576 units of one supply at 13:23) — per local day × hour × account, first / last time; the last
+ -- 36 days, warehouse 01. The agent adds them to the person's check-ins (board, Proceset), never twice: units with a log are left out.
+ (SELECT CONVERT(varchar(10),c.InsertDateTime,23) d, DATEPART(hour,c.InsertDateTime) h, c.UpdateBy u, MIN(LTRIM(RTRIM(ISNULL(us.FirstName,'')+' '+ISNULL(us.LastName,'')))) fn,
+    COUNT(*) n, MIN(CONVERT(varchar(5),c.InsertDateTime,108)) f, MAX(CONVERT(varchar(5),c.InsertDateTime,108)) l
+  FROM ProductCheckIns c LEFT JOIN (SELECT UserId, MIN(FirstName) FirstName, MIN(LastName) LastName FROM Users GROUP BY UserId) us ON us.UserId=c.UpdateBy
+  WHERE c.WarehouseId=1 AND c.InsertDateTime>=DATEADD(day,-36,CAST(GETDATE() AS date))
+    AND NOT EXISTS (SELECT 1 FROM ProductLogs p WITH (NOLOCK) WHERE p.ProductItemUniqueIdentifierId=c.ProductItemUniqueIdentifier AND p.LogTypeId=2)
+  GROUP BY CONVERT(varchar(10),c.InsertDateTime,23), DATEPART(hour,c.InsertDateTime), c.UpdateBy FOR JSON PATH) ciBulk
 
 -- @F inbound batches (Product / Inbound Flow): every supply of warehouse 01 from yesterday and today, plus older ones
 --    (≤14 days) that still have units waiting to be mapped. Stages: arrival = invoice registered (or the truck's actual

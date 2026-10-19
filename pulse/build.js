@@ -113,6 +113,8 @@ const inv=J(E.inv).map(r=>[r.m, r.n, r.s3, r.s1, r.qbo]);
 // picking (app tab "Picking", 14.10.2026): kept as the query's compact objects, local dates/hours; the app applies the staff rule
 // (from 01.09.2026 the staff on the schedule only) and the shifts. null until block E has been run with these columns.
 const picking= 'pickS' in E? {at:E._at||null, hours:J(E.pickH), days:J(E.pickS), stations:J(E.pickSt)} : null;
+// check-ins with no check-in log (bulk check-in, block E ciBulk, 19.10.2026): the agent adds them to the person's check-ins
+const checkinBulk= 'ciBulk' in E? {at:E._at||null, rows:J(E.ciBulk)} : null;
 // campaign hours (block C campH, app tab "Kampanja", 14.10.2026): orders created / checked out, units out / in per local day × hour.
 // The query sees the last 10 days; older days (and the first, partly cut day of the window) are kept from the previous data.json,
 // 90 days at most, so a campaign stays complete after it leaves the window.
@@ -190,7 +192,7 @@ const blocks={}; GROUPS.concat(OPTIONAL).forEach(g=>{ const r=rows[g], fl=failed
   if(!r && !fl) return;
   blocks[g]={at, gen: r&&r.gen || null, failedAt: fl&&(!at || fl.ts>Date.parse(at))? new Date(fl.ts).toISOString() : null, error: fl&&(!at || fl.ts>Date.parse(at))? fl.error : null}; });
 const boardStale= !board || !String(board.gen||'').startsWith(today);
-const data={ version:1, staffFilter: STAFF? {names:STAFF.n, from:STAFF.from||null, keys:STAFF.keys||null, unfiltered:[...new Set(unfiltered)]} : null, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, picking, campaign: campH, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
+const data={ version:1, staffFilter: STAFF? {names:STAFF.n, from:STAFF.from||null, keys:STAFF.keys||null, unfiltered:[...new Set(unfiltered)]} : null, blocks, shipments, returns, board, inbound: inb? {at:rows.F._at||null, batches:inb, daily:inbDaily} : null, orders: ordG, picking, checkinBulk, campaign: campH, capacity, generatedAt:A.gen, lastLog:A.lastLog, lastOrder:A.lastOrder, builtAt:new Date().toISOString(),
   D:{week, bands, hour, pay, period, rates, daily, o2c, upo, status, state, dwell, sect, insp, diff, sup, car, pick, st, inv},
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };

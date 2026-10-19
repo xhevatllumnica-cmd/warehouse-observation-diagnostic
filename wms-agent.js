@@ -406,6 +406,30 @@ function picksDay(iso){
     top:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).slice(0,3).map(([name,n])=>({name,n})),
     ops:Object.entries(byOp).sort((x,y)=>y[1]-x[1]).map(([name,n])=>({name,n, byHour:opH[name]||{}, activeHours:Object.keys(opH[name]||{}).length}))};
 }
+/* Check-ins with no check-in log (the lead, 19.10.2026): a bulk check-in writes ProductCheckIns only — no ProductLogs LogTypeId 2 —
+   so the log-based figures missed it (Bardh Thaçi, 19.10: 576 units at 13:23). From WMS Pulse (block E ciBulk, hourly), per person of
+   the staff (second accounts merged): units, per hour, and the event times (each hour's first scan) for the board's station cards. */
+function bulkCheckins(iso){
+  let B=null; try{ B=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')).checkinBulk||null; }catch(e){}
+  if(!B || !Array.isArray(B.rows)) return [];
+  const staff=warehouseStaffSet(), old=iso<ROSTER_FROM, canon=fn=>STAFF_ALIASES[normName(fn)]||fn;
+  const by={}; B.rows.filter(r=>r.d===iso && r.fn && (old || staff.has(normName(r.fn)) || staff.has(normName(STAFF_ALIASES[normName(r.fn)]||'')))).forEach(r=>{
+    const k=canon(r.fn), o=by[k]||(by[k]={name:k, n:0, byHour:{}, times:[]}), n=+r.n||0, t=new Date(iso+'T'+(r.f||p2(+r.h)+':00')+':00').getTime();
+    o.n+=n; o.byHour[r.h]=(o.byHour[r.h]||0)+n; for(let i=0;i<n;i++) o.times.push(t); });
+  return Object.values(by);
+}
+// add the bulk check-ins to the board's operators (live.ops, before the tables and cards are built)
+function addBulkToOps(live, iso){
+  if(!live || live.error || !Array.isArray(live.ops)) return live;
+  bulkCheckins(iso).forEach(b=>{ let o=live.ops.find(x=>x.name===b.name);
+    if(!o){ o={name:b.name, orders:0, coHours:0, coRate:null, byHour:{}, ci:0, ciHours:0, ciRate:null, ciByHour:{}, mp:0, mpHours:0, mpRate:null, mpByHour:{},
+      ret:0, retByHour:{}, out:0, outByHour:{}, first:new Date(Math.min(...b.times)).toISOString(), last:new Date(Math.max(...b.times)).toISOString(),
+      _ordT:[], _ciT:[], _retT:[], _mpT:[], _outT:[], pod:0, podByHour:{}, _podT:[], ref:0, refByHour:{}, _refT:[]}; live.ops.push(o); }
+    o.ci=(o.ci||0)+b.n; o.ciByHour=Object.assign({}, o.ciByHour||{}); Object.entries(b.byHour).forEach(([h,n])=>{ o.ciByHour[h]=(o.ciByHour[h]||0)+n; });
+    o._ciT=(o._ciT||[]).concat(b.times); o.ciHours=Object.keys(o.ciByHour).length; o.ciRate=o.ciHours? Math.round(o.ci/o.ciHours*10)/10 : null; o.ciBulk=b.n;
+    const mn=Math.min(...b.times), mx=Math.max(...b.times); if(!o.first || mn<Date.parse(o.first)) o.first=new Date(mn).toISOString(); if(!o.last || mx>Date.parse(o.last)) o.last=new Date(mx).toISOString(); });
+  return live;
+}
 async function buildFlow2h(db, iso){
   const today=isoToday(); const prevIso=isoAddDays(iso,-1);
   const staff=warehouseStaffSet();
@@ -1305,6 +1329,7 @@ async function peopleDay(iso){
     else if(id===7) op(who).mapping++;
     else if(id===20||id===21||id===22||id===29) op(who).ret++; });
   const pk=picksDay(iso); if(pk) (pk.ops||[]).forEach(p=>{ op(p.name).picking+=p.n; }); else errors.push('Picking: WMS Pulse pa të dhëna');
+  bulkCheckins(iso).forEach(b=>{ op(b.name).checkin+=b.n; });   // bulk check-ins: ProductCheckIns with no check-in log (19.10.2026)
   const ps=await fetchPodScans(iso); if(ps.error) errors.push('POD: '+ps.error); else (ps.rows||[]).forEach(r=>{ if(own(r.scanner)) op(r.scanner).pod.add(r.oid+'|'+r.pid); });
   const rs=await fetchRefusalScans(iso); if(rs.error) errors.push('Refuzime: '+rs.error); else (rs.rows||[]).forEach(r=>{ if(own(r.receiver)) op(r.receiver).ref+=r.n; });
   const v={date:iso, errors, ops:Object.values(P).map(o=>({name:o.name, claim:o.claim, claimOrders:o.claimO.size, picking:o.picking, checkout:o.checkout, checkoutOrders:o.orders.size,
@@ -1389,7 +1414,7 @@ async function tabelaData(force, date){
   let pod=null, ref=null;
   try{ pod=await fetchPodScans(today); }catch(e){ pod={error:String(e.message||e)}; }
   try{ ref=await fetchRefusalScans(today); }catch(e){ ref={error:String(e.message||e)}; }
-  const live=tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES, ref, today<ROSTER_FROM);
+  const live=addBulkToOps(tabelaBoard.withPod(live0, pod, warehouseStaffSet(), normName, STAFF_ALIASES, ref, today<ROSTER_FROM), today);   // + bulk check-ins (no log), 19.10.2026
   const podPosts=podPostsFor(today, pod, warehouseStaffSet());
   // tables: set by hand for that day, else placed automatically (usual table / first free one — tabela-board.js autoPlace)
   const placement=tabelaBoard.autoPlace(stations, live&&live.ops, rec, today, APPDIR, n=>STAFF_ALIASES[normName(n)]||n, !past);
