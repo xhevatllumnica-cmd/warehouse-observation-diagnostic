@@ -895,7 +895,7 @@ function chatState(){ try{ return JSON.parse(fs.readFileSync(CHAT_STATE_FILE,'ut
 function saveChatState(s){ try{ fs.writeFileSync(CHAT_STATE_FILE, JSON.stringify(s,null,2)); }catch(e){} }
 function flowChatText(data, m){
   const pct=p=> p==null?'':' ('+(p>=0?'+':'')+p+'%)', yv=v=> v==null?'—':v, pf=data.prevFullDay;
-  return '*Warehouse — flow until '+m.hour+'* ('+data.date.split('-').reverse().join('.')+')\n\n'
+  return staleLine(data.picksAt, 'Picks (WMS)')+'*Warehouse — flow until '+m.hour+'* ('+data.date.split('-').reverse().join('.')+')\n\n'
     +'Orders completed today: *'+m.orders+'*'+pct(m.ordersPct)+' — yesterday at this hour '+yv(m.ordersPrev)+'\n'
     +'Check-ins: *'+m.checkedIn+'* — yesterday '+yv(m.checkedInPrev)+'\n'
     +'Picks: *'+yv(m.picks)+'*'+pct(m.picksPct)+' units'+(m.picksAsOf?' (WMS until '+m.picksAsOf+')':'')+' — yesterday '+yv(m.picksPrev)+'\n'
@@ -916,11 +916,12 @@ function postToChat(text, webhook){
   });
 }
 function latestElapsedMark(){ const n=new Date(), mins=n.getHours()*60+n.getMinutes(); return FLOW_MARKS.filter(h=>mins>=h*60+1).pop(); }
-async function sendFlowToChat(hour, test){
+async function sendFlowToChat(hour, test, note){
   const data=await buildFlow2h(loadDb()||{}, isoToday());
   let text;
   if(data.error) text='⚠ *Warehouse — flow until '+p2(hour)+':00*: s\'u gjenerua — '+(data.error==='auth_expired'?'sesioni i WMS ka skaduar; ngjit një cookie të re te localhost:8790.':data.error);
   else { const m=data.marks.find(x=>x.hour===p2(hour)+':00'); if(!m) return {error:'ora '+p2(hour)+':00 s\'u gjet'}; text=flowChatText(data, m); }
+  if(note) text='_'+note+'_\n\n'+text;   // a manual resend can carry a note on top (e.g. a correction)
   const r=await postToChat(text);
   console.log('[wms-agent] Google Chat flow '+p2(hour)+':00'+(test?' (test)':'')+': '+(r.ok?'sent ✓':'FAILED '+r.error));
   return Object.assign(r,{hour:p2(hour)+':00'});
@@ -966,9 +967,14 @@ function campTotalsNow(){
   let open=null; if(Array.isArray(P.open)){ open={}; P.open.filter(r=>r.c>=launchKey && r.c<=c.end+' 23').forEach(r=>{ open[r.st]=(open[r.st]||0)+(+r.n||0); }); }
   return {name:c.name||'Kampanja', start:c.start, end:c.end, launchTime:lt, launch, created, cancelled, processed, backlog:Math.max(0, created-processed), lastDay, open, at:P.at||null};
 }
+/* stale WMS data (the lead, 20.10.2026: the hourly Pulse refresh hung from 11:10 and every message until 21:00 carried the figures of
+   10:10, which only a small "WMS deri 10:10" at the bottom showed): data older than 2 hours → a clear warning line at the top */
+const PULSE_STALE_MS=2*3600000;
+function staleLine(at, what){ const t=at? new Date(at) : null; if(!t || isNaN(t) || Date.now()-t.getTime()<=PULSE_STALE_MS) return '';
+  return '⚠ *'+what+' janë nga '+(t.toDateString()===new Date().toDateString()? '' : t.getDate()+'.'+(t.getMonth()+1)+' ')+p2(t.getHours())+':'+p2(t.getMinutes())+'* — rifreskimi nga WMS ka ngecur, shifrat mund të jenë të vjetra.\n\n'; }
 function campChatText(T, mark, final){
   const f=n=>Number(n||0).toLocaleString('de-DE'), asOf=T.at? new Date(T.at) : null;
-  return (final? '✅ ' : '')+'*'+T.name+' — gjithë kampanja · '+mark+'*\n'
+  return staleLine(T.at, 'Të dhënat nga WMS')+(final? '✅ ' : '')+'*'+T.name+' — gjithë kampanja · '+mark+'*\n'
     +'_'+T.start.split('-').reverse().join('.')+' '+T.launchTime+' → '+T.end.split('-').reverse().join('.')+' 24:00_\n\n'
     +'_Shifrat e më poshtme paraqesin vetëm porositë e krijuara gjatë kampanjës dhe procesimin e tyre, por nuk paraqesin shifra për porosi të mëhershme apo më vonshme!_\n\n'
     +'Porosi online: *'+f(T.created)+'*\n'
@@ -1598,6 +1604,16 @@ http.createServer(async (req,resp)=>{
       console.log('[wms-agent] Google Chat campaign test: '+(r.ok?'sent ✓':'FAILED '+r.error));
       return json(r.ok?200:502, Object.assign(r,{created:T.created, processed:T.processed, backlog:T.backlog}));
     }
+    if(q.pathname==='/camp/chat-now' && req.method==='POST'){   // the campaign message now, outside the marks (e.g. a correction) — same-origin only
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      if(!cfg.campChatWebhook) return json(400,{error:'Vendos fillimisht webhook-un e hapësirës së kampanjës.'});
+      let body={}; try{ body=JSON.parse(await readBody(req)||'{}'); }catch(e){}
+      const T=campTotalsNow(); if(!T || T.error) return json(400,{error:(T&&T.error)||'kampanja nuk është e ngarkuar'});
+      const note=String(body.note||'').trim().slice(0,400), n=new Date();
+      const r=await postToChat((note? '_'+note+'_\n\n' : '')+campChatText(T, p2(n.getHours())+':'+p2(n.getMinutes()), false), cfg.campChatWebhook);
+      console.log('[wms-agent] Google Chat campaign (manual): '+(r.ok?'sent ✓':'FAILED '+r.error));
+      return json(r.ok?200:502, Object.assign(r,{created:T.created, processed:T.processed, backlog:T.backlog}));
+    }
     if(q.pathname==='/camp/chat-preview'){   // the campaign message as it would go out now — nothing is sent
       const T=campTotalsNow(); resp.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});
       if(!T || T.error) return resp.end('S\'ka të dhëna kampanje: '+((T&&T.error)||'kampanja nuk është e ngarkuar'));
@@ -1636,7 +1652,8 @@ http.createServer(async (req,resp)=>{
     if(q.pathname==='/chat/test' && req.method==='POST'){
       if(!cfg.googleChatWebhook) return json(400,{error:'Vendos fillimisht webhook-un e Google Chat.'});
       const h=latestElapsedMark(); if(h==null) return json(400,{error:'Ende s\'ka arritur ora e parë (08:00) sot.'});
-      const r=await sendFlowToChat(h, true);
+      let body={}; try{ body=JSON.parse(await readBody(req)||'{}'); }catch(e){}
+      const r=await sendFlowToChat(h, true, String(body.note||'').trim().slice(0,400));
       return json(r.ok?200:502, r);
     }
     if(q.pathname==='/wms/staff' && req.method==='POST'){
