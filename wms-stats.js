@@ -37,7 +37,7 @@ module.exports=function makeWmsStats(d){
   function dayAgg(rows, iso, reliable){
     const staff=d.warehouseStaffSet();
     const a={date:iso, reliable, coUnits:new Array(24).fill(0), coOrders:[], kinds:{checkin:new Array(24).fill(0), map:new Array(24).fill(0), checkout:new Array(24).fill(0)},
-      workers:{}, ci:{}, mp:{}, out:{}, ev:{}, coUnitsBy:{}};
+      workers:{}, ci:{}, mp:{}, out:{}, ev:{}, coUnitsBy:{}, c9:{}};
     const firstCo={};
     rows.forEach(x=>{
       const t=Number(x.LogTypeId), ts=d.parseWmsDate(x.InsertDateTime); if(ts==null) return;
@@ -52,6 +52,8 @@ module.exports=function makeWmsStats(d){
         if(t===7 && !(a.mp[unit]<=ts)) a.mp[unit]=ts;
         if(OUT_TYPES.includes(t) && !(a.out[unit]<=ts)) a.out[unit]=ts;
       }
+      // the order's check-out completed (LogTypeId 9, its first) — start of "Check-out → POD"; keyed on OrderId (the web log has no platform)
+      if(t===9 && x.OrderId){ const k=String(x.OrderId); if(!(a.c9[k]<=ts)) a.c9[k]=ts; }
       const raw=String(x.UpdatedByName||'').replace(/\s+/g,' ').trim(); if(!staff.has(d.normName(raw))) return;
       const name=d.STAFF_ALIASES[d.normName(raw)]||raw;
       (a.ev[name]||(a.ev[name]=[])).push([minute, t]);        // every event of a staff member, for shift presence/timing
@@ -61,13 +63,15 @@ module.exports=function makeWmsStats(d){
     });
     a.coOrders=Object.entries(firstCo).map(([k,[m,by]])=>[k,m,by]);   // [order, minute of first check-out, operator of that scan]
     a.coBy=true;                                                         // marks aggregates that carry the operator (cache entries from before do not)
+    a.flow=true;                                                         // carries c9 (21.10.2026)
     return a;
   }
   async function getDay(iso){
     const settled=ageDays(iso)>=d.CACHE_SETTLE_DAYS;
     if(mem[iso] && (settled || Date.now()-mem[iso]._at<RESPONSE_TTL_MS)) return mem[iso];
     // a settled day cached before the operator was kept per order / per unit (no coBy / coUnitsBy) is read once more and re-cached
-    if(settled && disk.days[iso] && disk.days[iso].coBy && disk.days[iso].coUnitsBy) return (mem[iso]=Object.assign(disk.days[iso],{_at:Date.now()}));
+    // … and once more for the "Koha ndërmjet proceseve" fields (flow, 21.10.2026)
+    if(settled && disk.days[iso] && disk.days[iso].coBy && disk.days[iso].coUnitsBy && disk.days[iso].flow) return (mem[iso]=Object.assign(disk.days[iso],{_at:Date.now()}));
     const dl=await d.fetchDayProductLogs(d.isoToMdy(iso), {noCache:!settled});
     if(dl.error) return {error:dl.error};
     const a=dayAgg(dl.rows, iso, dl.reliable);
@@ -121,13 +125,22 @@ module.exports=function makeWmsStats(d){
     Object.values(aggs).concat(prevAggs.filter(Boolean), laterAggs||[]).forEach(a=>{
       Object.entries(a.mp).forEach(([u,t])=>{ if(!(allMp[u]<=t)) allMp[u]=t; });
       Object.entries(a.out).forEach(([u,t])=>{ if(!(allOut[u]<=t)) allOut[u]=t; }); });
-    const putaway=ciSet=>{ const mins=[]; let unmapped=0; const buckets={'<2h':0,'2–8h':0,'8–24h':0,'>24h':0}; const now=Date.now();
+    const putaway=ciSet=>{ const mins=[], ages=[]; let unmapped=0; const buckets={'<2h':0,'2–8h':0,'8–24h':0,'>24h':0}; const now=Date.now();
       ciSet.forEach(([u,t])=>{ const m=allMp[u]; if(m!=null && m>=t){ mins.push((m-t)/60000); return; }
         const o=allOut[u]; if(o!=null && o>=t) return;   // went out without being mapped (e.g. straight to an order)
-        unmapped++; const hAge=(now-t)/3600000; buckets[hAge<2?'<2h':hAge<8?'2–8h':hAge<24?'8–24h':'>24h']++; });
-      return {mins, unmapped, buckets}; };
-    const ciOf=list=>list.flatMap(a=>Object.entries(a.ci).filter(([,t])=>{ const dt=new Date(t); return f.minute(dt.getHours()*60+dt.getMinutes()); }));
+        unmapped++; ages.push((now-t)/60000); const hAge=(now-t)/3600000; buckets[hAge<2?'<2h':hAge<8?'2–8h':hAge<24?'8–24h':'>24h']++; });
+      return {mins, unmapped, buckets, ages}; };
+    const inShift=t=>{ const dt=new Date(t); return f.minute(dt.getHours()*60+dt.getMinutes()); };
+    const ciOf=list=>list.flatMap(a=>Object.entries(a.ci).filter(([,t])=>inShift(t)));
     const cur=putaway(ciOf(inRange.map(iso=>aggs[iso]))), prv=putaway(ciOf(prevAggs.filter(a=>a && f.day(a.date))));
+    // --- 5.3 koha ndërmjet proceseve (the lead, 21.10.2026): check-in → map with its target; the other steps come from the agent
+    // (/stats/flow — check-in → check-out and pick → check-out from the database, POD from the Delivery Platform)
+    const T=(d.flowTargets&&d.flowTargets())||{};
+    const step=(cur, prev, target)=>({ n:cur.mins.length, medianMin:r1(median(cur.mins)), p90Min:r1(pct(cur.mins,0.9)), target:target||null,
+      withinPct: target && cur.mins.length? Math.round(cur.mins.filter(m=>m<=target).length/cur.mins.length*100) : null,
+      prevMedianMin:r1(median(prev.mins)), prevWithinPct: target && prev.mins.length? Math.round(prev.mins.filter(m=>m<=target).length/prev.mins.length*100) : null,
+      pending:cur.ages.length, pendingOver: target? cur.ages.filter(m=>m>target).length : null });
+    const flowCiMap=step(cur, prv, T.ciMap);
     // --- 5.4 productivity ------------------------------------------------------
     const W={}, P={};
     const addW=(T,a)=>{ Object.entries(a.workers).forEach(([n,w])=>{ const o=T[n]||(T[n]={checkin:0,map:0,checkout:0,days:0}); o.checkin+=w.checkin; o.map+=w.map; o.checkout+=w.checkout; o.days++; }); };
@@ -148,6 +161,7 @@ module.exports=function makeWmsStats(d){
         avgOrdersPerWorkday:r1(avgOrders), prevAvgOrdersPerWorkday:r1(prevAvgOrders), workdaysCounted:full.length,
         totalOrders:byDay.reduce((s,x)=>s+x.orders,0), totalUnits:byDay.reduce((s,x)=>s+x.units,0) },
       putaway:{ pairs:cur.mins.length, medianMin:r1(median(cur.mins)), p90Min:r1(pct(cur.mins,0.9)), prevMedianMin:r1(median(prv.mins)), unmapped:cur.unmapped, unmappedBuckets:cur.buckets },
+      flow:{ ciMap:flowCiMap, targets:T },
       productivity:{ workers, teamAvgPerDay:r1(mean), sdPerDay:r1(sd), byHour:prodByHour.filter(x=>x.weighted).map(x=>({hour:x.hour, weightedPerDay:r1(x.weighted/nDays)})) },
     };
   }
@@ -176,7 +190,7 @@ module.exports=function makeWmsStats(d){
 
   /* 10-minute response cache; concurrent identical requests share one build. */
   async function live(n, shiftName, date){
-    const key=(date||n)+'|'+(shiftName||'');
+    const key=(date||n)+'|'+(shiftName||'')+'|'+JSON.stringify((d.flowTargets&&d.flowTargets())||{});   // new targets → new figures
     const c=responses[key]; if(c && Date.now()-c.at<RESPONSE_TTL_MS) return Object.assign({}, c.data, {cached:true});
     if(!inflight[key]) inflight[key]=build(n, shiftName, date).finally(()=>{ delete inflight[key]; });
     const data=await inflight[key];
@@ -272,5 +286,7 @@ module.exports=function makeWmsStats(d){
       schedule:{ planDays, missingDays:days.filter(x=>!planDays.includes(x)) }, absences, unplanned,
       rules:{idleGapMin:IDLE_GAP_MIN, lateMin:LATE_MIN, earlyMin:EARLY_MIN}};
   }
-  return {live, shifts};
+  /* orders whose check-out was completed (LogTypeId 9) on the given days — start of "Check-out → POD" (21.10.2026) */
+  async function doneOrders(days){ const rows=[]; for(const iso of days){ const a=await getDay(iso); if(a.error) return {error:a.error}; Object.entries(a.c9||{}).forEach(([o,t])=>rows.push([o,t])); } return {rows}; }
+  return {live, shifts, doneOrders};
 };

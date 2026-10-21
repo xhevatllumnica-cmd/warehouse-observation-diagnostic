@@ -603,7 +603,8 @@ const shiftSchedule=require('./shift-schedule.js')({ appDir:APPDIR, normName, wa
 const stationPresence=require('./station-presence.js')({ appDir:APPDIR, cfgFile:CFG_FILE, cfg, normName, aliases:STAFF_ALIASES });
 stationPresence.listen(Number(cfg.stationPort||8791));
 const wmsStats=require('./wms-stats.js')({ appDir:APPDIR, fetchDayProductLogs, isoToday, isoAddDays, isoToMdy, lastNDays, parseWmsDate,
-  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, WH_LEADS, ROSTER_FROM, scheduleForDay:iso=>shiftSchedule.forDay(iso) });
+  CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, WH_LEADS, ROSTER_FROM, scheduleForDay:iso=>shiftSchedule.forDay(iso),
+  flowTargets:()=>statsConfig().flowTargets });
 /* Module settings (agent config, one writer). Thresholds are starting values meant to be tuned by the lead:
    ok (green) when the value reaches `green`, warning (yellow) up to `yellow`, red beyond — `higherIsBetter`
    decides the direction. */
@@ -611,8 +612,68 @@ const STATS_DEFAULTS={ cutoff:'17:30', targetOrdersPerDay:1000,
   thresholds:{ ordersPerDay:{green:1000, yellow:850, higherIsBetter:true},
                putawayMedianMin:{green:60, yellow:120, higherIsBetter:false},
                unmappedOver24h:{green:0, yellow:50, higherIsBetter:false},
-               safetyObs:{green:0, yellow:1, higherIsBetter:false} } };
-function statsConfig(){ const c=cfg.stats||{}; return Object.assign({}, STATS_DEFAULTS, c, {thresholds:Object.assign({}, STATS_DEFAULTS.thresholds, c.thresholds||{})}); }
+               safetyObs:{green:0, yellow:1, higherIsBetter:false} },
+  // "Koha ndërmjet proceseve" (the lead, 21.10.2026): the time allowed for each step, minutes — "brenda afatit" = at most this
+  flowTargets:{ ciMap:120, ciCo:1440, pickCo:60, coPod:240, podClose:120 } };
+const FLOW_STEPS=['ciMap','ciCo','pickCo','coPod','podClose'];
+function statsConfig(){ const c=cfg.stats||{}; return Object.assign({}, STATS_DEFAULTS, c, {thresholds:Object.assign({}, STATS_DEFAULTS.thresholds, c.thresholds||{}), flowTargets:Object.assign({}, STATS_DEFAULTS.flowTargets, c.flowTargets||{})}); }
+
+/* --- "Koha ndërmjet proceseve" — the three steps the WMS web log cannot give (21.10.2026) -------------------------------
+   pickCo   pick → check-out of the same unit: WMS Pulse block E pickCo (database, hourly), per pick day.
+   coPod    check-out completed (LogTypeId 9, web log, by OrderId) → the order's first POD scan in the Delivery Platform at or after
+            it (Accept Delivery scans of that day and up to 3 days after). Still waiting = no POD scan yet — this includes orders
+            that never go through POD (Merre vet / showroom), so it is shown with that note.
+   podClose POD scan → the closing of that courier's delivery (podCloseTime) the order was scanned into (scans of the period only).
+   Each: {n, medianMin, p90Min, target, withinPct, prevMedianMin, prevWithinPct, pending, pendingOver} or {error}. Cached 10 min. */
+const flowCache={}, flowInflight={};
+function flowStep(mins, ages, prev, target){
+  const med=a=>{ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; };
+  const p90=a=>{ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y); return s[Math.min(s.length-1, Math.floor(0.9*s.length))]; };
+  const r1=x=>x==null?null:Math.round(x*10)/10, within=a=> target && a.length? Math.round(a.filter(m=>m<=target).length/a.length*100) : null;
+  return { n:mins.length, medianMin:r1(med(mins)), p90Min:r1(p90(mins)), target:target||null, withinPct:within(mins),
+    prevMedianMin: prev? r1(med(prev)) : null, prevWithinPct: prev? within(prev) : null,
+    pending: ages? ages.length : null, pendingOver: ages && target? ages.filter(m=>m>target).length : null };
+}
+const dpTime=v=>{ if(v==null || v==='') return null; const s=String(v); if(s.startsWith('0001-01-01')) return null; const m=/\/Date\((\d+)\)\//.exec(s); if(m) return Number(m[1]);
+  const t=Date.parse(s.includes('T')? s : s.replace(' ','T')); return isNaN(t)? null : t; };
+async function buildFlow(days, prevDays){
+  const T=statsConfig().flowTargets, today=isoToday(), now=Date.now(), out={from:days[0], to:days[days.length-1], targets:T, at:new Date().toISOString()};
+  // pick → check-out and check-in → check-out (WMS Pulse block E, per day of the start; ages of units still waiting moved to now)
+  let PD={}; try{ PD=JSON.parse(fs.readFileSync(PULSE_DATA,'utf8')); }catch(e){}
+  const fromPulse=(src, k, withAges, extra)=>{ if(!src || !Array.isArray(src.rows)){ out[k]={error:'pa të dhëna nga WMS Pulse ende (blloku E rifreskohet çdo orë)'}; return; }
+    const pick=ds=>{ const set=new Set(ds), rows=src.rows.filter(r=>set.has(r.d)), shift=src.at? (now-new Date(src.at).getTime())/60000 : 0;
+      return {mins:rows.flatMap(r=>r.ms).map(m=>Math.max(0,m)), ages:withAges? rows.flatMap(r=>r.pm).map(m=>m+shift) : null}; };
+    const c=pick(days), p=pick(prevDays);
+    out[k]=Object.assign(flowStep(c.mins, c.ages, p.mins, T[k]), {at:src.at}, extra||{}); };
+  fromPulse(PD.ciCo, 'ciCo', false, {note:'Njësitë që presin ende nuk numërohen: porosia i lidhet njësisë vetëm në check-out.'});
+  fromPulse(PD.pickCo, 'pickCo', true, {since:'2026-10-13'});
+  // POD scans: the period's days and up to 3 days after (for the check-out → POD match)
+  const scanDays=[]; for(let iso=prevDays[0]||days[0]; iso<=today && iso<=isoAddDays(days[days.length-1],3); iso=isoAddDays(iso,1)) scanDays.push(iso);
+  const first={}; let podErr=null;   // order → earliest POD scan [t, pid, day]
+  for(const iso of scanDays){ let s; try{ s=await fetchPodScans(iso); }catch(e){ s={error:'Delivery Platform: '+(e&&e.message||e)}; } if(s.error){ podErr=s.error; break; }
+    (s.rows||[]).forEach(r=>{ const k=String(r.oid), f=first[k]; if(!f || r.t<f[0]) first[k]=[r.t, r.pid, iso]; }); }
+  const podMsg=e=> e==='auth_expired'? 'sesioni i Delivery Platform ka skaduar — hap deliveryplatform.gjirafamall.com në Chrome' : e;
+  if(podErr){ out.coPod={error:podMsg(podErr)}; out.podClose={error:podMsg(podErr)}; return out; }
+  // check-out completed → POD scan
+  const co=async ds=>{ let r; try{ r=await wmsStats.doneOrders(ds); }catch(e){ r={error:'WMS: '+(e&&e.message||e)}; } if(r.error) return r; const mins=[], ages=[];
+    r.rows.forEach(([o,t])=>{ const f=first[o]; if(f && f[0]>=t-5*60000) mins.push(Math.max(0,(f[0]-t)/60000)); else if(!f) ages.push((now-t)/60000); }); return {mins, ages}; };
+  const cC=await co(days), cP=await co(prevDays);
+  out.coPod= cC.error? {error:cC.error} : Object.assign(flowStep(cC.mins, cC.ages, cP.error? null : cP.mins, T.coPod), {note:'Ende në pritje përfshin edhe porositë që nuk kalojnë në POD (Merre vet / showroom).'});
+  // POD scan → closing of the delivery (scans made in the period)
+  const mins=[], ages=[]; let readErr=null;
+  for(const iso of days){ if(iso>today) break; let pd; try{ pd=await fetchPodDay(iso); }catch(e){ pd={error:'Delivery Platform: '+(e&&e.message||e)}; } if(pd.error){ readErr=pd.error; break; }
+    const close={}; (pd.deliveries||[]).forEach(dl=>close[dl.id]=dpTime(dl.pod)); const dOf={}; (pd.items||[]).forEach(it=>dOf[it.orderId+'|'+it.platformId]=it.deliveryId);
+    Object.entries(first).forEach(([o,[t,pid,day]])=>{ if(day!==iso) return; const dl=dOf[o+'|'+pid]; if(dl==null) return;
+      const c=close[dl]; if(c!=null && c>=t) mins.push((c-t)/60000); else if(c==null) ages.push((now-t)/60000); }); }
+  out.podClose= readErr? {error:podMsg(readErr)} : Object.assign(flowStep(mins, ages, null, T.podClose), {note:'Periudha e kaluar nuk krahasohet (leximi i dorëzimeve është i rëndë).'});
+  return out;
+}
+async function statsFlow(days, prevDays){
+  const key=days[0]+'|'+days[days.length-1]+'|'+JSON.stringify(statsConfig().flowTargets), c=flowCache[key];
+  if(c && Date.now()-c.t<10*60000) return c.v;
+  if(!flowInflight[key]) flowInflight[key]=buildFlow(days, prevDays).then(v=>{ if(!(v.coPod&&v.coPod.error)) flowCache[key]={t:Date.now(), v}; return v; }).finally(()=>{ delete flowInflight[key]; });
+  return flowInflight[key];
+}
 
 /* --- Delivery Platform (deliveryplatform.gjirafamall.com) — second, independent connection ----------
    A completely separate system from WMS: its own login (same corporate SSO, but its own app/database),
@@ -1674,6 +1735,12 @@ http.createServer(async (req,resp)=>{
       resp.writeHead(r.error?(r.error==='auth_expired'?401:502):200, {'Content-Type':'application/json','Cache-Control':'no-store'});
       return resp.end(JSON.stringify(r.error?r:Object.assign(r,{config:statsConfig()})));
     }
+    if(q.pathname==='/stats/flow'){   // "Koha ndërmjet proceseve": pick → check-out, check-out → POD, POD → closed POD (counts and minutes only)
+      const n = q.query.range==='30d'?30 : q.query.range==='14d'?14 : 7, date=q.query.date||'';
+      if(date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date>isoToday())) return json(400,{error:'Data duhet YYYY-MM-DD dhe jo në të ardhmen.'});
+      const days=date? [date] : lastNDays(n), prevDays=days.map((_,i)=>isoAddDays(days[0], -days.length+i));
+      try{ return json(200, await statsFlow(days, prevDays)); }catch(e){ return json(502,{error:String(e&&e.message||e)}); }
+    }
     if(q.pathname==='/pulse/data'){   // WMS Pulse snapshot (worker e-mails + pay) — same-origin only, no CORS header
       let b; try{ b=fs.readFileSync(path.join(APPDIR,'pulse','data.json')); }catch(e){ resp.writeHead(404,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify({error:'WMS Pulse nuk është gjeneruar ende — pritet rifreskimi i parë nga databaza.'})); }
       resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(b);
@@ -1785,7 +1852,11 @@ http.createServer(async (req,resp)=>{
       if(body.thresholds && typeof body.thresholds==='object'){ next.thresholds={};
         for(const [k,v] of Object.entries(body.thresholds)){ if(!STATS_DEFAULTS.thresholds[k]||!v) continue; const g=Number(v.green), y=Number(v.yellow);
           if(!isFinite(g)||!isFinite(y)) return json(400,{error:'Pragjet duhet të jenë numra ('+k+')'}); next.thresholds[k]={green:g, yellow:y, higherIsBetter:STATS_DEFAULTS.thresholds[k].higherIsBetter}; } }
-      try{ const onDisk=JSON.parse(fs.readFileSync(CFG_FILE,'utf8')); const merged=Object.assign({}, onDisk.stats||{}, next, next.thresholds?{thresholds:Object.assign({}, (onDisk.stats||{}).thresholds||{}, next.thresholds)}:{});
+      if(body.flowTargets && typeof body.flowTargets==='object'){ next.flowTargets={};
+        for(const k of FLOW_STEPS){ if(body.flowTargets[k]==null) continue; const v=Number(body.flowTargets[k]);
+          if(!(v>0) || v>60*24*60) return json(400,{error:'Afati duhet të jetë minuta > 0 ('+k+')'}); next.flowTargets[k]=Math.round(v); } }
+      try{ const onDisk=JSON.parse(fs.readFileSync(CFG_FILE,'utf8')); const merged=Object.assign({}, onDisk.stats||{}, next, next.thresholds?{thresholds:Object.assign({}, (onDisk.stats||{}).thresholds||{}, next.thresholds)}:{},
+          next.flowTargets?{flowTargets:Object.assign({}, (onDisk.stats||{}).flowTargets||{}, next.flowTargets)}:{});
         onDisk.stats=merged; fs.writeFileSync(CFG_FILE, JSON.stringify(onDisk,null,2)); cfg.stats=merged; }
       catch(e){ return json(500,{error:'S\'u ruajt: '+e.message}); }
       return json(200,{ok:true, config:statsConfig()});

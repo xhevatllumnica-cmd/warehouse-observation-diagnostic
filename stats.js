@@ -32,6 +32,30 @@ function statsStatus(v, th){
   return v<=th.green?'st-ok':v<=th.yellow?'st-warn':'st-crit';
 }
 function statsFmtMin(m){ if(m==null) return '—'; if(m<60) return Math.round(m)+' min'; const hrs=m/60; return hrs<48? (Math.round(hrs*10)/10)+' orë' : (Math.round(hrs/24*10)/10)+' ditë'; }
+/* 5.3 Koha ndërmjet proceseve — one row per step; "brenda afatit" coloured ≥ 90 % green, ≥ 75 % yellow, else red */
+const STATS_FLOW=[['ciMap','Check-in → Map','njësi'],['ciCo','Check-in → Check-out','njësi për porosi'],['pickCo','Pick → Check-out','njësi'],['coPod','Check-out → POD','porosi'],['podClose','POD → Closed POD','porosi']];
+let statsFlowData=null;
+function statsFlowStep(d, k){ return (d.flow&&d.flow[k]) || (statsFlowData&&statsFlowData[k]) || null; }
+function statsFlowRows(d){
+  const T=((d.config||{}).flowTargets)||{}, pc=v=>v==null?'—':v+'%', cls=v=>v==null?'':v>=90?'b-ok':v>=75?'b-warn':'b-crit';
+  return STATS_FLOW.map(([k,label,unit])=>{ const s=statsFlowStep(d,k), t=statsFmtMin(T[k]);
+    if(!s) return `<tr><td><b>${label}</b></td><td>${t}</td><td colspan="6" class="faint">duke u lexuar…</td></tr>`;
+    if(s.error) return `<tr><td><b>${label}</b></td><td>${t}</td><td colspan="6" class="faint">pa të dhëna — ${h(s.error)}</td></tr>`;
+    return `<tr><td style="white-space:nowrap"><b>${label}</b><div class="faint small">${unit}${s.note? ' *' : ''}</div></td><td>${t}</td><td>${s.n}</td><td><b>${statsFmtMin(s.medianMin)}</b></td><td>${statsFmtMin(s.p90Min)}</td>
+      <td>${s.withinPct==null? '—' : `<span class="badge ${cls(s.withinPct)}">${pc(s.withinPct)}</span>`}</td>
+      <td>${s.prevMedianMin==null && s.prevWithinPct==null? '—' : statsFmtMin(s.prevMedianMin)+' · '+pc(s.prevWithinPct)}</td>
+      <td>${s.pending==null? '—' : `${s.pending} <span class="faint">(${s.pendingOver==null?'—':s.pendingOver} mbi afat)</span>`}</td></tr>`; }).join('')
+    // the steps' notes under the table (a long note in the first column pushed the figures off the screen)
+    + (()=>{ const notes=STATS_FLOW.map(([k,label])=>{ const s=statsFlowStep(d,k); return s&&s.note? '<b>'+label+'</b>: '+h(s.note) : null; }).filter(Boolean);
+      return notes.length? `<tr><td colspan="8" class="faint small" style="white-space:normal">* ${notes.join(' · ')}</td></tr>` : ''; })();
+}
+async function statsFlowLoad(d){
+  const seq=statsSeq, q=statsRange==='day' ? 'date='+encodeURIComponent(statsDate||todayStr()) : 'range='+statsRange;
+  try{ const r=await fetch('/stats/flow?'+q,{cache:'no-store'}); const j=await r.json(); if(seq!==statsSeq) return;
+    statsFlowData= j.error? {ciCo:{error:j.error}, pickCo:{error:j.error}, coPod:{error:j.error}, podClose:{error:j.error}} : j; }
+  catch(e){ if(seq!==statsSeq) return; statsFlowData={ciCo:{error:e.message}, pickCo:{error:e.message}, coPod:{error:e.message}, podClose:{error:e.message}}; }
+  const tb=$('#flowRows'); if(tb) tb.innerHTML=statsFlowRows(d);
+}
 function statsFmtSec(s){ if(s==null) return '—'; return s<90? Math.round(s)+' s' : (Math.round(s/6)/10)+' min'; }
 function statsMedian(a){ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; }
 function statsP90(a){ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y); return s[Math.min(s.length-1, Math.floor(0.9*s.length))]; }
@@ -122,7 +146,7 @@ function renderStatsWH(v){
 async function loadStatsWH(){
   const body=$('#statsBody'); if(!body) return;
   body.innerHTML=`<div class="empty">Po ngarkohet… ${statsRange==='14d'||statsRange==='30d'?'(herën e parë periudhat e gjata marrin disa minuta; pastaj ruhen)':''}</div>`;
-  let live=null, err=null; const seq=++statsSeq;
+  let live=null, err=null; const seq=++statsSeq; statsFlowData=null;   // 5.3: the new period's steps are read again
   const q=statsRange==='day' ? 'date='+encodeURIComponent(statsDate||todayStr()) : 'range='+statsRange;
   if(!wmsOnAgent()) err='Hape app-in nga http://localhost:8790 që të lexohen të dhënat e WMS-it.';
   else try{ const r=await fetch('/stats/live?'+q+'&shift='+encodeURIComponent(statsShift),{cache:'no-store'}); live=await r.json();
@@ -183,14 +207,13 @@ function renderStatsBody(d){
     <div style="overflow-x:auto"><table class="heat"><thead><tr><th></th>${hrs.map(hh=>`<th>${String(hh).padStart(2,'0')}</th>`).join('')}<th style="border-left:2px solid var(--line)">Totali</th></tr></thead><tbody>
     ${t.heatmap.map((r,i)=>`<tr><th>${STATS_WEEKDAYS[i]}</th>${hrs.map(hh=>`<td ${r[hh]? `data-heat="${i}|${hh}" title="Kliko: operatorët e kësaj ore"` : ''} style="background:rgba(17,91,146,${(r[hh]/hmax*0.85).toFixed(2)});color:${r[hh]/hmax>0.55?'#fff':'var(--text)'}${r[hh]?';cursor:pointer':''}">${r[hh]||''}</td>`).join('')}<td style="border-left:2px solid var(--line);font-weight:700;text-align:center">${r.reduce((a,b)=>a+(b||0),0)||''}</td></tr>`).join('')}</tbody></table></div>
     ${statsMeta('porosi të dala nga stafi në Orarin e punës, sipas orës së check-out-it të parë dhe ditës së javës. Kliko një shifër për operatorët e saj. Totali = porositë e asaj dite të javës në periudhë (shuma e orëve).','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
-  const putaway=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.3 Check-in → map</h3><button class="btn sm ghost no-print" data-csv="putaway" style="margin-left:auto">⬇ CSV</button></div>
-    <table style="font-size:12.5px;max-width:560px"><tbody>
-      <tr><td>Njësi të check-in-uara dhe të mapuara</td><td><b>${pa.pairs}</b></td></tr>
-      <tr><td>Pritja — mediana / p90</td><td><b>${statsFmtMin(pa.medianMin)}</b> / ${statsFmtMin(pa.p90Min)}</td></tr>
-      <tr><td>Mediana e periudhës së kaluar</td><td>${statsFmtMin(pa.prevMedianMin)}</td></tr>
-      <tr><td>Ende të pamapuara (pa dalë në porosi)</td><td><b>${pa.unmapped}</b> — ${Object.entries(pa.unmappedBuckets).map(([k,v])=>h(k)+': '+v).join(' · ')}</td></tr>
-    </tbody></table>
-    ${statsMeta('koha nga check-in-i (LogTypeId 2) deri te mapimi i parë (7) i së njëjtës njësi fizike. «Të pamapuara» = njësi të check-in-uara në periudhë që s\'kanë as mapim, as hap dalës (3, 4, 9, 18, 27); koha e pritjes matet deri tani.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
+  // 5.3 Koha ndërmjet proceseve (the lead, 21.10.2026) — replaces "5.3 Check-in → map" (its figures are the first row, unchanged);
+  // rows 1–2 come with this page (WMS web log), rows 3–5 from /stats/flow (Pulse + Delivery Platform), filled when they arrive
+  const putaway=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.3 Koha ndërmjet proceseve</h3><button class="btn sm ghost no-print" data-csv="putaway" style="margin-left:auto">⬇ CSV</button></div>
+    <div style="overflow-x:auto"><table style="font-size:12.5px"><thead><tr><th>Hapi</th><th>Afati</th><th>Të matura</th><th>Mediana</th><th>p90</th><th>Brenda afatit</th><th>Periudha e kaluar</th><th>Ende në pritje (mbi afat)</th></tr></thead>
+    <tbody id="flowRows">${statsFlowRows(d)}</tbody></table></div>
+    <div class="hint" style="margin-top:6px">Check-in → Map — ende të pamapuara: <b>${pa.unmapped}</b> · ${Object.entries(pa.unmappedBuckets).map(([k,v])=>h(k)+': '+v).join(' · ')}</div>
+    ${statsMeta('<b>Check-in → Map</b>: njësia fizike nga check-in-i (2) te mapimi i parë (7). <b>Check-in → Check-out</b>: vetëm njësitë që erdhën për një porosi (porosia e njësisë ishte krijuar para check-in-it), deri te check-out-i i parë (4/18) — stoku nuk matet; ato që presin ende nuk shihen, sepse porosia i lidhet njësisë vetëm në check-out. <b>Pick → Check-out</b>: njësia e skanuar në picking (PickSessionScan) deri te check-out-i i saj, që nga 13.10.2026. <b>Check-out → POD</b>: porosia nga check-out-i i përfunduar (9) te skanimi i parë POD. <b>POD → Closed POD</b>: nga skanimi POD te mbyllja e dorëzimit të postës. Afati ndryshohet te Cilësimet e modulit; «brenda afatit» = koha ≤ afati; «ende në pritje» = filluar në periudhë, ende pa hapin tjetër (koha matet deri tani).','WMS · ProductLogs · WMS Pulse (picking) · Delivery Platform (POD)', scope, d.refreshedAt)}</div>`;
   const band={above:['b-ok','Mbi mesataren'],below:['b-crit','Nën mesataren'],average:['b-muted','Mesatare']};
   const prod=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.4 Produktiviteti i punëtorëve</h3><button class="btn sm ghost no-print" data-csv="workers" style="margin-left:auto">⬇ CSV</button></div>
     <div style="overflow-x:auto"><table style="font-size:12.5px"><thead><tr><th>Operatori</th><th>Check-in</th><th>Map</th><th>Check-out</th><th>Ditë aktive</th><th>Op. të peshuara</th><th>Op./ditë</th><th>${single?'Dita e mëparshme':'Periudha e kaluar'}</th><th>Kategoria</th><th>Sinjale</th></tr></thead><tbody>
@@ -221,6 +244,10 @@ function renderStatsBody(d){
       <label class="small">Cut-off same-day<input id="stCut" value="${h(cfg.cutoff)}"></label>
       <label class="small">Target porosi/ditë<input id="stTarget" type="number" value="${h(cfg.targetOrdersPerDay)}"></label>
       ${[['ordersPerDay','Porosi/ditë (jeshile ≥ / e verdhë ≥)'],['putawayMedianMin','Pritja për map, min (jeshile ≤ / e verdhë ≤)'],['unmappedOver24h','Të pamapuara > 24h (jeshile ≤ / e verdhë ≤)'],['safetyObs','Vëzhgime sigurie (jeshile ≤ / e verdhë ≤)']].map(([k,l])=>`<label class="small">${l}<div style="display:flex;gap:6px"><input data-thg="${k}" type="number" value="${h(th[k]&&th[k].green)}"><input data-thy="${k}" type="number" value="${h(th[k]&&th[k].yellow)}"></div></label>`).join('')}
+    </div>
+    <div class="small" style="margin-top:10px"><b>Afatet e proceseve</b> (orë) — 5.3 Koha ndërmjet proceseve</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:6px">
+      ${STATS_FLOW.map(([k,l])=>`<label class="small">${l}<input data-ft="${k}" type="number" min="0.05" step="0.25" value="${h(String(Math.round((((cfg.flowTargets||{})[k])||0)/60*100)/100))}"></label>`).join('')}
     </div>
     <button class="btn primary sm" id="stSave" style="margin-top:8px">Ruaj</button> <span class="hint" id="stMsg"></span>
     <div class="hint" style="margin-top:6px">Turnet ndryshohen te WMS Data &amp; Performance → Shifts. Pragjet janë vlera fillestare — përshtati sipas depos.</div></details>`;
@@ -286,16 +313,19 @@ function wireStatsBody(d){
   const csv={
     daily:()=>statsCsv('wh-porosi-ditore',['Data','Porosi të dala','Njësi','Weekend','E pjesshme'], t.byDay.map(x=>[x.date,x.orders,x.units,x.weekend?'po':'jo',x.partial?'po':'jo'])),
     heatmap:()=>statsCsv('wh-heatmap',['Dita',...[...Array(24).keys()].map(x=>String(x).padStart(2,'0')),'Totali'], t.heatmap.map((r,i)=>[STATS_WEEKDAYS[i],...r,r.reduce((a,b)=>a+(b||0),0)])),
-    putaway:()=>statsCsv('wh-checkin-map',['Metrika','Vlera'], [['Njësi të mapuara',pa.pairs],['Mediana (min)',pa.medianMin],['p90 (min)',pa.p90Min],['Mediana periudha e kaluar (min)',pa.prevMedianMin],['Të pamapuara',pa.unmapped],...Object.entries(pa.unmappedBuckets).map(([k,v])=>['Të pamapuara '+k,v])]),
+    putaway:()=>statsCsv('wh-koha-ndermjet-proceseve',['Hapi','Afati (min)','Të matura','Mediana (min)','p90 (min)','Brenda afatit %','Periudha e kaluar — mediana (min)','Periudha e kaluar — brenda afatit %','Ende në pritje','Ende në pritje mbi afat','Shënim'],
+      STATS_FLOW.map(([k,label])=>{ const st=statsFlowStep(d,k)||{}, T=((d.config||{}).flowTargets)||{}; return st.error? [label,T[k],'','','','','','','','',st.error] : [label,T[k],st.n,st.medianMin,st.p90Min,st.withinPct,st.prevMedianMin,st.prevWithinPct,st.pending,st.pendingOver,st.note||'']; })),
     workers:()=>statsCsv('wh-produktiviteti',['Operatori','Check-in','Map','Check-out','Ditë aktive','Op. të peshuara','Op./ditë','Periudha e kaluar','Ndryshimi %','Kategoria','Kulm','Në rënie'], pr.workers.map(w=>[w.operator,w.checkin,w.map,w.checkout,w.activeDays,w.weighted,w.perDay,w.prevPerDay,w.changePct,w.band,w.spike?'po':'',w.declining?'po':''])),
     steps:()=>statsCsv('wh-kohet-e-hapave',['Hapi','Matje','Mediana (s)','p90 (s)','Pritja mediana (s)'], app.steps.map(s=>[s.process,s.n,s.median,s.p90,s.waitMedian])),
   };
   $$('[data-csv]').forEach(b=>b.onclick=()=>csv[b.dataset.csv]());
   $$('[data-heat]').forEach(td=>td.onclick=()=>{ const [i,hh]=td.dataset.heat.split('|').map(Number); statsHeatPopup(d, i, hh); });
   statsHourWire(d); statsHourLoad();   // 5.1 Orë pas ore: its own day, data and CSV
+  statsFlowLoad(d);                    // 5.3: pick → check-out, check-out → POD, POD → closed POD
   const save=$('#stSave'); if(save) save.onclick=async()=>{
-    const thresholds={}; $$('[data-thg]').forEach(i=>{ const k=i.dataset.thg; thresholds[k]={green:Number(i.value), yellow:Number($(`[data-thy="${k}"]`).value)}; });
-    try{ const r=await fetch('/stats/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cutoff:$('#stCut').value.trim(), targetOrdersPerDay:Number($('#stTarget').value), thresholds})});
+    const flowTargets={}; $('[data-ft]').forEach(i=>{ const v=Number(i.value); if(v>0) flowTargets[i.dataset.ft]=Math.round(v*60); });
+    const thresholds={}; $('[data-thg]').forEach(i=>{ const k=i.dataset.thg; thresholds[k]={green:Number(i.value), yellow:Number($(`[data-thy="${k}"]`).value)}; });
+    try{ const r=await fetch('/stats/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cutoff:$('#stCut').value.trim(), targetOrdersPerDay:Number($('#stTarget').value), thresholds, flowTargets})});
       const j=await r.json(); if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
       toast('Cilësimet u ruajtën'); if(statsLast) statsLast.config=j.config; loadStatsWH();
     }catch(e){ $('#stMsg').textContent='✗ '+e.message; }

@@ -250,7 +250,30 @@ SELECT /*pulse:E*/
   FROM ProductCheckIns c LEFT JOIN (SELECT UserId, MIN(FirstName) FirstName, MIN(LastName) LastName FROM Users GROUP BY UserId) us ON us.UserId=c.UpdateBy
   WHERE c.WarehouseId=1 AND c.InsertDateTime>=DATEADD(day,-36,CAST(GETDATE() AS date))
     AND NOT EXISTS (SELECT 1 FROM ProductLogs p WITH (NOLOCK) WHERE p.ProductItemUniqueIdentifierId=c.ProductItemUniqueIdentifier AND p.LogTypeId=2)
-  GROUP BY CONVERT(varchar(10),c.InsertDateTime,23), DATEPART(hour,c.InsertDateTime), c.UpdateBy FOR JSON PATH) ciBulk
+  GROUP BY CONVERT(varchar(10),c.InsertDateTime,23), DATEPART(hour,c.InsertDateTime), c.UpdateBy FOR JSON PATH) ciBulk,
+ -- pickCo (Statistikat e WH "Koha ndërmjet proceseve", the lead 21.10.2026): pick → check-out of the SAME physical unit
+ -- (PickSessionScan.UniqueId = ProductLogs.ProductItemUniqueIdentifierId, checked 21.10: 197 of 204 picks matched). Per local day
+ -- of the pick (first pick of the unit, UTC → local): picks n, matched m, the minutes to the first check-out (4/18) after the pick
+ -- (ms, 5 min tolerance for clock skew) and, for units not checked out yet, their age in minutes now (pm). The last 31 days.
+ (SELECT d, COUNT(*) n, SUM(CASE WHEN co IS NOT NULL THEN 1 ELSE 0 END) m,
+    STRING_AGG(CAST(CASE WHEN co IS NOT NULL THEN DATEDIFF(minute,t,co) END AS varchar(max)),',') ms,
+    STRING_AGG(CAST(CASE WHEN co IS NULL THEN DATEDIFF(minute,t,CAST(GETDATE() AS datetime2)) END AS varchar(max)),',') pm
+  FROM (SELECT x.t, CONVERT(varchar(10),x.t,23) d,
+     (SELECT MIN(p.InsertDateTime) FROM ProductLogs p WITH (NOLOCK) WHERE p.ProductItemUniqueIdentifierId=x.u AND p.LogTypeId IN (4,18) AND p.InsertDateTime>=DATEADD(minute,-5,x.t)) co
+    FROM (SELECT s.UniqueId u, MIN(CAST((s.InsertDateTime AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2)) t
+          FROM PickSessionScan s WHERE s.InsertDateTime>=DATEADD(day,-31,GETUTCDATE()) AND s.UniqueId IS NOT NULL AND s.UniqueId<>'' GROUP BY s.UniqueId) x) y
+  GROUP BY d FOR JSON PATH) pickCo,
+ -- ciCo (same card): check-in → check-out of units checked in FOR an order — the unit's order (ProductCheckIns.OrderId) was created
+ -- before its check-in (21.10: 95 % of units with an order). The web log's check-in rows never carry the order, and the order is tied
+ -- to the unit only at check-out, so units still waiting cannot be seen (no pm). Per local day of the check-in, the last 31 days.
+ (SELECT d, COUNT(*) n, SUM(CASE WHEN co IS NOT NULL THEN 1 ELSE 0 END) m,
+    STRING_AGG(CAST(CASE WHEN co IS NOT NULL THEN DATEDIFF(minute,t,co) END AS varchar(max)),',') ms
+  FROM (SELECT c.InsertDateTime t, CONVERT(varchar(10),c.InsertDateTime,23) d,
+     (SELECT MIN(p.InsertDateTime) FROM ProductLogs p WITH (NOLOCK) WHERE p.ProductItemUniqueIdentifierId=c.ProductItemUniqueIdentifier AND p.LogTypeId IN (4,18) AND p.InsertDateTime>=c.InsertDateTime) co
+    FROM ProductCheckIns c JOIN Orders o ON o.OrderId=c.OrderId AND o.PlatformId=c.PlatformId
+    WHERE c.WarehouseId=1 AND c.OrderId>0 AND c.InsertDateTime>=DATEADD(day,-31,CAST(GETDATE() AS date))
+      AND CAST((o.CreatedOnUtc AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2)<=c.InsertDateTime) y
+  GROUP BY d FOR JSON PATH) ciCo
 
 -- @F inbound batches (Product / Inbound Flow): every supply of warehouse 01 from yesterday and today, plus older ones
 --    (≤14 days) that still have units waiting to be mapped. Stages: arrival = invoice registered (or the truck's actual
