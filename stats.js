@@ -180,9 +180,9 @@ function renderStatsBody(d){
   const hourly=statsHourlyCard(d);
   const hmax=Math.max(1,...t.heatmap.flat()), hrs=[...Array(24).keys()].filter(hh=>t.heatmap.some(r=>r[hh]));
   const heat=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Heatmap — ora × dita e javës</h3><button class="btn sm ghost no-print" data-csv="heatmap" style="margin-left:auto">⬇ CSV</button></div>
-    <div style="overflow-x:auto"><table class="heat"><thead><tr><th></th>${hrs.map(hh=>`<th>${String(hh).padStart(2,'0')}</th>`).join('')}</tr></thead><tbody>
-    ${t.heatmap.map((r,i)=>`<tr><th>${STATS_WEEKDAYS[i]}</th>${hrs.map(hh=>`<td ${r[hh]? `data-heat="${i}|${hh}" title="Kliko: operatorët e kësaj ore"` : ''} style="background:rgba(17,91,146,${(r[hh]/hmax*0.85).toFixed(2)});color:${r[hh]/hmax>0.55?'#fff':'var(--text)'}${r[hh]?';cursor:pointer':''}">${r[hh]||''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
-    ${statsMeta('porosi të dala nga stafi në Orarin e punës, sipas orës së check-out-it të parë dhe ditës së javës. Kliko një shifër për operatorët e saj.','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
+    <div style="overflow-x:auto"><table class="heat"><thead><tr><th></th>${hrs.map(hh=>`<th>${String(hh).padStart(2,'0')}</th>`).join('')}<th style="border-left:2px solid var(--line)">Totali</th></tr></thead><tbody>
+    ${t.heatmap.map((r,i)=>`<tr><th>${STATS_WEEKDAYS[i]}</th>${hrs.map(hh=>`<td ${r[hh]? `data-heat="${i}|${hh}" title="Kliko: operatorët e kësaj ore"` : ''} style="background:rgba(17,91,146,${(r[hh]/hmax*0.85).toFixed(2)});color:${r[hh]/hmax>0.55?'#fff':'var(--text)'}${r[hh]?';cursor:pointer':''}">${r[hh]||''}</td>`).join('')}<td style="border-left:2px solid var(--line);font-weight:700;text-align:center">${r.reduce((a,b)=>a+(b||0),0)||''}</td></tr>`).join('')}</tbody></table></div>
+    ${statsMeta('porosi të dala nga stafi në Orarin e punës, sipas orës së check-out-it të parë dhe ditës së javës. Kliko një shifër për operatorët e saj. Totali = porositë e asaj dite të javës në periudhë (shuma e orëve).','WMS · ProductLogs', scope, d.refreshedAt)}</div>`;
   const putaway=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.3 Check-in → map</h3><button class="btn sm ghost no-print" data-csv="putaway" style="margin-left:auto">⬇ CSV</button></div>
     <table style="font-size:12.5px;max-width:560px"><tbody>
       <tr><td>Njësi të check-in-uara dhe të mapuara</td><td><b>${pa.pairs}</b></td></tr>
@@ -285,7 +285,7 @@ function wireStatsBody(d){
   const t=d.throughput, pa=d.putaway, pr=d.productivity, app=statsAppData(d.scope.from, d.scope.to);
   const csv={
     daily:()=>statsCsv('wh-porosi-ditore',['Data','Porosi të dala','Njësi','Weekend','E pjesshme'], t.byDay.map(x=>[x.date,x.orders,x.units,x.weekend?'po':'jo',x.partial?'po':'jo'])),
-    heatmap:()=>statsCsv('wh-heatmap',['Dita',...[...Array(24).keys()].map(x=>String(x).padStart(2,'0'))], t.heatmap.map((r,i)=>[STATS_WEEKDAYS[i],...r])),
+    heatmap:()=>statsCsv('wh-heatmap',['Dita',...[...Array(24).keys()].map(x=>String(x).padStart(2,'0')),'Totali'], t.heatmap.map((r,i)=>[STATS_WEEKDAYS[i],...r,r.reduce((a,b)=>a+(b||0),0)])),
     putaway:()=>statsCsv('wh-checkin-map',['Metrika','Vlera'], [['Njësi të mapuara',pa.pairs],['Mediana (min)',pa.medianMin],['p90 (min)',pa.p90Min],['Mediana periudha e kaluar (min)',pa.prevMedianMin],['Të pamapuara',pa.unmapped],...Object.entries(pa.unmappedBuckets).map(([k,v])=>['Të pamapuara '+k,v])]),
     workers:()=>statsCsv('wh-produktiviteti',['Operatori','Check-in','Map','Check-out','Ditë aktive','Op. të peshuara','Op./ditë','Periudha e kaluar','Ndryshimi %','Kategoria','Kulm','Në rënie'], pr.workers.map(w=>[w.operator,w.checkin,w.map,w.checkout,w.activeDays,w.weighted,w.perDay,w.prevPerDay,w.changePct,w.band,w.spike?'po':'',w.declining?'po':''])),
     steps:()=>statsCsv('wh-kohet-e-hapave',['Hapi','Matje','Mediana (s)','p90 (s)','Pritja mediana (s)'], app.steps.map(s=>[s.process,s.n,s.median,s.p90,s.waitMedian])),
