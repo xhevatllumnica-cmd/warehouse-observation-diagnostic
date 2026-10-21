@@ -75,6 +75,7 @@ flow-chat-state.json
 stats-day-cache.json
 shift-schedule.json
 pulse/data.json
+pulse/pick-units.json
 pulse/raw/
 pulse/wms-pulse.html
 

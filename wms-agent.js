@@ -1157,7 +1157,7 @@ async function wmsStores(force){
 const tabelaBoard=require('./tabela-board.js');
 /* "Kërko produkt" (13.10.2026): product / order search, WMS + Delivery Platform, read-only — see product-search.js */
 productSearchRef=require('./product-search.js')({ appDir:APPDIR, wmsFetch, enc, PLOG_COLS, parseWmsDate, looksLoggedOut, isoToday, isoAddDays, isoToMdy, p2,
-  fetchDayProductLogs, fetchPodScans, fetchPodDay, deliveryPostJson, dtCols, STAFF_ALIASES, normName });
+  fetchDayProductLogs, fetchPodScans, fetchPodDay, deliveryPostJson, dtCols, STAFF_ALIASES, normName, flowTargets:()=>statsConfig().flowTargets });
 const TABELA_DEFAULT_STATIONS=['CHECKOUT 1','CHECKOUT 2','CHECKOUT 3','CHECKOUT 4','CHECKOUT 5','CHECKOUT 6','CHECKIN & CHECKOUT','CHECKIN 1','CHECKIN 2','CHECKIN 3','CHECKIN SELLERS']
   .map(n=>({name:n, co:/CHECKOUT/.test(n), ci:/CHECKIN/.test(n)}));
 let tabelaLive=null, tabelaLiveAt=0, tabelaLiveBusy=null;
@@ -1808,6 +1808,9 @@ http.createServer(async (req,resp)=>{
     // "Kërko produkt" (product-search.js) — same-origin only (no CORS header), read-only
     if(q.pathname==='/search/q' && req.method==='GET'){
       const r=await productSearchRef.search(q.query.q||''); const code= r.error? (r.error==='auth_expired'? 401 : 400) : 200;
+      resp.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r)); }
+    if(q.pathname==='/search/trace' && req.method==='GET'){   // the timeline of an order / unit (times and account names only)
+      const r=await productSearchRef.trace(q.query.q||''); const code= r.error? (r.error==='auth_expired'? 401 : 400) : 200;
       resp.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify(r)); }
     if(q.pathname==='/search/dp' && req.method==='GET'){
       if(!/^\d{1,10}$/.test(String(q.query.order||''))) return json(400,{error:'order'});

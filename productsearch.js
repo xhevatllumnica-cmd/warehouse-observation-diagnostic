@@ -26,6 +26,9 @@ async function psSearch(q){
   catch(e){ box.innerHTML=`<div class="empty">Agjenti s'përgjigjet (${h(e.message)}).</div>`; return; }
   if(psLast!==q) return;
   const parts=[];
+  // the timeline (21.10.2026): an order or a unit — filled by /search/trace after the cards are drawn
+  const traceQ= j.order? String(j.order.orderId) : j.unitOnly? String(j.unitOnly) : '';
+  if(traceQ) parts.push(`<div class="card" id="psTrace" style="margin-bottom:12px"><h3 style="margin-top:0">Vija kohore</h3><div class="faint small">po lexohet… (WMS, picking, Delivery Platform)</div></div>`);
   if(j.order) parts.push(psOrderCard(j.order));
   (j.products||[]).forEach((p,i)=>parts.push(psProductCard(p,i)));
   if(j.names && j.names.length) parts.push(`<div class="card"><h3 style="margin-top:0">Produkte me këtë emër <span class="sub">${j.names.length}${j.names.length>=40? '+' : ''} · kliko për historinë</span></h3>
@@ -37,6 +40,7 @@ async function psSearch(q){
   $$('[data-psdp]').forEach(b=>b.onclick=()=>psLoadDp(b));
   $$('[data-psdp-auto]').forEach(b=>psLoadDp(b));   // the order's own card and the 3 latest orders of a product load at once
   $$('[data-psimg]').forEach(psLoadImg);
+  if(traceQ) psLoadTrace(traceQ);
 }
 async function psLoadImg(box){
   const [uid, sku, code]=box.dataset.psimg.split('|'), link=box.parentElement.querySelector('[data-psimglink]');
@@ -91,4 +95,43 @@ async function psLoadDp(btn){
     cell.innerHTML= !s? `<span class="faint small">Pa skanim POD (${h(j.searchedDays.map(x=>fmtDateAl(x).slice(0,5)).join(', '))})</span>`
       : `<span class="small">POD ${h(psDt(s.at))}${s.by? ' · '+h(s.by) : ''}${d? ` · <b>${h(d.post||'—')}</b> · <span class="badge ${refused? 'b-crit' : d.delivered? 'b-ok' : 'b-muted'}">${h(d.status || (d.delivered? 'Dorëzuar' : 'Në dërgesë'))}</span>${d.delivered? ' · dorëzuar '+h(psDt(String(d.delivered).replace('T',' ').slice(0,16))) : ''}` : ' · <span class="faint">dërgesa ende pa u lexuar</span>'}</span>`;
   }catch(e){ cell.innerHTML=`<span class="small" style="color:var(--warn)">${h(e.message)}</span>`; }
+}
+
+/* ---- Vija kohore (the lead, 21.10.2026): Check-in → Map → Pick → Check-out → POD → Closed POD for an order's units or one unit,
+   each step with the time since the step before it; a step with a time target (Statistikat e WH → 5.3, Cilësimet e modulit) is
+   green within it, red beyond; the first missing step shows how long it has been waiting. ---- */
+const PS_FLOW=[['ci','Check-in',null,null],['map','Map','ciMap',['ci']],['pick','Pick',null,['map','ci']],['co','Check-out','pickCo',['pick']],['pod','POD','coPod',['c9','co']],['closed','Closed POD','podClose',['pod']]];
+const psT=x=> x==null? null : x.t!=null? x.t : (()=>{ const t=Date.parse(String(x.at||'').replace(' ','T')); return isNaN(t)? null : t; })();
+const psDur=m=>{ if(m==null) return '—'; m=Math.max(0,m); if(m<60) return Math.round(m)+' min'; const hrs=m/60; return hrs<48? (Math.round(hrs*10)/10)+' orë' : (Math.round(hrs/24*10)/10)+' ditë'; };
+function psTraceRow(u, j){
+  const T=j.targets||{}, st={ci:u.ci, map:u.map, pick:u.pick, co:u.co, c9:j.c9, pod:j.pod, closed:j.closed};
+  let waitShown=false; const lastIdx=PS_FLOW.reduce((a,[k],i)=>st[k]? i : a, -1);
+  const cells=PS_FLOW.map(([k,label,tk,from],i)=>{ const s=st[k], t=psT(s);
+    // from: the nearest earlier step that happened (pick → check-out only counts from the pick; without a pick, no target)
+    const fk=(from||[]).find(f=>st[f]), f= fk? psT(st[fk]) : null, target= tk && (k!=='co' || fk==='pick')? T[tk] : null;
+    if(t!=null){ const m= f!=null? (t-f)/60000 : null, over= target && m!=null && m>target;
+      return `<td><b>${h(psDt(s.at))}</b>${s.by? '<div class="faint small">'+h(s.by)+'</div>' : ''}${s.row? '<div class="faint small">'+h(s.row)+'</div>' : ''}
+        ${m!=null? `<div><span class="badge ${target? (over? 'b-crit' : 'b-ok') : 'b-muted'}" title="${target? 'afati '+psDur(target) : 'pa afat'}">+${psDur(m)}</span></div>` : ''}</td>`; }
+    // the Delivery Platform could not be read: POD / Closed POD unknown — never shown as "waiting"
+    if((k==='pod' || k==='closed') && j.podError) return `<td class="faint small" title="${h(j.podError)}">pa u lexuar</td>`;
+    // the first step not reached yet, right after the last one that was: waiting since then
+    if(!waitShown && i===lastIdx+1 && f!=null){ waitShown=true; const m=(Date.now()-f)/60000, over=target && m>target;
+      return `<td><span class="faint small">në pritje</span><div><span class="badge ${target? (over? 'b-crit' : 'b-warn') : 'b-muted'}">${psDur(m)}</span></div></td>`; }
+    return `<td class="faint" title="${k==='pick'? 'pa skanim picking (picking në WMS që nga 13.10.2026, 31 ditët e fundit)' : ''}">—</td>`; });
+  const ci=psT(u.ci), co=psT(u.co), tot= ci!=null && co!=null? (co-ci)/60000 : null;
+  return `<tr><td><a href="#" data-psq="${h(u.uid)}">${h(u.uid)}</a>${u.name? '<div class="faint small">'+h(u.name)+'</div>' : ''}</td>${u.none? '<td colspan="7" class="faint">pa lëvizje në 365 ditë</td>' : cells.join('')+`<td>${tot==null? '—' : `<span class="badge ${T.ciCo? (tot>T.ciCo? 'b-crit' : 'b-ok') : 'b-muted'}">${psDur(tot)}</span>`}</td>`}</tr>`;
+}
+async function psLoadTrace(q){
+  const box=$('#psTrace'); if(!box) return;
+  let j; try{ const r=await fetch('/search/trace?q='+encodeURIComponent(q),{cache:'no-store'}); j=await r.json(); }catch(e){ j={error:e.message}; }
+  if(psLast!==q || $('#psTrace')!==box) return;   // another search was started meanwhile
+  if(j.error){ box.innerHTML=`<h3 style="margin-top:0">Vija kohore</h3><div class="faint small">${j.error==='auth_expired'? 'Sesioni i WMS ka skaduar' : h(j.error)}</div>`; return; }
+  const T=j.targets||{};
+  box.innerHTML=`<h3 style="margin-top:0">Vija kohore ${j.orderId? '<span class="sub">porosia '+j.orderId+(j.post? ' · posta '+h(j.post) : '')+(j.c9? ' · check-out i përfunduar '+h(psDt(j.c9.at)) : '')+'</span>' : ''}</h3>
+    <div class="tablewrap"><table><thead><tr><th>Njësia</th>${PS_FLOW.map(([,l])=>'<th>'+l+'</th>').join('')}<th>Check-in → Check-out</th></tr></thead><tbody>
+    ${j.units.map(u=>psTraceRow(u,j)).join('')}</tbody></table></div>
+    ${j.more? '<div class="faint small">+ '+j.more+' njësi të tjera të porosisë nuk janë në tabelë.</div>' : ''}
+    ${j.podError? '<div class="small" style="color:var(--warn)">POD: '+h(j.podError)+'</div>' : j.orderId && j.co && !j.pod? '<div class="faint small">Pa skanim POD në ditët '+h((j.searchedDays||[]).map(x=>fmtDateAl(x).slice(0,5)).join(', '))+'.</div>' : ''}
+    <div class="hint" style="margin-top:6px">Te çdo hap: koha dhe sa zgjati nga hapi i mëparshëm — <span class="badge b-ok">brenda afatit</span> <span class="badge b-crit">mbi afat</span> <span class="badge b-muted">pa afat</span>. Afatet: Check-in → Map ${psDur(T.ciMap)} · Pick → Check-out ${psDur(T.pickCo)} · Check-out → POD ${psDur(T.coPod)} · POD → Closed POD ${psDur(T.podClose)} · Check-in → Check-out ${psDur(T.ciCo)} (ndryshohen te Statistikat e WH → Cilësimet e modulit). Check-out → POD matet nga check-out-i i përfunduar i porosisë. Pick vjen nga WMS Pulse (çdo orë${j.pickAt? ', lexuar '+h(new Date(j.pickAt).toLocaleTimeString().slice(0,5)) : ''}), vetëm 31 ditët e fundit.</div>`;
+  box.querySelectorAll('[data-psq]').forEach(a=>a.onclick=e=>{ e.preventDefault(); $('#psQ').value=a.dataset.psq; psSearch(a.dataset.psq); });
 }

@@ -202,6 +202,9 @@ const data={ version:1, staffFilter: STAFF? {names:STAFF.n, from:STAFF.from||nul
   K:{avg:r1(avg), sd:r1(sd), per, statusNames, onShelf:Dd.onShelf, rowsStock:Dd.rowsStock, rowsTotal:Dd.rowsTotal, diffOpen:Dd.diffOpen, diffTotal:Dd.diffTotal,
      nfOpen:Dd.nfOpen, nfTotal:Dd.nfTotal, retOpen:Dd.retOpen, lateOpen:E.lateOpen, supStarted:E.supStarted} };
 fs.writeFileSync(path.join(DIR,'data.json'), JSON.stringify(data));
+// the pick time of each unit (block E pickU, 21.10.2026) — its own file, read by the agent's "Kërko produkt" timeline only
+if(E.pickU!=null){ const u={}; String(E.pickU||'').split(';').forEach(p=>{ const i=p.indexOf('='); if(i>0){ const [f,l]=p.slice(i+1).split('|'); u[p.slice(0,i)]= l? [f,l] : [f]; } });
+  fs.writeFileSync(path.join(DIR,'pick-units.json'), JSON.stringify({at:E._at||null, units:u})); }
 const tpl=fs.readFileSync(path.join(DIR,'template.html'),'utf8');
 const embedded=JSON.stringify(data).replace(/</g,'\\u003c');
 fs.writeFileSync(path.join(DIR,'wms-pulse.html'), tpl.replace('<script id="pulse-data">window.PULSE=null;</script>', ()=>'<script id="pulse-data">window.PULSE='+embedded+';</script>'));

@@ -323,8 +323,8 @@ function wireStatsBody(d){
   statsHourWire(d); statsHourLoad();   // 5.1 Orë pas ore: its own day, data and CSV
   statsFlowLoad(d);                    // 5.3: pick → check-out, check-out → POD, POD → closed POD
   const save=$('#stSave'); if(save) save.onclick=async()=>{
-    const flowTargets={}; $('[data-ft]').forEach(i=>{ const v=Number(i.value); if(v>0) flowTargets[i.dataset.ft]=Math.round(v*60); });
-    const thresholds={}; $('[data-thg]').forEach(i=>{ const k=i.dataset.thg; thresholds[k]={green:Number(i.value), yellow:Number($(`[data-thy="${k}"]`).value)}; });
+    const flowTargets={}; $$('[data-ft]').forEach(i=>{ const v=Number(i.value); if(v>0) flowTargets[i.dataset.ft]=Math.round(v*60); });
+    const thresholds={}; $$('[data-thg]').forEach(i=>{ const k=i.dataset.thg; thresholds[k]={green:Number(i.value), yellow:Number($(`[data-thy="${k}"]`).value)}; });
     try{ const r=await fetch('/stats/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cutoff:$('#stCut').value.trim(), targetOrdersPerDay:Number($('#stTarget').value), thresholds, flowTargets})});
       const j=await r.json(); if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
       toast('Cilësimet u ruajtën'); if(statsLast) statsLast.config=j.config; loadStatsWH();

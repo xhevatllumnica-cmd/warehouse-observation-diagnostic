@@ -273,7 +273,13 @@ SELECT /*pulse:E*/
     FROM ProductCheckIns c JOIN Orders o ON o.OrderId=c.OrderId AND o.PlatformId=c.PlatformId
     WHERE c.WarehouseId=1 AND c.OrderId>0 AND c.InsertDateTime>=DATEADD(day,-31,CAST(GETDATE() AS date))
       AND CAST((o.CreatedOnUtc AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2)<=c.InsertDateTime) y
-  GROUP BY d FOR JSON PATH) ciCo
+  GROUP BY d FOR JSON PATH) ciCo,
+ -- pickU (Kërko produkt — the unit's timeline, the lead 21.10.2026): each unit picked in the last 31 days with its local pick time,
+ -- "unit=first" or "unit=first|last" when picked more than once; ';' between units. Written to pulse/pick-units.json, not data.json.
+ (SELECT STRING_AGG(CAST(u+'='+CONVERT(varchar(16),f,120)+CASE WHEN l>f THEN '|'+CONVERT(varchar(16),l,120) ELSE '' END AS varchar(max)),';')
+  FROM (SELECT s.UniqueId u, MIN(CAST((s.InsertDateTime AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2)) f,
+          MAX(CAST((s.InsertDateTime AT TIME ZONE 'UTC') AT TIME ZONE 'Central European Standard Time' AS datetime2)) l
+        FROM PickSessionScan s WHERE s.InsertDateTime>=DATEADD(day,-31,GETUTCDATE()) AND s.UniqueId IS NOT NULL AND s.UniqueId<>'' GROUP BY s.UniqueId) x) pickU
 
 -- @F inbound batches (Product / Inbound Flow): every supply of warehouse 01 from yesterday and today, plus older ones
 --    (≤14 days) that still have units waiting to be mapped. Stages: arrival = invoice registered (or the truck's actual

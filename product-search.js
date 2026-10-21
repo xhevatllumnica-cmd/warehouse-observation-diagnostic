@@ -130,8 +130,11 @@ module.exports=function makeProductSearch(d){
       const hit=(s.rows||[]).filter(r=>Number(r.oid)===oid && (!pid || !r.pid || Number(r.pid)===Number(pid))).sort((a,b)=>a.t-b.t)[0];
       if(hit){ res.scan={at:loc(hit.t), by:person(hit.scanner)};
         const day=await d.fetchPodDay(iso); if(!day.error){ const it=(day.items||[]).find(x=>Number(x.orderId)===oid && (!pid || !x.platformId || Number(x.platformId)===Number(pid)));
+          // closed: when the courier's delivery the order was scanned into was closed (podCloseTime) — "POD → Closed POD" (21.10.2026)
+          const dl= it? (day.deliveries||[]).find(x=>x.id===it.deliveryId) : null, closedT= dl? dpTime(dl.pod) : null;
           if(it) res.delivery={post:String(it.driverName||''), status:it.deliveryItemStatus!=null? String(it.deliveryItemStatus) : null, orderStatus:it.orderStatus!=null? String(it.orderStatus) : null,
-            delivered:it.deliveredDate||null, refused: it.processStatusRefused!=null? it.processStatusRefused : null, packages:it.packagesTotal!=null? it.packagesTotal : it.packages, city:it.city||null}; }
+            delivered:it.deliveredDate||null, refused: it.processStatusRefused!=null? it.processStatusRefused : null, packages:it.packagesTotal!=null? it.packagesTotal : it.packages, city:it.city||null,
+            closed: closedT!=null? loc(closedT) : null}; }
         break; } }
     // (the refusals list has an OrderId filter, but the platform ignores it — tested 13.10.2026: 10 984 rows either way —
     // so a refusal is read from the delivery status above: "refuzuar" / processStatusRefused)
@@ -176,5 +179,46 @@ module.exports=function makeProductSearch(d){
     if(p.productId){ const s=await shopImage(p.productId, sku, code); if(s) Object.assign(res, s); }
     imgs[key]=res; saveImgs(); return res;
   }
-  return {search, orderDp, productImage, indexRows, byName, indexInfo:()=>({products:Object.keys(idx.p).length, days:Object.keys(idx.days).sort()})};
+  /* ---- the timeline of an order or a unit (the lead, 21.10.2026): Check-in → Map → Pick → Check-out → POD → Closed POD ----
+     Check-in / map / check-out from the unit's own WMS log (365 days); the pick from WMS Pulse (pulse/pick-units.json — the pick
+     tables are only in the database, hourly, last 31 days); the POD scan and the closing of the delivery from the Delivery Platform.
+     For the order's units: the LAST check-in before the order's check-out, the first map after it, the pick before the check-out. */
+  const PICK_FILE=path.join(d.appDir,'pulse','pick-units.json'); let pickMem=null;
+  const dpTime=v=>{ if(v==null || v==='') return null; const x=String(v); if(x.startsWith('0001-01-01')) return null; const m=/\/Date\((\d+)\)\//.exec(x); if(m) return Number(m[1]);
+    const t=Date.parse(x.includes('T')? x : x.replace(' ','T')); return isNaN(t)? null : t; };
+  function picks(){ try{ const st=fs.statSync(PICK_FILE); if(!pickMem || pickMem.m!==st.mtimeMs) pickMem={m:st.mtimeMs, v:JSON.parse(fs.readFileSync(PICK_FILE,'utf8'))}; return pickMem.v; }catch(e){ return null; } }
+  const tOf=s=>{ const t=Date.parse(String(s||'').replace(' ','T')); return isNaN(t)? null : t; };   // 'YYYY-MM-DD HH:MM' local
+  function unitChain(rows, orderId, uid){
+    const ev=rows.map(x=>({t:d.parseWmsDate(x.InsertDateTime), id:Number(x.LogTypeId), order:Number(x.OrderId)||0, pid:Number(x.PlatformId)||0, by:person(x.UpdatedByName), row:String(x.Row||'').trim().replace(/^-+$/,'')}))
+      .filter(e=>e.t!=null).sort((a,b)=>a.t-b.t);
+    let oid=Number(orderId)||0; if(!oid){ const last=[...ev].reverse().find(e=>e.order && (e.id===4 || e.id===18)); oid= last? last.order : 0; }
+    const co=ev.find(e=>(e.id===4 || e.id===18) && (!oid || e.order===oid)), end= co? co.t : Infinity;
+    const ci=[...ev].reverse().find(e=>e.id===2 && e.t<=end), mp= ci? ev.find(e=>e.id===7 && e.t>=ci.t && e.t<=end) : null;
+    const c9= oid? ev.find(e=>e.id===9 && e.order===oid) : null;
+    const P=picks(), pt= P && P.units? (P.units[uid]||null) : null;
+    const pickT= pt? (pt.map(tOf).filter(t=>t!=null && t<=end+5*60000).pop()||null) : null;
+    const st=e=> e? {at:loc(e.t), t:e.t, by:e.by||'', row:e.row||''} : null;
+    return {oid, pid: co? co.pid : 0, ci:st(ci), map:st(mp), pick: pickT!=null? {at:loc(pickT), t:pickT} : null, co:st(co), c9:st(c9)};
+  }
+  async function trace(qRaw){
+    const q=String(qRaw||'').trim(); const out={q, at:new Date().toISOString(), targets: d.flowTargets? d.flowTargets() : {}, units:[], orderId:0, pickAt:(picks()||{}).at||null};
+    let list=[];   // [uid, name]
+    if(/^\d{5,9}$/.test(q)){ const o=await orderProducts(q);   // an unknown order: the WMS answers with no JSON (bad_response)
+      if(o.error==='bad_response' || (!o.error && !o.items.length)) return {error:'Porosia '+q+' nuk u gjet në WMS.'}; if(o.error) return o;
+      out.kind='order'; out.orderId=Number(q); list=o.items.filter(i=>i.uid).slice(0,8).map(i=>[String(i.uid), i.name]); if(o.items.length>8) out.more=o.items.length-8; }
+    else if(/^[A-Za-z0-9._\-\/]+$/.test(q)){ out.kind='unit'; list=[[q, '']]; }
+    else return {error:'Gjurmimi punon me numrin e porosisë ose ID-në e njësisë.'};
+    for(const [uid, name] of list){ const r=await plog({ProductItemUniqueIdentifier:uid}); if(r.error) return r;
+      if(!r.rows.length){ if(out.kind==='unit') return {error:'Njësia '+uid+' nuk u gjet në 365 ditë.'}; out.units.push({uid, name, none:true}); continue; }
+      const c=unitChain(r.rows, out.orderId, uid); if(!out.orderId && c.oid) out.orderId=c.oid; if(c.pid) out.pid=c.pid;
+      out.units.push(Object.assign({uid, name: name || String(r.rows[0].ProductName||'').trim()}, c)); }
+    const cos=out.units.map(u=>u.co).filter(Boolean).sort((a,b)=>a.t-b.t), c9s=out.units.map(u=>u.c9).filter(Boolean).sort((a,b)=>a.t-b.t);
+    out.co= cos[0]||null; out.c9= c9s[0]||null;
+    if(out.orderId && out.co){ const dp=await orderDp(out.orderId, out.pid||'', out.co.at.slice(0,10));
+      if(dp.error) out.podError= dp.error==='auth_expired'? 'sesioni i Delivery Platform ka skaduar' : dp.error;
+      else{ out.pod= dp.scan? {at:dp.scan.at, by:dp.scan.by||''} : null; out.post= dp.delivery? dp.delivery.post : null;
+        out.closed= dp.delivery && dp.delivery.closed? {at:dp.delivery.closed} : null; out.searchedDays=dp.searchedDays; } }
+    return out;
+  }
+  return {search, orderDp, trace, productImage, indexRows, byName, indexInfo:()=>({products:Object.keys(idx.p).length, days:Object.keys(idx.days).sort()})};
 };
