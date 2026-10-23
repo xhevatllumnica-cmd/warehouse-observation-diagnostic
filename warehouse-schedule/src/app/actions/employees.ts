@@ -12,6 +12,7 @@ const employeeSchema = z.object({
   name: z.string().trim().min(1, "Emri është i detyrueshëm").max(60),
   color: hexColor,
   isActive: z.boolean(),
+  positionId: z.string().min(1).nullable().optional().transform((v) => v ?? null),
   aliases: z
     .string()
     .max(300)

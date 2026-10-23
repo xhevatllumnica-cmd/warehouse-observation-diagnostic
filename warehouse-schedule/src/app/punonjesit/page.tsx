@@ -1,15 +1,16 @@
 import type { Metadata } from "next";
 import { EmployeesManager } from "@/components/employees/employees-manager";
 import { PageHeader } from "@/components/layout/page-header";
-import { getEmployees } from "@/lib/data";
+import { getEmployees, getPositions } from "@/lib/data";
 import { db } from "@/lib/db";
 
 export const metadata: Metadata = { title: "Punonjësit" };
 export const dynamic = "force-dynamic";
 
 export default async function EmployeesPage() {
-  const [employees, usage] = await Promise.all([
+  const [employees, positions, usage] = await Promise.all([
     getEmployees(),
+    getPositions(),
     db.scheduleEntry.groupBy({
       by: ["employeeId"],
       _count: { _all: true },
@@ -28,7 +29,7 @@ export default async function EmployeesPage() {
         description={`${active} aktivë · ${employees.length - active} joaktivë`}
       />
       <div className="p-4 md:p-6">
-        <EmployeesManager employees={employees} usage={usageMap} />
+        <EmployeesManager employees={employees} positions={positions} usage={usageMap} />
       </div>
     </>
   );
