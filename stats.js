@@ -182,20 +182,20 @@ function renderStatsBody(d){
   const single=sc.days===1, period=single? h(fmtDateAl(sc.from)) : `${h(fmtDateAl(sc.from))} → ${h(fmtDateAl(sc.to))}`;
   const scope=`${h(sc.warehouse)} · ${h(sc.platform)} · ${period} · turni: ${h(sc.shift)}`;
   const app=statsAppData(sc.from, sc.to);
-  const kpi=(val,lbl,foot,st,src)=>`<div class="card kpi ${st}"><div class="val">${val}</div><div class="lbl">${lbl}</div><div class="foot">${foot}${src?' · <b>'+src+'</b>':''}</div></div>`;
+  const kpi=(val,lbl,foot,st,src,sk)=>`<div class="card kpi ${st}"${sk? srcAttr(sk) : ''}><div class="val">${val}</div><div class="lbl">${lbl}</div><div class="foot">${foot}${src?' · <b>'+src+'</b>':''}</div></div>`;
   const prevLbl=single?'ditës së mëparshme':'periudhës së kaluar';
   const diff=(a,b)=> (a==null||b==null||!b)?'':` (${a>=b?'+':''}${Math.round((a-b)/b*100)}% kundrejt ${prevLbl})`;
   const partialDay=single && t.byDay[0] && t.byDay[0].partial;
   const over24=pa.unmappedBuckets['>24h'];
   const cards=`<div class="grid g-kpi" style="margin-bottom:14px">
     ${single
-      ? kpi(t.avgOrdersPerWorkday!=null?t.avgOrdersPerWorkday:'—', 'Porosi të dala këtë ditë', `target ${cfg.targetOrdersPerDay}${partialDay?' · dita ende në vazhdim':''}${diff(t.avgOrdersPerWorkday,t.prevAvgOrdersPerWorkday)}`, partialDay?'st-na':statsStatus(t.avgOrdersPerWorkday, th.ordersPerDay), 'WMS')
-      : kpi(t.avgOrdersPerWorkday!=null?t.avgOrdersPerWorkday:'—','Porosi të dala / ditë pune', `target ${cfg.targetOrdersPerDay} · mesatare e ${t.workdaysCounted} ditëve të plota${diff(t.avgOrdersPerWorkday,t.prevAvgOrdersPerWorkday)}`, statsStatus(t.avgOrdersPerWorkday, th.ordersPerDay), 'WMS')}
-    ${kpi('—','Same-day shipping', `porosi para cut-off ${h(cfg.cutoff)} të dala po atë ditë · target 100% · vjen në Fazën 2 (SQL)`, 'st-na', 'WMS')}
-    ${kpi('—','Carryover', `porosi të ditës pa check-out deri në fund të ditës · target 0 · vjen në Fazën 2 (SQL)`, 'st-na', 'WMS')}
-    ${kpi(statsFmtMin(pa.medianMin),'Pritja check-in → map (mediana)', `p90 ${statsFmtMin(pa.p90Min)} · ${single?'dita e mëparshme':'periudha e kaluar'} ${statsFmtMin(pa.prevMedianMin)}`, statsStatus(pa.medianMin, th.putawayMedianMin), 'WMS')}
-    ${kpi(over24,'Njësi të pamapuara > 24 orë', `gjithsej ${pa.unmapped} të pamapuara nga check-in-et e periudhës`, statsStatus(over24, th.unmappedOver24h), 'WMS')}
-    ${kpi(app.safety,'Vëzhgime sigurie', 'target 0 · regjistruar në Daily Observation', statsStatus(app.safety, th.safetyObs), 'App')}
+      ? kpi(t.avgOrdersPerWorkday!=null?t.avgOrdersPerWorkday:'—', 'Porosi të dala këtë ditë', `target ${cfg.targetOrdersPerDay}${partialDay?' · dita ende në vazhdim':''}${diff(t.avgOrdersPerWorkday,t.prevAvgOrdersPerWorkday)}`, partialDay?'st-na':statsStatus(t.avgOrdersPerWorkday, th.ordersPerDay), 'WMS', 'wmsLogs')
+      : kpi(t.avgOrdersPerWorkday!=null?t.avgOrdersPerWorkday:'—','Porosi të dala / ditë pune', `target ${cfg.targetOrdersPerDay} · mesatare e ${t.workdaysCounted} ditëve të plota${diff(t.avgOrdersPerWorkday,t.prevAvgOrdersPerWorkday)}`, statsStatus(t.avgOrdersPerWorkday, th.ordersPerDay), 'WMS', 'wmsLogs')}
+    ${kpi('—','Same-day shipping', `porosi para cut-off ${h(cfg.cutoff)} të dala po atë ditë · target 100% · vjen në Fazën 2 (SQL)`, 'st-na', 'WMS', 'wmsOrders')}
+    ${kpi('—','Carryover', `porosi të ditës pa check-out deri në fund të ditës · target 0 · vjen në Fazën 2 (SQL)`, 'st-na', 'WMS', 'wmsOrders')}
+    ${kpi(statsFmtMin(pa.medianMin),'Pritja check-in → map (mediana)', `p90 ${statsFmtMin(pa.p90Min)} · ${single?'dita e mëparshme':'periudha e kaluar'} ${statsFmtMin(pa.prevMedianMin)}`, statsStatus(pa.medianMin, th.putawayMedianMin), 'WMS', 'wmsLogs')}
+    ${kpi(over24,'Njësi të pamapuara > 24 orë', `gjithsej ${pa.unmapped} të pamapuara nga check-in-et e periudhës`, statsStatus(over24, th.unmappedOver24h), 'WMS', 'wmsStock')}
+    ${kpi(app.safety,'Vëzhgime sigurie', 'target 0 · regjistruar në Daily Observation', statsStatus(app.safety, th.safetyObs), 'App', 'appObs')}
   </div>`;
   const maxO=Math.max(1,...t.byDay.map(x=>x.orders));
   const daily=`<div class="card" style="margin-bottom:14px"><div style="display:flex;align-items:center"><h3 style="margin:0">5.1 Vëllimi — porosi dhe njësi të dala për ditë</h3><button class="btn sm ghost no-print" data-csv="daily" style="margin-left:auto">⬇ CSV</button></div>

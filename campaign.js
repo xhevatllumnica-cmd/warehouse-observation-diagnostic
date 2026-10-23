@@ -182,12 +182,12 @@ function campTotalsCards(){
   // the orders CREATED in the campaign window, whenever processed (also after the end), so the backlog can reach 0 (18.10.2026)
   const done= DN? DN.filter(r=>r.c>=launchKey && r.c<=c.end+' 23').reduce((a,r)=>a+num(r.n),0)+completeNoCO : null, left= created!=null&&done!=null? Math.max(0, created-done) : null;
   const period=`${h(campDayName(c.start))} ${h(c.launchTime||'00:00')} → ${h(campDayName(c.end))} 24:00`;
-  const card=(tint,val,lbl,foot)=>`<div class="card kpi" style="background:color-mix(in srgb, ${tint} 9%, var(--panel));border-color:color-mix(in srgb, ${tint} 30%, var(--line))"><div class="val">${val}</div><div class="lbl">${lbl}</div><div class="foot">${foot}</div></div>`;
+  const card=(tint,val,lbl,foot,src)=>`<div class="card kpi"${src? srcAttr(src) : ''} style="background:color-mix(in srgb, ${tint} 9%, var(--panel));border-color:color-mix(in srgb, ${tint} 30%, var(--line))"><div class="val">${val}</div><div class="lbl">${lbl}</div><div class="foot">${foot}</div></div>`;
   const loading='<span class="small muted">po lexohet…</span>';
   return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px">
-    ${card('var(--accent)', created!=null? campFmt(created) : (campReal? '—' : loading), 'Porosi online — gjithë kampanja', period+(cancelled? ' · pa '+campFmt(cancelled)+' të anuluara' : '')+' · WMS'+(campReal&&campReal.at? ' deri '+h(fmtTime(campReal.at)) : ''))}
-    ${card('var(--ok)', done!=null? campFmt(done) : (campReal? '—' : loading), 'Porosi të procesuara — gjithë kampanja', period+' · vetëm porositë e krijuara nga '+h(campDayName(c.start))+' '+h(c.launchTime||'00:00')+' · check-out i përfunduar nga stafi'+(completeNoCO? ' + '+campFmt(completeNoCO)+' të përfunduara pa kaluar nga depoja (status 2)' : ''))}
-    ${card('var(--crit)', left!=null? campFmt(left) : (campReal? '—' : loading), 'Backlog i mbetur — gjithë kampanja', 'online − të procesuara'+(left!=null? ' = '+campFmt(created)+' − '+campFmt(done) : ''))}
+    ${card('var(--accent)', created!=null? campFmt(created) : (campReal? '—' : loading), 'Porosi online — gjithë kampanja', period+(cancelled? ' · pa '+campFmt(cancelled)+' të anuluara' : '')+' · WMS'+(campReal&&campReal.at? ' deri '+h(fmtTime(campReal.at)) : ''), 'wmsOrders')}
+    ${card('var(--ok)', done!=null? campFmt(done) : (campReal? '—' : loading), 'Porosi të procesuara — gjithë kampanja', period+' · vetëm porositë e krijuara nga '+h(campDayName(c.start))+' '+h(c.launchTime||'00:00')+' · check-out i përfunduar nga stafi'+(completeNoCO? ' + '+campFmt(completeNoCO)+' të përfunduara pa kaluar nga depoja (status 2)' : ''), 'wmsLogs')}
+    ${card('var(--crit)', left!=null? campFmt(left) : (campReal? '—' : loading), 'Backlog i mbetur — gjithë kampanja', 'online − të procesuara'+(left!=null? ' = '+campFmt(created)+' − '+campFmt(done) : ''), 'wmsOrders')}
   </div>`;
 }
 /* live cards (the lead, 15.10.2026) from the agent's /camp/live: POD done from the window start, orders past check-out
@@ -352,7 +352,7 @@ function campLive(box){
   const nowMin=new Date().getHours()*60+new Date().getMinutes();
   const expNow=date===campToday()?campExpWin(day,date,nowMin):(date<campToday()?campExpWin(day,date,1440):null), rw=campRealDay(date);
   const isToday=date===campToday(), L=date<=campToday()&&wmsOnAgent()? campLiveLoad(date) : null, L0= L? '—' : '<span class="small muted">po lexohet…</span>';
-  const kc=(val,lbl,foot,cls)=>`<div class="card kpi"><div class="val ${cls||''}">${val}</div><div class="lbl">${lbl}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
+  const kc=(val,lbl,foot,cls,src)=>`<div class="card kpi"${src? srcAttr(src) : ''}><div class="val ${cls||''}">${val}</div><div class="lbl">${lbl}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
   const devCls=ev&&ev.dev!=null?(ev.dev>=num(c.triggerPct,7)?'warn':(ev.dev<=-20?'warn':'ok')):'';
   const verify=c.context.verify||[];
   box.innerHTML=`<div class="filters" style="align-items:center">${campDayPicker('campLiveDay', date, true)}
@@ -362,12 +362,12 @@ function campLive(box){
     ${verify.length?`<div class="note warn"><b>Për t'u verifikuar:</b> ${verify.map(h).join(' · ')}</div>`:''}
     ${campRealCard(date)}
     <div class="grid g-kpi" style="margin-bottom:14px">
-      ${last? kc(campFmt(last.ordersIn),'Porosi të hyra deri '+h(last.time), ev&&ev.expected!=null?'pritej '+campFmt(ev.expected)+(ev.dev!=null?' ('+(ev.dev>=0?'+':'')+Math.round(ev.dev)+'%)':''):'', devCls)
-        : kc(rw&&rw.has?campFmt(rw.cr):'—','Porosi të hyra nga '+h(campHHMM(campWinStart(date)))+' (WMS)', expNow!=null?'pritej'+(date===campToday()?' deri tani':'')+' ~'+campFmt(expNow):'')}
+      ${last? kc(campFmt(last.ordersIn),'Porosi të hyra deri '+h(last.time), ev&&ev.expected!=null?'pritej '+campFmt(ev.expected)+(ev.dev!=null?' ('+(ev.dev>=0?'+':'')+Math.round(ev.dev)+'%)':''):'', devCls, 'wmsOrders')
+        : kc(rw&&rw.has?campFmt(rw.cr):'—','Porosi të hyra nga '+h(campHHMM(campWinStart(date)))+' (WMS)', expNow!=null?'pritej'+(date===campToday()?' deri tani':'')+' ~'+campFmt(expNow):'', '', 'wmsOrders')}
       ${kc(campFmt(day&&day.forecast),'Parashikimi i ditës', calc&&calc.wh!=null?campFmt(calc.wh)+' për depon ('+c.whSharePct+'%)':'')}
-      ${kc(L&&L.pod!=null?campFmt(L.pod):L0,'Të përfunduara (POD)', L&&L.pod!=null?'porosi me skanim POD nga '+h(campHHMM(campWinStart(date)))+' · Delivery Platform, stafi në orar':(L&&L.podError?'POD: '+h(L.podError):''))}
-      ${kc(L&&L.pending!=null?campFmt(num(L.pending)+num(L.ready)):(isToday?L0:'—'),'Backlog tani', L&&L.pending!=null?'pa POD pas check-out: <b>'+campFmt(L.pending)+'</b> · Ready to Complete: <b>'+(L.ready!=null?campFmt(L.ready):'—')+'</b> · '+h(fmtTime(L.pendingAt||L.at)):(isToday?(L&&L.pendingError?'POD: '+h(L.pendingError):''):'vetëm për sot (real time)'), L&&L.pending!=null&&num(c.kpi.backlogEnd)&&num(L.pending)+num(L.ready)>num(c.kpi.backlogEnd)?'warn':'')}
-      ${kc(L&&L.tempo&&L.tempo.ordersPerHour!=null?L.tempo.ordersPerHour+' porosi/orë':L0,'Ritmi real', L&&L.tempo&&L.tempo.ordersPerHour!=null?'<b>'+L.tempo.productsPerHour+'</b> produkte/orë · '+(L.tempo.window==='last2h'?'2 orët e fundit (si Flow 2h)':'mesatarja nga '+h(campHHMM(campWinStart(date)))+' deri te check-out-i i fundit'):(L&&L.tempoError?'WMS: '+h(L.tempoError):''))}
+      ${kc(L&&L.pod!=null?campFmt(L.pod):L0,'Të përfunduara (POD)', (L&&L.pod!=null?'porosi me skanim POD nga '+h(campHHMM(campWinStart(date)))+' · Delivery Platform, stafi në orar':(L&&L.podError?'POD: '+h(L.podError):'')), '', 'dpScanned')}
+      ${kc(L&&L.pending!=null?campFmt(num(L.pending)+num(L.ready)):(isToday?L0:'—'),'Backlog tani', L&&L.pending!=null?'pa POD pas check-out: <b>'+campFmt(L.pending)+'</b> · Ready to Complete: <b>'+(L.ready!=null?campFmt(L.ready):'—')+'</b> · '+h(fmtTime(L.pendingAt||L.at)):(isToday?(L&&L.pendingError?'POD: '+h(L.pendingError):''):'vetëm për sot (real time)'), L&&L.pending!=null&&num(c.kpi.backlogEnd)&&num(L.pending)+num(L.ready)>num(c.kpi.backlogEnd)?'warn':'', 'dpRealtime')}
+      ${kc(L&&L.tempo&&L.tempo.ordersPerHour!=null?L.tempo.ordersPerHour+' porosi/orë':L0,'Ritmi real', L&&L.tempo&&L.tempo.ordersPerHour!=null?'<b>'+L.tempo.productsPerHour+'</b> produkte/orë · '+(L.tempo.window==='last2h'?'2 orët e fundit (si Flow 2h)':'mesatarja nga '+h(campHHMM(campWinStart(date)))+' deri te check-out-i i fundit'):(L&&L.tempoError?'WMS: '+h(L.tempoError):''), '', 'wmsLogs')}
       ${kc(ev&&ev.staffNeeded!=null?ev.staffNeeded:'—','Persona outbound të nevojshëm tani', 'me '+c.ordersPerHour+' porosi/orë/person'+(last&&last.staff!=null?' · prezent: '+last.staff:''))}
       ${kc(calc?calc.total||'—':'—','Stafi i planifikuar', day?`outbound ${num(day.outbound)} (${num(day.s1)} / ${num(day.s2)}) · inbound ${num(day.inbound)}`:'')}
       ${(()=>{ // simple math (the lead, 18.10.2026): orders created that day (WMS) − CAMPAIGN orders processed that day — only orders
@@ -377,7 +377,7 @@ function campLive(box){
         const val= created!=null&&done!=null? Math.max(0, created-done) : null;
         const foot= val!=null? `krijuar <b>${campFmt(created)}</b> − procesuar <b>${campFmt(done)}</b> (vetëm porosi të kampanjës)${rw&&rw.cx? ' · pa '+campFmt(rw.cx)+' të anuluara' : ''}${isToday?' · deri tani':''}${campWinStart(date)?' · nga '+h(campHHMM(campWinStart(date))):''} · objektivi ≤ ${campFmt(goal)}`
           : (created==null? 'porositë e krijuara: pa të dhëna nga WMS ende' : 'porositë e procesuara: pa të dhëna nga WMS ende');
-        return kc(val!=null?campFmt(val):(campReal?'—':L0),'Backlog në fund të ditës'+(isToday?' (deri tani)':''), foot, val!=null&&goal? (val>goal?'warn':'ok') : ''); })()}
+        return kc(val!=null?campFmt(val):(campReal?'—':L0),'Backlog në fund të ditës'+(isToday?' (deri tani)':''), foot, val!=null&&goal? (val>goal?'warn':'ok') : '', 'wmsOrders'); })()}
     </div>
     ${campTotalsCards()}
     ${wmsOnAgent()? campChatBoxHTML() : ''}
@@ -386,10 +386,10 @@ function campLive(box){
         <div class="hint">— vija blu: parashikimi · - - portokalli: pragu i skenarit të lartë (+${c.triggerPct}%) · vija e errët: porositë e krijuara në WMS · pikat jeshile: raportet orare.${campWinStart(date)?' Dita e nisjes numërohet nga ora '+h(campHHMM(campWinStart(date)))+' (parashikimi dhe WMS nga ajo orë).':''}${day&&day.curve==='launch'?' Kurba e ditës së nisjes është zhvendosur te ora '+h(c.launchTime)+' (SUPOZIM).':''}</div></div>
       <div class="card"><h3>Live nga WMS <span class="sub">${w.snap?'snapshot '+h(fmtTime(w.snap.at)):'pa snapshot sot'}</span></h3>
         <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px">
-          ${kc(campFmt(w.prepared),'Porosi të përgatitura', w.operators?w.operators+' operatorë':'')}
-          ${kc(campFmt(w.checkedOut),'Produkte check-out','')}
-          ${kc(campFmt(w.checkedIn),'Produkte check-in','')}
-          ${kc(w.snap?campFmt(w.snap.ordersInProcessing):'—','Orders in processing', w.snap?'Ready to complete: '+campFmt(w.snap.ordersReadyToUnmap):'')}
+          ${kc(campFmt(w.prepared),'Porosi të përgatitura', w.operators?w.operators+' operatorë':'', '', 'wmsPrepared')}
+          ${kc(campFmt(w.checkedOut),'Produkte check-out','', '', 'wmsLogs')}
+          ${kc(campFmt(w.checkedIn),'Produkte check-in','', '', 'wmsLogs')}
+          ${kc(w.snap?campFmt(w.snap.ordersInProcessing):'—','Orders in processing', w.snap?'Ready to complete: '+campFmt(w.snap.ordersReadyToUnmap):'', '', 'wmsOrders')}
         </div>
         ${w.snaps.length>1?(()=>{ // all 24 hours (the lead, 16.10.2026): per hour the last snapshot taken in it (every ~15 min), empty hours shown as —
           const byH=Array.from({length:24},()=>null); w.snaps.forEach(s=>{ byH[new Date(s.at).getHours()]=s; });

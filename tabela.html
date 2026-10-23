@@ -93,6 +93,7 @@ dialog select{ flex:1; background:var(--bg); color:var(--text); border:1px solid
   <div id="d1List"></div>
   <div class="row" style="margin-top:10px"><select id="d1Add"></select><button class="btn" id="d1AddBtn">+ Shto</button></div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" id="d1Cancel">Anulo</button><button class="btn primary" id="d1Save">Ruaj</button></div></dialog>
+<script src="/sources.js?v=2"></script>
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -125,19 +126,19 @@ function draw(){
   const ops=(L.ops||[]); const coOrd=ops.reduce((a,o)=>a+o.orders,0), coH=ops.reduce((a,o)=>a+o.coHours,0);
   let cards='';
   if(C.available){ const y=C.carry;
-    cards+=`<div class="card ${y.stillOpen>0?'warn':'ok'}"><div class="lbl">Carryover i djeshëm (${dmy(y.date)})</div><div class="big">${y.carry}</div>
+    cards+=`<div class="card ${y.stillOpen>0?'warn':'ok'}"${srcAttr('wmsOrders')}><div class="lbl">Carryover i djeshëm (${dmy(y.date)})</div><div class="big">${y.carry}</div>
       <div class="foot">${y.pct!=null? fmt(y.pct)+' % e '+y.ready+' të gatshmeve deri 17:30' : ''}<br>dalë sot ${y.outToday} · ende hapur <b>${y.stillOpen}</b>${y.olderOpen? ' · më të vjetra hapur '+y.olderOpen : ''}</div></div>`;
     C.cuts.forEach(c=>{ const mins=c.label==='17:30'? 1050 : parseInt(c.label)*60, late=nowMin>mins && c.open>0, pct=c.ready? Math.round(c.out/c.ready*100) : 0;
       if(!D.past && nowMin < mins-5) return;   // today: a cut-off card appears 5 minutes before its time and stays for the rest of the day
-      cards+=`<div class="card ${late?'warn':''}"><div class="lbl">Gati deri në ${c.label}</div><div class="big">${c.ready}</div>
+      cards+=`<div class="card ${late?'warn':''}"${srcAttr('wmsOrders')}><div class="lbl">Gati deri në ${c.label}</div><div class="big">${c.ready}</div>
         <div class="bar"><i style="width:${pct}%"></i></div><div class="foot">dalë <b>${c.out}</b> · mbetur <b>${c.open}</b>${c.waiting? ' · presin njësi '+c.waiting : ''}</div></div>`; });
-  } else if(D.past) cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Shfaqen vetëm për sot (gjendja aktuale në databazë). Për ditë të kaluara: tavolinat dhe operatorët më poshtë.</div></div>`;
-  else cards+=`<div class="card"><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Vijnë nga databaza e WMS çdo orë (07–22). Ende pa rifreskim sot${C.gen? ' — i fundit '+dmy(C.gen.slice(0,10))+' '+C.gen.slice(11,16) : ''}.</div></div>`;
-  cards+=`<div class="card"><div class="lbl">Porosi të dala ${D.past? 'atë ditë' : 'sot'}</div><div class="big">${L.ordersOut!=null? L.ordersOut : '—'}</div><div class="foot">ekipi: ${coH? fmt(Math.round(coOrd/coH*10)/10) : '—'} porosi/orë aktive</div></div>`;
+  } else if(D.past) cards+=`<div class="card"${srcAttr('wmsOrders')}><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Shfaqen vetëm për sot (gjendja aktuale në databazë). Për ditë të kaluara: tavolinat dhe operatorët më poshtë.</div></div>`;
+  else cards+=`<div class="card"${srcAttr('wmsOrders')}><div class="lbl">Carryover & porositë e gatshme</div><div class="foot" style="margin-top:8px">Vijnë nga databaza e WMS çdo orë (07–22). Ende pa rifreskim sot${C.gen? ' — i fundit '+dmy(C.gen.slice(0,10))+' '+C.gen.slice(11,16) : ''}.</div></div>`;
+  cards+=`<div class="card"${srcAttr('wmsLogs')}><div class="lbl">Porosi të dala ${D.past? 'atë ditë' : 'sot'}</div><div class="big">${L.ordersOut!=null? L.ordersOut : '—'}</div><div class="foot">ekipi: ${coH? fmt(Math.round(coOrd/coH*10)/10) : '—'} porosi/orë aktive</div></div>`;
   // Showroom (16.10.2026): the orders handed over at the showroom that day — Delivery Platform "Merre Vet Report" (GjirafaBox
   // Prishtinë), counted by its "Data" column; below, the WMS "Showroom" orders that left the depot (hourly)
   const SR=D.showroom, PS=D.pickupStore, srOk=SR&&!SR.error;
-  cards+=`<div class="card"><div class="lbl">Showroom (Merre vet)</div><div class="big">${srOk? SR.orders : '—'}</div>`
+  cards+=`<div class="card"${srcAttr('dpMerreVet')}><div class="lbl">Showroom (Merre vet)</div><div class="big">${srOk? SR.orders : '—'}</div>`
     +`<div class="foot">${srOk? `porosi në showroom ${D.past? 'atë ditë' : 'sot'}${SR.first? ' · '+hm(SR.first)+'–'+hm(SR.last) : ''}${SR.prepayments? '<br>nga to parapagesa: '+SR.prepayments : ''}`
       : SR&&SR.error? (SR.error==='auth_expired'? 'Sesioni i Delivery Platform ka skaduar — numri nuk rifreskohet.' : 'Delivery Platform: '+esc(SR.error)) : 'po lexohet…'}`
     +`${PS? `<br>dalë nga depoja (WMS, etiketa Showroom): <b>${PS.n}</b>` : ''}</div></div>`;
@@ -209,12 +210,13 @@ function drawStations(){
     const next=later.map(p=>`<div class="prev faint">${esc(fn(p.op))}</div>`).join('');
     const pl=(c.people||[]).map(p=>p.placed), how= c.viaPresence||c.auto||!(c.people||[]).length? '' : (K==='map'||K==='pod'||ret) && !pl.includes('manual')? '<div class="foot faint" title="Plotësohet vetë nga puna e bërë sot në këtë proces">⚙ vendosur automatikisht</div>' : pl.includes('manual')&&pl.includes('auto')? '<div class="foot faint">⚙ automatik + caktuar në tabelë</div>' : pl.includes('auto')? '<div class="foot faint" title="Tavolina e zakonshme e operatorit ose e para e lirë — kliko për ta korrigjuar">⚙ vendosur automatikisht</div>' : pl.includes('manual')? '<div class="foot faint">✎ caktuar në tabelë për këtë ditë</div>' : '';
     const offs='';   // no "on leave" from the schedule (16.10.2026)
-    return `<div class="card stcard ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1" title="Plotësohet automatikisht: kush punoi në këtë proces pa qenë i caktuar në një tavolinë"' : 'title="Operatorët vendosen automatikisht — kliko vetëm për korrigjim"'}>
+    const sk= K==='pod'? 'dpScanned' : ret? 'dpRefusals' : 'wmsLogs';   // the card's source (24.10.2026): a card with its own click (correction) gets ↗ in its corner
+    return `<div class="card stcard has-src-ico ${cur?'busy':''}" data-st="${esc(c.name)}" ${c.auto? 'data-auto="1"'+srcAttr(sk) : 'title="Operatorët vendosen automatikisht — kliko vetëm për korrigjim"'}>${c.auto? '' : srcIcon(sk)}
       <div class="lbl">${esc(stTitle(c.name))}</div>${c.table? '<div class="foot faint">'+(c.ip? 'PC '+esc(c.ip) : 'pa PC')+(c.viaPresence? ' · <span style="color:var(--ok)">automatik</span>' : '')+'</div>' : ''}<div class="big">${big} <span class="unit">${K==='pod'||ret? 'porosi' : 'produkte'}</span></div><div class="foot">${D.past? unit.replace(' sot',' atë ditë') : unit}</div>${extra}${top}${prev}${next}${offs}${how}</div>`; }).join('');
   /* Picking (the lead, 16.10.2026): a work-area card right after POD. The WMS web app has no picking page, so the pick scans
      (PickSessionScan) come from the WMS database through WMS Pulse, refreshed every hour 07–22 (about :10) */
   const PK=D.picks, H=new Date().getHours();
-  const pkCard= `<div class="card stcard ${PK&&PK.picks? 'busy' : ''}" data-auto="1" title="Plotësohet vetë nga sesionet e picking-ut në WMS (databaza, çdo orë)">
+  const pkCard= `<div class="card stcard ${PK&&PK.picks? 'busy' : ''}" data-auto="1"${srcAttr('appPicking')}>
       <div class="lbl">Picking</div>
       <div class="big">${PK? PK.picks : '—'} <span class="unit">produkte</span></div><div class="foot">njësi të skanuara ${D.past? 'atë ditë' : 'sot'} në sesionet e picking-ut (WMS)</div>
       ${!PK? '<div class="foot faint">Ende pa të dhëna picking nga WMS.</div>' : `
