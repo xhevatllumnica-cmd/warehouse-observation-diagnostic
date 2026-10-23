@@ -56,7 +56,7 @@ function retDraw(){
   $$('[data-retv]').forEach(b=>b.onclick=()=>{ retView=b.dataset.retv; retQuery=''; retLimit=200; retDraw(); });
   ({supplier:()=>retDrawBatches(body,M,1), transfer:()=>retDrawBatches(body,M,2), customer:()=>retDrawCustomer(body,M), stats:()=>retDrawStats(body,M)})[retView]();
 }
-const retKpi=(lbl,val,foot,cls)=>`<div class="kpi ${cls||''}"><div class="lbl">${lbl}</div><div class="val">${val}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
+const retKpi=(lbl,val,foot,cls,src)=>`<div class="kpi ${cls||''}"${srcAttr(src||'wmsReturns')}><div class="lbl">${lbl}</div><div class="val">${val}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
 const retTop=(arr,key,n)=>{ const c={}; arr.forEach(x=>{ const k=key(x); c[k]=(c[k]||0)+1; }); return Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,n||8); };
 function retSearchBox(ph){ return `<input type="search" id="retQ" placeholder="${h(ph)}" value="${h(retQuery)}" style="width:240px;min-height:32px">`; }
 function retWireSearch(){ const el=$('#retQ'); if(el) el.oninput=e=>{ retQuery=e.target.value; clearTimeout(retDraw._t); retDraw._t=setTimeout(()=>{ retDraw(); const x=$('#retQ'); if(x){ x.focus(); x.setSelectionRange(x.value.length,x.value.length); } },250); }; }
@@ -111,8 +111,8 @@ function retDrawCustomer(body, M){
   const by=t=>all.filter(x=>x.t===t).length;
   const list=all.filter(x=>(!retDispF||String(x.t)===retDispF) && (!q || [x.pc,x.pn,x.store,x.oid].join(' ').toLowerCase().includes(q)));
   body.innerHTML=`<div class="grid g-kpi" style="margin-bottom:12px">
-      ${retKpi('Produkte me vendim (90 ditë)', all.length.toLocaleString('de-DE'), 'nga paneli "Returns" i WMS-it')}
-      ${[21,22,20,29].map(t=>retKpi(RET_DISP[t][0], by(t).toLocaleString('de-DE'), all.length? Math.round(by(t)/all.length*100)+'%' : '', t===20&&by(20)/Math.max(1,all.length)>0.2?'st-warn':'')).join('')}</div>
+      ${retKpi('Produkte me vendim (90 ditë)', all.length.toLocaleString('de-DE'), 'nga paneli "Returns" i WMS-it', '', 'wmsReturnsDash')}
+      ${[21,22,20,29].map(t=>retKpi(RET_DISP[t][0], by(t).toLocaleString('de-DE'), all.length? Math.round(by(t)/all.length*100)+'%' : '', t===20&&by(20)/Math.max(1,all.length)>0.2?'st-warn':'', 'wmsReturnsDash')).join('')}</div>
     <div class="card"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><b>Produktet e kthyera nga klientët — ${list.length}</b>
       <select id="retDispF" style="width:auto;min-height:32px;margin-left:auto"><option value="">Vendimi: të gjitha</option>${[21,22,20,29].map(t=>`<option value="${t}" ${retDispF===String(t)?'selected':''}>${RET_DISP[t][0]}</option>`).join('')}</select>
       ${retSearchBox('Kërko kod, emër, dyqan, porosi…')}</div>

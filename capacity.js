@@ -149,14 +149,14 @@ function drawCapacity(){
       <span class="small">Periudha: <b>${h(fmtDateAl(C.from))} → ${h(fmtDateAl(isoMinus1(C.to)))}</b> (12 javë) · same-day: 8 javë</span>
       <span class="small faint" style="margin-left:auto">Lexuar nga WMS: <b style="${(Date.now()-at)/60000>150?'color:var(--warn)':''}">${h(at.toLocaleString())}</b> · ngarkesa 12-javore numërohet me javë të plota; puna sipas personit deri ${h(fmtDateAl(C.opsTo||isoMinus1(C.to)))}</span></div></div>`;
   const kpis=`<div class="grid g-kpi" style="margin-bottom:12px">
-      ${kpiCard(f1(R.fteA('avg')),'FTE · ditë mesatare',`me ${cfg.absence}% mungesa · ${f1(R.fte('avg'))} pa rezervë`)}
-      ${kpiCard(f1(R.fteA('p90')),'FTE · ditë P90','')}
-      ${kpiCard(f1(R.fteA('target')),'FTE · targeti '+f0(cfg.target)+'/ditë','')}
-      ${kpiCard(f1(R.fteA('peak')),'FTE · ditë piku','p.sh. Black Friday', R.fteA('peak')>R.available?'crit':'')}
-      ${kpiCard(f1(R.available),'FTE të disponueshme', useS? `${cfg.roster} operatorë në Orarin e punës × (1 − ${cfg.absence}%) · ${cfg.present} ${ST.present==null? 'të pranishëm/ditë (pa orar për ditët në vijim)' : ST.presentDay===todayStr()? 'në orar sot' : 'në orar '+fmtDateAl(ST.presentDay).slice(0,5)+' (sot askush në orar)'}` : `${cfg.roster} në roster × (1 − ${cfg.absence}%) · ${cfg.present} të pranishëm/ditë`)}
-      ${kpiCard(+cfg.present>0? f0(R.tot('avg')/ (cfg.present*(cfg.shiftHours-cfg.breakMin/60))*100)+'%' : '—','Shfrytëzimi i orëve të pranisë','ngarkesa standarde ÷ orët e pranisë', 'warn')}
-      ${kpiCard(pct(last)!=null? pct(last)+'%' : '—','Same-day (java e fundit)', first&&last? `java ${first.wk}: ${pct(first)}% → java ${last.wk}: ${pct(last)}%` : '', pct(last)!=null&&pct(last)<95?'warn':'ok')}
-      ${kpiCard(cpo!=null? '€'+cpo.toFixed(2) : '—','Kosto / porosi (piece-rate)', pay.mo? `${pay.mo}/${pay.y}: €${f0(pay.tc)} ÷ ${f0(pay.orders)} porosi` : '')}
+      ${srcCard('appPulse',kpiCard(f1(R.fteA('avg')),'FTE · ditë mesatare',`me ${cfg.absence}% mungesa · ${f1(R.fte('avg'))} pa rezervë`))}
+      ${srcCard('appPulse',kpiCard(f1(R.fteA('p90')),'FTE · ditë P90',''))}
+      ${srcCard('appPulse',kpiCard(f1(R.fteA('target')),'FTE · targeti '+f0(cfg.target)+'/ditë',''))}
+      ${srcCard('appPulse',kpiCard(f1(R.fteA('peak')),'FTE · ditë piku','p.sh. Black Friday', R.fteA('peak')>R.available?'crit':''))}
+      ${srcCard('appPulse',kpiCard(f1(R.available),'FTE të disponueshme', useS? `${cfg.roster} operatorë në Orarin e punës × (1 − ${cfg.absence}%) · ${cfg.present} ${ST.present==null? 'të pranishëm/ditë (pa orar për ditët në vijim)' : ST.presentDay===todayStr()? 'në orar sot' : 'në orar '+fmtDateAl(ST.presentDay).slice(0,5)+' (sot askush në orar)'}` : `${cfg.roster} në roster × (1 − ${cfg.absence}%) · ${cfg.present} të pranishëm/ditë`))}
+      ${srcCard('appPulse',kpiCard(+cfg.present>0? f0(R.tot('avg')/ (cfg.present*(cfg.shiftHours-cfg.breakMin/60))*100)+'%' : '—','Shfrytëzimi i orëve të pranisë','ngarkesa standarde ÷ orët e pranisë', 'warn'))}
+      ${srcCard('appPulse',kpiCard(pct(last)!=null? pct(last)+'%' : '—','Same-day (java e fundit)', first&&last? `java ${first.wk}: ${pct(first)}% → java ${last.wk}: ${pct(last)}%` : '', pct(last)!=null&&pct(last)<95?'warn':'ok'))}
+      ${srcCard('appPulse',kpiCard(cpo!=null? '€'+cpo.toFixed(2) : '—','Kosto / porosi (piece-rate)', pay.mo? `${pay.mo}/${pay.y}: €${f0(pay.tc)} ÷ ${f0(pay.orders)} porosi` : ''))}
     </div>`;
   const demand=`<div class="card" style="margin-bottom:12px"><h3>Ngarkesa <span class="sub">ditë pune (fundjava veç)</span></h3><div style="overflow-x:auto"><table style="font-size:12.5px;max-width:860px">
       <thead><tr><th></th><th>Mesatarja</th><th>P90</th><th>Maksimumi</th><th>Fundjavë (mes.)</th></tr></thead><tbody>
@@ -231,8 +231,8 @@ function drawCapacity(){
   const PC=capPeriodCost(C, per, cfg);
   const costPer= !PC? `<div class="card" style="margin:0"><h3>Kosto për porosi <span class="sub">${h(per.label)}</span></h3><div class="empty">Të dhënat ditore vijnë me rifreskimin e radhës nga WMS.</div></div>`
     : `<div class="card" style="margin:0"><h3>Kosto për porosi <span class="sub">${h(per.label)} · ${h(fmtDateAl(per.from))} – ${h(fmtDateAl(per.to))}</span></h3>
-    <div class="grid g-kpi" style="margin-bottom:8px">${kpiCard(PC.orders? '€'+(PC.piece/PC.orders).toFixed(2) : '—','Piece-rate / porosi', `€${f0(PC.piece)} ÷ ${f0(PC.orders)} porosi`)}
-      ${PC.base!=null? kpiCard(PC.orders? '€'+((PC.piece+PC.base)/PC.orders).toFixed(2) : '—','Gjithsej / porosi', `me pagën bazë €${f0(PC.base)} (${f0(PC.personDays)} ditë-njeri × ${cfg.shiftHours} h × €${cfg.hourlyCost})`) : ''}</div>
+    <div class="grid g-kpi" style="margin-bottom:8px">${srcCard('appPulse',kpiCard(PC.orders? '€'+(PC.piece/PC.orders).toFixed(2) : '—','Piece-rate / porosi', `€${f0(PC.piece)} ÷ ${f0(PC.orders)} porosi`))}
+      ${PC.base!=null? srcCard('appPulse',kpiCard(PC.orders? '€'+((PC.piece+PC.base)/PC.orders).toFixed(2) : '—','Gjithsej / porosi', `me pagën bazë €${f0(PC.base)} (${f0(PC.personDays)} ditë-njeri × ${cfg.shiftHours} h × €${cfg.hourlyCost})`)) : ''}</div>
     <table style="font-size:12px;max-width:520px"><thead><tr><th>Veprimi</th><th>Njësi</th><th>Çmimi</th><th>Kosto</th></tr></thead><tbody>
       ${PC.lines.map(l=>`<tr><td>${h(l.name)}</td><td>${f0(l.units)}</td><td class="faint">${h(l.price)}</td><td><b>€${f0(l.cost)}</b></td></tr>`).join('')}
       <tr style="font-weight:700"><td>Gjithsej</td><td></td><td></td><td>€${f0(PC.piece)}</td></tr></tbody></table>

@@ -95,7 +95,7 @@ function shpDraw(){
   const arrived=rows.filter(x=>x.arr), late=rows.filter(x=>x.state==='late'), overdue=rows.filter(x=>x.state==='overdue'), coming=rows.filter(x=>x.state==='transit'||x.state==='planned');
   const units=rows.reduce((a,x)=>a+(+x.units||0),0), cost=rows.reduce((a,x)=>a+(+x.pr||0),0), pal=rows.reduce((a,x)=>a+(+x.pal||0),0);
   const tr=arrived.map(x=>x.transit).filter(v=>v!=null&&v>=0).sort((a,b)=>a-b), med=tr.length? tr[Math.floor(tr.length/2)] : null;
-  const kpi=(lbl,val,foot,cls)=>`<div class="kpi ${cls||''}"><div class="lbl">${lbl}</div><div class="val">${val}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
+  const kpi=(lbl,val,foot,cls)=>`<div class="kpi ${cls||''}"${srcAttr('wmsShip')}><div class="lbl">${lbl}</div><div class="val">${val}</div>${foot?`<div class="foot">${foot}</div>`:''}</div>`;
   const kpis=`<div class="grid g-kpi" style="margin-bottom:12px">
       ${kpi('Ndalesa në rrugë', rows.length.toLocaleString('de-DE'), SHP_CAT[shpTab].desc)}
       ${kpi('Pritet sot', rows.filter(x=>(x.eta||'').slice(0,10)===todayStr()).length, 'data e pritur e mbërritjes: sot')}

@@ -14,6 +14,9 @@ const SRC={
   wmsStock:    {label:'WMS · Inventory',                  url:SRC_WMS+'/Warehouse/ProductsStock?focusedMenu=ProductsStock'},
   wmsReturns:  {label:'WMS · Product Transfer/Return',    url:SRC_WMS+'/ReturnProcess/Returns?focusedMenu=ReturnHistory'},
   wmsBulk:     {label:'WMS · Bulk Check-In',              url:SRC_WMS+'/CheckInBulk?focusedMenu=CheckInBulkIndex'},
+  wmsCheckIn:  {label:'WMS · Product Check-In (furnizimet)', url:SRC_WMS+'/CheckIn?focusedMenu=CheckInIndex'},
+  wmsShip:     {label:'WMS · Track Shipments',            url:SRC_WMS+'/Shipments?focusedMenu=ShipmentsList'},
+  wmsReturnsDash:{label:'WMS · Returns',                  url:SRC_WMS+'/Product/ReturnsDashboard?focusedMenu=ReturnsDashboard'},
   dpScanned:   {label:'Delivery Platform · Scanned Orders', url:SRC_DP+'/AcceptDelivery/ScannedOrders'},
   dpRealtime:  {label:'Delivery Platform · Real Time POD Orders', url:SRC_DP+'/Delivery/RealTimePodOrders'},
   dpStats:     {label:'Delivery Platform · POD Delivery Stats', url:SRC_DP+'/Delivery'},
@@ -27,6 +30,8 @@ const SRC={
   appCampaign: {label:'app · Kampanja', hash:'#campaign'},
 };
 function srcAttr(key){ const s=SRC[key]; return s? ` data-src="${key}" title="Kliko: hap burimin — ${s.label.replace(/"/g,'&quot;')}"` : ''; }
+/* a card already built by a module's own helper (kpiCard, kpi …) → the same card with its source on its outer element */
+function srcCard(key, html){ return SRC[key]? String(html).replace(/^(\s*<[a-zA-Z]+)/, m=>m+srcAttr(key)) : html; }
 function srcIcon(key){ const s=SRC[key]; return s? `<span class="src-ico" data-src="${key}" title="Hap burimin — ${s.label.replace(/"/g,'&quot;')}">↗</span>` : ''; }
 function srcOpen(key){
   const s=SRC[key]; if(!s) return;

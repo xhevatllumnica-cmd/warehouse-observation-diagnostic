@@ -72,12 +72,12 @@ function drawInboundWms(){
   const cms=all.filter(b=>day(b)>=yIso && b.cm!=null), cmAvg=cms.length? cms.reduce((a,b)=>a+b.cm*b.mp,0)/Math.max(1,cms.reduce((a,b)=>a+b.mp,0)) : null;
   const mis=all.filter(b=>b.flags.some(f=>/fatura \(/.test(f[1]))).length, noCi=all.filter(b=>!b.n && (now-inbT(b.rcv))>2*3600000).length;
   const kpis=`<div class="grid g-kpi" style="margin-bottom:12px">
-      ${kpiCard(td.length,'Furnizime sot',`${fmtNum(tdUnits)} njësi të check-in-uara`)}
-      ${kpiCard(tdUnits? Math.round(tdX/tdUnits*100)+'%' : '—','Cross-dock sot',`${fmtNum(tdX)} njësi direkt te porositë`)}
-      ${kpiCard(fmtNum(awAll),'Njësi në pritje të mapimit','në të gjitha furnizimet e hapura', awAll>0?'warn':'')}
-      ${kpiCard(cmAvg!=null? inbDur(cmAvg) : '—','Check-in → map (dje + sot)','mesatare e peshuar me njësitë')}
-      ${kpiCard(mis,'Sasi ≠ fatura','të mbyllura, ose të hapura > 4 orë', mis?'warn':'')}
-      ${kpiCard(noCi,'Pa check-in','furnizime të hapura > 2 orë pa asnjë njësi', noCi?'crit':'')}
+      ${srcCard('wmsCheckIn',kpiCard(td.length,'Furnizime sot',`${fmtNum(tdUnits)} njësi të check-in-uara`))}
+      ${srcCard('wmsLogs',kpiCard(tdUnits? Math.round(tdX/tdUnits*100)+'%' : '—','Cross-dock sot',`${fmtNum(tdX)} njësi direkt te porositë`))}
+      ${srcCard('wmsStock',kpiCard(fmtNum(awAll),'Njësi në pritje të mapimit','në të gjitha furnizimet e hapura', awAll>0?'warn':''))}
+      ${srcCard('wmsLogs',kpiCard(cmAvg!=null? inbDur(cmAvg) : '—','Check-in → map (dje + sot)','mesatare e peshuar me njësitë'))}
+      ${srcCard('wmsCheckIn',kpiCard(mis,'Sasi ≠ fatura','të mbyllura, ose të hapura > 4 orë', mis?'warn':''))}
+      ${srcCard('wmsCheckIn',kpiCard(noCi,'Pa check-in','furnizime të hapura > 2 orë pa asnjë njësi', noCi?'crit':''))}
     </div>`;
   const daily=(inbWms.daily||[]), mxN=Math.max(1,...daily.map(d=>d.n));
   const trend=daily.length? `<details style="margin-bottom:12px"><summary class="small" style="cursor:pointer"><b>Trendi 14 ditë</b> — furnizime, njësi, cross-dock dhe koha check-in → map</summary>

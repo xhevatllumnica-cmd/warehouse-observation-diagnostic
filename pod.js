@@ -78,12 +78,12 @@ function drawPod(){
   const cash=out.filter(x=>isCash(x)&&isDelivered(x)), due=cash.reduce((a,x)=>a+(+x.price||0),0), got=cash.reduce((a,x)=>a+podCollected(x),0);
   const late=items.filter(x=>x.moreThan24HENisur||x.moreThan24HNePoste).length;
   const kpis=`<div class="grid g-kpi" style="margin-bottom:12px">
-      ${kpiCard(j.deliveries.length,'Dërgesa (kurierë × ditë)',`${new Set(j.deliveries.map(d=>d.driver)).size} kurierë`)}
-      ${kpiCard(fmtNum(n),'Porosi për dorëzim',`${fmtNum(del)} të dorëzuara${other?` · +${other} kthime / pickup`:''}`)}
-      ${kpiCard(n? Math.round(del/n*100)+'%' : '—','Shkalla e dorëzimit',`${fmtNum(tr)} në rrugë${pp?` (${pp} në pikë marrjeje)`:''} · ${fmtNum(wt)} pa u nisur`, j.date<todayStr()? (n&&del/n<0.8?'warn':'ok') : '')}
-      ${kpiCard(fmtNum(rf),'Të refuzuara / kthyera', n? Math.round(rf/n*100)+'% e porosive' : '', rf?'warn':'')}
-      ${kpiCard(podMoney(got),'Cash i arkëtuar',`nga ${podMoney(due)} për t'u paguar (porositë cash të dorëzuara)`, got+0.01<due?'warn':'')}
-      ${kpiCard(late,'Vonesa > 24h','e nisur ose në postë mbi 24 orë', late?'crit':'')}
+      ${srcCard('dpStats',kpiCard(j.deliveries.length,'Dërgesa (kurierë × ditë)',`${new Set(j.deliveries.map(d=>d.driver)).size} kurierë`))}
+      ${srcCard('dpStats',kpiCard(fmtNum(n),'Porosi për dorëzim',`${fmtNum(del)} të dorëzuara${other?` · +${other} kthime / pickup`:''}`))}
+      ${srcCard('dpStats',kpiCard(n? Math.round(del/n*100)+'%' : '—','Shkalla e dorëzimit',`${fmtNum(tr)} në rrugë${pp?` (${pp} në pikë marrjeje)`:''} · ${fmtNum(wt)} pa u nisur`, j.date<todayStr()? (n&&del/n<0.8?'warn':'ok') : ''))}
+      ${srcCard('dpRefusals',kpiCard(fmtNum(rf),'Të refuzuara / kthyera', n? Math.round(rf/n*100)+'% e porosive' : '', rf?'warn':''))}
+      ${srcCard('dpStats',kpiCard(podMoney(got),'Cash i arkëtuar',`nga ${podMoney(due)} për t'u paguar (porositë cash të dorëzuara)`, got+0.01<due?'warn':''))}
+      ${srcCard('dpRealtime',kpiCard(late,'Vonesa > 24h','e nisur ose në postë mbi 24 orë', late?'crit':''))}
     </div>`;
   // per courier
   const by={}; items.forEach(x=>{ const k=x.driverName||'—'; const b=by[k]||(by[k]={n:0,del:0,tr:0,wt:0,rf:0,due:0,got:0,late:0}); b.n++; if(isDelivered(x)) b.del++; else if(isRefused(x)) b.rf++; else if(isInTransit(x)) b.tr++; else b.wt++;

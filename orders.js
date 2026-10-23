@@ -65,13 +65,13 @@ function drawOrdersWms(){
   const wUnits=wait.reduce((a,o)=>a+o.u,0), w3=wait.filter(o=>o.a1 && (now-inbT(o.a1))>72*3600000).length;
   const todayIso=todayStr(), umToday=((ordWms.unmaps||[]).find(x=>x.d===todayIso)||{}).n||0;
   const kpis=`<div class="grid g-kpi" style="margin-bottom:12px">
-      ${kpiCard(done.length,'Porosi me check-out sot',`${fmtNum(units)} njësi`)}
-      ${kpiCard(done.length? Math.round(xdOnly/done.length*100)+'%' : '—','Cross-dock',`nga stoku ${done.length-xdOnly-split} · split ${split}`)}
-      ${kpiCard(medWh!=null? inbDur(medWh) : '—','Mediana gati → check-out','koha e depos: nga artikulli i fundit gati')}
-      ${kpiCard(med!=null? inbDur(med) : '—','Mediana porosi → check-out','përfshin pritjen për mallin e shitësit')}
-      ${kpiCard(wait.length,'Porosi në pritje',`${fmtNum(wUnits)} njësi të caktuara, pa check-out`, wait.length?'warn':'')}
-      ${kpiCard(w3,'Në pritje > 3 ditë','njësia e parë e caktuar para 72 orësh', w3?'crit':'')}
-      ${kpiCard(umToday,'Lirime (unmap) sot','njësi të liruara nga porositë', umToday?'warn':'')}
+      ${srcCard('wmsLogs',kpiCard(done.length,'Porosi me check-out sot',`${fmtNum(units)} njësi`))}
+      ${srcCard('wmsLogs',kpiCard(done.length? Math.round(xdOnly/done.length*100)+'%' : '—','Cross-dock',`nga stoku ${done.length-xdOnly-split} · split ${split}`))}
+      ${srcCard('wmsLogs',kpiCard(medWh!=null? inbDur(medWh) : '—','Mediana gati → check-out','koha e depos: nga artikulli i fundit gati'))}
+      ${srcCard('wmsLogs',kpiCard(med!=null? inbDur(med) : '—','Mediana porosi → check-out','përfshin pritjen për mallin e shitësit'))}
+      ${srcCard('wmsOrders',kpiCard(wait.length,'Porosi në pritje',`${fmtNum(wUnits)} njësi të caktuara, pa check-out`, wait.length?'warn':''))}
+      ${srcCard('wmsOrders',kpiCard(w3,'Në pritje > 3 ditë','njësia e parë e caktuar para 72 orësh', w3?'crit':''))}
+      ${srcCard('wmsLogs',kpiCard(umToday,'Lirime (unmap) sot','njësi të liruara nga porositë', umToday?'warn':''))}
     </div>`;
   const by={}; done.forEach(o=>{ const k=o.w||'—'; const x=by[k]||(by[k]={n:0,u:0,first:o.c1,last:o.c1}); x.n++; x.u+=o.u; if(o.c1<x.first) x.first=o.c1; if(o.c1>x.last) x.last=o.c1; });
   const ops=Object.entries(by).sort((a,b)=>b[1].n-a[1].n);
