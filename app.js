@@ -461,6 +461,11 @@ const ROUTES = [
   {sec:'Flows'},
   {id:'kerko', title:'Kërko produkt', ic:'🔎', render:renderProductSearch},
   {id:'picking', title:'Picking', ic:'🧺', render:renderPicking},
+  {id:'checkin', title:'Check-in', ic:'📥', render:renderCheckin},
+  {id:'checkout', title:'Check-out', ic:'📤', render:renderCheckout},
+  {id:'mapp', title:'Mapp', ic:'🗄️', render:renderMapp},
+  {id:'podscan', title:'POD (skanime)', ic:'🧾', render:renderPodScan},
+  {id:'monitor', title:'Monitor', ic:'🖥️', render:renderMonitor},
   {id:'orders', title:'Order Flow', ic:'➜', render:renderOrders},
   {id:'inbound', title:'Product / Inbound Flow', ic:'⇩', render:renderInbound},
   {id:'pod', title:'POD — Proof of Delivery', ic:'🚚', render:renderPod},
@@ -2756,6 +2761,13 @@ function renderWMS(v){
       ? `<div class="hint" style="margin-top:6px;color:var(--crit)">⚠ ${h(cfg.lastError)==='auth_expired'?'Sesioni i WMS ka skaduar (ndodh kur PC-ja rri i fikur / në sleep — serveri e mbyll sesionin). Ngjit cookie-n e re më poshtë; agjenti e provon dhe e ruan vetë.':h(cfg.lastError)}</div>`
       : `<div class="hint" style="margin-top:6px">Të dhënat merren <b>automatikisht</b> nga agjenti lokal (localhost) me sesionin tënd të autorizuar të WMS-it. S'ka hapa manualë.</div>`)
       + `<div class="hint" id="wmsHealthLine" style="margin-top:4px"></div>`
+      // the permanent, cookie-less read through the Gjirafa50 MCP connector (23.10.2026) — the address is kept by the agent only
+      + `<div class="note" id="wmsMcpBox" style="margin-top:8px"><b>Lidhja e përhershme pa cookies — connector-i Gjirafa50</b> · <span id="wmsMcpState" class="small">po kontrollohet…</span>
+           <div class="small muted" style="margin:4px 0">Adresa e connector-it dhe klienti i agjentit te login.gjirafa.com (client ID + secret, nga administratori i login-it). Ruhen vetëm te agjenti në këtë PC dhe nuk shfaqen më këtu; një fushë bosh mban vlerën e ruajtur.</div>
+           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="wmsMcpUrl" placeholder="https://mcp-server.gjirafa50.tech/mcp" autocomplete="off" style="flex:2;min-width:240px">
+             <input id="wmsMcpCid" placeholder="client ID" autocomplete="off" style="flex:1;min-width:140px"><input id="wmsMcpSec" type="password" placeholder="client secret" autocomplete="off" style="flex:1;min-width:140px">
+             <input id="wmsMcpScope" placeholder="scope (nëse e jep administratori)" autocomplete="off" style="flex:1;min-width:140px"><button class="btn primary" id="wmsMcpSave">🔗 Ruaj dhe provo</button></div>
+           <div class="hint" id="wmsMcpMsg" style="margin-top:4px"></div></div>`
       + `<div id="wmsCookieBox" style="margin-top:8px;${cfg.lastError==='auth_expired'?'':'display:none'}">
            <div class="note" style="margin-bottom:8px"><b>Mënyra pa kopjime — ekstensioni "WMS Agent Link"</b> (instalohet <b>një herë</b>, 30 sekonda):
              <ol style="margin:6px 0 4px 18px;padding:0">
@@ -2774,6 +2786,18 @@ function renderWMS(v){
          ${cfg.lastError==='auth_expired'?'':'<button class="btn sm ghost" id="wmsCookieToggle" style="margin-top:6px">🔑 Ndrysho cookie-n e WMS</button>'}`;
     setTimeout(()=>{
       const tg=$('#wmsCookieToggle'); if(tg) tg.onclick=()=>{ const b=$('#wmsCookieBox'); b.style.display=b.style.display==='none'?'':'none'; };
+      // Gjirafa50 connector: current state, then save + test (the agent answers ok / the reason, never the address)
+      const mcpState=async()=>{ const el=$('#wmsMcpState'); if(!el) return; try{ const s=await (await fetch('/wms/mcp-status',{cache:'no-store'})).json();
+          el.innerHTML= !s.configured? '<span class="faint">pa u vendosur ende</span>' : s.ok===false? '<span style="color:var(--crit)">✗ '+h(s.error||'nuk lidhet')+'</span>' : '<span style="color:var(--ok)">🟢 e lidhur'+(s.at? ' · query e fundit '+h(new Date(s.at).toLocaleTimeString().slice(0,5)) : '')+'</span>'; }
+        catch(e){ el.textContent='agjenti s\'përgjigjet'; } };
+      mcpState();
+      const ms=$('#wmsMcpSave'); if(ms) ms.onclick=async()=>{ const v=id=>($(id).value||'').trim(), msg=$('#wmsMcpMsg');
+        const body={url:v('#wmsMcpUrl'), clientId:v('#wmsMcpCid'), clientSecret:v('#wmsMcpSec'), scope:v('#wmsMcpScope')};
+        ms.disabled=true; msg.textContent='Po provohet lidhja…';
+        try{ const r=await fetch('/wms/mcp-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const j=await r.json();
+          if(!r.ok||j.error) throw new Error(j.error||('HTTP '+r.status));
+          ['#wmsMcpCid','#wmsMcpSec','#wmsMcpScope'].forEach(id=>{ $(id).value=''; }); msg.innerHTML='✓ U lidh'+(j.server? ' me <b>'+h(j.server)+'</b>' : '')+(j.tools&&j.tools.length? ' · mjetet: '+h(j.tools.join(', ')) : '')+'. U ruajt te agjenti.'; mcpState(); }
+        catch(e){ msg.textContent='✗ '+e.message; } finally{ ms.disabled=false; } };
       const save=$('#wmsCookieSave'); if(save) save.onclick=async()=>{
         const val=($('#wmsCookieIn').value||'').trim(); const msg=$('#wmsCookieMsg');
         if(!val){ msg.textContent='Ngjit vlerën e cookie-s së pari.'; return; }

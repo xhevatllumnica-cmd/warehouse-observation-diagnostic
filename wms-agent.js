@@ -602,6 +602,8 @@ const shiftSchedule=require('./shift-schedule.js')({ appDir:APPDIR, normName, wa
 // which WMS account is logged in at which table PC (by IP) — reports from the "WMS Station" extension, own port on the LAN
 const stationPresence=require('./station-presence.js')({ appDir:APPDIR, cfgFile:CFG_FILE, cfg, normName, aliases:STAFF_ALIASES });
 stationPresence.listen(Number(cfg.stationPort||8791));
+// WMS through the Gjirafa50 MCP connector — the permanent, cookie-less read (23.10.2026); address/token only in the config file
+const wmsMcp=require('./wms-mcp.js')({cfg});
 const wmsStats=require('./wms-stats.js')({ appDir:APPDIR, fetchDayProductLogs, isoToday, isoAddDays, isoToMdy, lastNDays, parseWmsDate,
   CACHE_SETTLE_DAYS, warehouseStaffSet, normName, STAFF_ALIASES, PERF_KIND, PERF_WEIGHT, PERF_SECONDS, loadDb, WH_LEADS, ROSTER_FROM, scheduleForDay:iso=>shiftSchedule.forDay(iso),
   flowTargets:()=>statsConfig().flowTargets });
@@ -1598,6 +1600,26 @@ http.createServer(async (req,resp)=>{
     }
     // ---- paste a fresh WMS cookie from the app (no file editing) ----
     // Validated against WMS before it is saved; the value never leaves this machine.
+    // Gjirafa50 connector: the page sends the address (and token) once; they are saved in the config file and never sent back
+    if(q.pathname==='/wms/mcp-status' && req.method==='GET'){ return json(200, wmsMcp.status()); }
+    if((q.pathname==='/wms/mcp-config' || q.pathname==='/wms/mcp-test') && req.method==='POST'){
+      const origin=req.headers.origin; if(origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return json(403,{error:'forbidden origin'});
+      if(q.pathname==='/wms/mcp-config'){ let body; try{ body=JSON.parse(await readBody(req)); }catch(e){ return json(400,{error:'bad json'}); }
+        // address + machine client (client ID / secret / scope, login.gjirafa.com client_credentials) or a fixed token; an empty
+        // field keeps what is saved, so the secret is typed only once
+        const KEYS={url:'wmsMcpUrl', token:'wmsMcpToken', clientId:'wmsMcpClientId', clientSecret:'wmsMcpClientSecret', scope:'wmsMcpScope'};
+        const prev={}, next={}; Object.entries(KEYS).forEach(([k,c])=>{ prev[c]=cfg[c]; const v=String(body[k]||'').trim(); next[c]= v || cfg[c] || ''; });
+        let pu; try{ pu=new URL(next.wmsMcpUrl); }catch(e){ return json(400,{error:'Adresa nuk është URL e vlefshme.'}); }
+        if(pu.protocol!=='https:') return json(400,{error:'Adresa e connector-it duhet të nisë me https://'});
+        Object.assign(cfg, next);
+        const t=await wmsMcp.test();
+        if(!t.ok){ Object.assign(cfg, prev); console.log('[wms-agent] '+new Date().toLocaleTimeString()+' Gjirafa50 connector: not saved — '+t.error); return json(400,{error:t.error}); }
+        try{ const onDisk=JSON.parse(fs.readFileSync(CFG_FILE,'utf8')); Object.values(KEYS).forEach(c=>{ onDisk[c]=cfg[c]; }); fs.writeFileSync(CFG_FILE, JSON.stringify(onDisk,null,2)); }
+        catch(e){ return json(500,{error:'U lidh, por s\'u ruajt: '+e.message}); }
+        console.log('[wms-agent] '+new Date().toLocaleTimeString()+' Gjirafa50 connector saved and tested OK (server '+(t.server||'?')+', tools: '+(t.tools||[]).join(', ')+')');
+        return json(200, {ok:true, server:t.server, tools:t.tools}); }
+      if(!wmsMcp.configured()) return json(400,{error:'Connector-i nuk është vendosur ende.'});
+      const t=await wmsMcp.test(); return json(t.ok?200:502, t); }
     if(q.pathname==='/wms/ext-ping' && req.method==='POST'){ let b={}; try{ b=JSON.parse(await readBody(req)); }catch(e){}
       console.log('[wms-agent] extension v'+(b.version||'?')+' ping ('+(b.reason||'?')+'): loggedIn='+b.loggedIn+' found='+(b.found||'')); return json(200,{ok:true}); }
     if(q.pathname==='/wms/cookie' && req.method==='OPTIONS'){ resp.writeHead(204,{'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type'}); return resp.end(); }
@@ -1915,6 +1937,33 @@ http.createServer(async (req,resp)=>{
       const r=await fetchPodDay(date);
       resp.writeHead(r.error?(r.error==='auth_expired'?401:502):200, {'Content-Type':'application/json','Cache-Control':'no-store'});
       return resp.end(JSON.stringify(r));
+    }
+    if(q.pathname==='/pod/scans'){   // app tab "POD (skanime)" (22.10.2026): orders scanned for the couriers, per day × scanner, hours and courier posts of the day — scanner name + counts only, same-origin only
+      const date=q.query.date||isoToday();
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date) || date>isoToday()) return json(400,{error:'Data duhet YYYY-MM-DD dhe jo në të ardhmen.'});
+      const days=[], hours=[]; let error=null, complete=true;
+      const loc=t=>{ const d=new Date(t); return {d:d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()), h:d.getHours(), hm:p2(d.getHours())+':'+p2(d.getMinutes())}; };
+      for(let i=13;i>=0 && !error;i--){
+        const iso=isoAddDays(date,-i), r=await fetchPodScans(iso);
+        if(r.error){ error=r.error; if(r.error==='auth_expired') deliverySessionExpired=true; break; }
+        if(!r.complete) complete=false;
+        const by={}, byH={};
+        (r.rows||[]).forEach(x=>{ const L=loc(x.t); if(L.d!==iso) return; const a=by[x.scanner]||(by[x.scanner]={fn:x.scanner, n:0, f:L.hm, l:L.hm}); a.n++; if(L.hm<a.f) a.f=L.hm; if(L.hm>a.l) a.l=L.hm;
+          if(iso===date){ const k=x.scanner+'|'+L.h; byH[k]=byH[k]||{fn:x.scanner, h:L.h, n:0}; byH[k].n++; } });
+        Object.values(by).forEach(a=>days.push(Object.assign({d:iso}, a)));
+        Object.values(byH).forEach(a=>hours.push(Object.assign({d:iso}, a)));
+      }
+      if(error){ resp.writeHead(error==='auth_expired'?401:502,{'Content-Type':'application/json','Cache-Control':'no-store'}); return resp.end(JSON.stringify({error})); }
+      // courier posts of the day (BEKI / Express / Fiks): the scanned order → the day's POD delivery → driver name; read in the background
+      let posts=null; const cur=podScanCache[date];
+      if(cur && cur.v){ const pc=podCache[date], ttl= date>=isoToday()? 5*60000 : 6*3600000;
+        if(!pc || Date.now()-pc.t>ttl) fetchPodDay(date).catch(()=>{});
+        if(!pc) posts={loading:true};
+        else { const post=new Map(); (pc.v.items||[]).forEach(x=>post.set(x.orderId+'|'+x.platformId, String(x.driverName||'')));
+          posts={posts:POD_BOARD_POSTS.map(([name])=>({name, n:0})), other:0, unknown:0};
+          (cur.v.rows||[]).forEach(x=>{ const d=post.get(x.oid+'|'+x.pid); if(d==null){ posts.unknown++; return; } const i=POD_BOARD_POSTS.findIndex(([,re])=>re.test(d)); if(i>=0) posts.posts[i].n++; else posts.other++; }); } }
+      resp.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});
+      return resp.end(JSON.stringify({date, days, hours, posts, complete, at:new Date().toISOString()}));
     }
     if(q.pathname==='/delivery/podlogs'){
       const start=q.query.start || isoAddDays(isoToday(),-7);
